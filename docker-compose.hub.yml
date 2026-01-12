@@ -9,7 +9,7 @@
 
 services:
   meeting-recorder:
-    image: ${DOCKER_IMAGE:-ghcr.io/eyeduckai/meeting_recorder:latest}
+    image: ${DOCKER_IMAGE:-ghcr.io/eyeduck-ai/meeting_recorder:latest}
     container_name: meeting-recorder
     ports:
       - "8000:8000"
