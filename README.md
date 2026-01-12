@@ -392,7 +392,8 @@ curl -X POST "http://localhost:8000/api/v1/meetings" \
 ```
 
 > **Webex 注意事項**：
-> - 支援 Personal Room URL 或完整會議連結
+> - `meeting_code` 欄位請填入**完整會議連結**（不是會議代碼）
+> - 支援 Personal Room URL（如 `https://company.webex.com/meet/username`）或一般會議連結
 > - 自動處理等候室（Lobby）等待
 > - 會議主持人需允許訪客加入
 
