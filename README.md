@@ -512,8 +512,8 @@ uv run ruff check .
 | `docker` | push main | 建置並推送 Docker image 至 GHCR |
 
 Docker image 會自動推送至 GitHub Container Registry：
-- `ghcr.io/eyeduckai/meeting_recorder:latest` - 最新版本
-- `ghcr.io/eyeduckai/meeting_recorder:sha-xxxxxx` - 特定 commit
+- `ghcr.io/eyeduck-ai/meeting_recorder:latest` - 最新版本
+- `ghcr.io/eyeduck-ai/meeting_recorder:sha-xxxxxx` - 特定 commit
 
 ## 資料安全
 
@@ -532,7 +532,7 @@ Docker image 會自動推送至 GitHub Container Registry：
 
 ```bash
 # 拉取最新版本
-docker pull ghcr.io/eyeduckai/meeting_recorder:latest
+docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
 ```
 
 ## 常見問題（FAQ）
