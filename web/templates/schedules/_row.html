@@ -1,0 +1,56 @@
+<tr id="schedule-{{ schedule.id }}">
+    <td class="font-medium">{{ schedule.meeting.name }}</td>
+    <td>
+        <span class="badge badge-outline badge-sm">{{ schedule.schedule_type.value }}</span>
+    </td>
+    <td class="text-sm">
+        {% if schedule.schedule_type.value == 'once' %}
+            {{ schedule.start_time.strftime('%Y-%m-%d %H:%M') if schedule.start_time else '-' }}
+        {% else %}
+            <code class="text-xs">{{ schedule.cron_expression or '-' }}</code>
+        {% endif %}
+    </td>
+    <td>{{ (schedule.duration_sec / 60) | int }} min</td>
+    <td class="text-sm">
+        {% if schedule.next_run_at %}
+            {{ schedule.next_run_at.strftime('%m/%d %H:%M') }}
+        {% else %}
+            -
+        {% endif %}
+    </td>
+    <td>
+        {% if schedule.youtube_enabled %}
+            <span class="badge badge-success badge-sm">{{ schedule.youtube_privacy }}</span>
+        {% else %}
+            <span class="badge badge-ghost badge-sm">off</span>
+        {% endif %}
+    </td>
+    <td>
+        <form hx-post="/schedules/{{ schedule.id }}/toggle"
+              hx-target="#schedule-{{ schedule.id }}"
+              hx-swap="outerHTML">
+            <input type="checkbox" class="toggle toggle-sm toggle-success"
+                   {% if schedule.enabled %}checked{% endif %}
+                   onchange="this.form.requestSubmit()">
+        </form>
+    </td>
+    <td>
+        <div class="flex gap-1">
+            <form method="POST" action="/schedules/{{ schedule.id }}/trigger" class="inline">
+                <button type="submit" class="btn btn-ghost btn-xs" title="Trigger now">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                    </svg>
+                </button>
+            </form>
+            <a href="/schedules/{{ schedule.id }}/edit" class="btn btn-ghost btn-xs">Edit</a>
+            <button class="btn btn-ghost btn-xs text-error"
+                    hx-delete="/schedules/{{ schedule.id }}"
+                    hx-target="#schedule-{{ schedule.id }}"
+                    hx-swap="outerHTML"
+                    hx-confirm="Delete this schedule?">
+                Delete
+            </button>
+        </div>
+    </td>
+</tr>

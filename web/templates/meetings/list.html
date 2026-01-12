@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Meetings - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Meetings</h1>
+        <a href="/meetings/new" class="btn btn-primary">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            New Meeting
+        </a>
+    </div>
+
+    <!-- Meetings list -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            {% if meetings %}
+            <div class="overflow-x-auto">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Provider</th>
+                            <th>Meeting Code</th>
+                            <th>Display Name</th>
+                            <th>Schedules</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for meeting in meetings %}
+                        <tr id="meeting-{{ meeting.id }}">
+                            <td class="font-medium">{{ meeting.name }}</td>
+                            <td>
+                                <span class="badge badge-outline">{{ meeting.provider.value }}</span>
+                            </td>
+                            <td class="font-mono text-sm">{{ meeting.meeting_code }}</td>
+                            <td>{{ meeting.default_display_name or '-' }}</td>
+                            <td>{{ meeting.schedules | length }}</td>
+                            <td>
+                                <div class="flex gap-2">
+                                    <a href="/meetings/{{ meeting.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+                                    <button class="btn btn-ghost btn-sm text-error"
+                                            hx-delete="/meetings/{{ meeting.id }}"
+                                            hx-target="#meeting-{{ meeting.id }}"
+                                            hx-swap="outerHTML"
+                                            hx-confirm="Delete meeting '{{ meeting.name }}'? This will also delete all associated schedules.">
+                                        Delete
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center py-10">
+                <p class="text-base-content/60 mb-4">No meetings configured yet</p>
+                <a href="/meetings/new" class="btn btn-primary">Create your first meeting</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-TW" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Meeting Recorder{% endblock %}</title>
+
+    <!-- Tailwind CSS + DaisyUI CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <!-- Custom styles -->
+    <style>
+        .htmx-indicator {
+            display: none;
+        }
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-base-200">
+    <!-- Navbar -->
+    <div class="navbar bg-base-100 shadow-lg">
+        <div class="flex-1">
+            <a href="/" class="btn btn-ghost text-xl">Meeting Recorder</a>
+        </div>
+        <div class="flex-none">
+            <ul class="menu menu-horizontal px-1">
+                <li><a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a></li>
+                <li><a href="/meetings" class="{% if '/meetings' in request.url.path %}active{% endif %}">Meetings</a></li>
+                <li><a href="/schedules" class="{% if '/schedules' in request.url.path %}active{% endif %}">Schedules</a></li>
+                <li><a href="/jobs" class="{% if '/jobs' in request.url.path %}active{% endif %}">Jobs</a></li>
+                <li><a href="/recordings" class="{% if '/recordings' in request.url.path %}active{% endif %}">Recordings</a></li>
+                <li><a href="/settings" class="{% if '/settings' in request.url.path %}active{% endif %}">Settings</a></li>
+                {% if auth_enabled %}
+                <li><a href="/logout" class="text-error">Logout</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+
+    <!-- Main content -->
+    <main class="container mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Toast notifications -->
+    <div id="toast-container" class="toast toast-end">
+        {% block toasts %}{% endblock %}
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

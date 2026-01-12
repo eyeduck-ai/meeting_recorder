@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block title %}Job {{ job.job_id[:8] }} - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex items-center gap-4">
+        <a href="javascript:history.back()" class="btn btn-ghost btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+            Back
+        </a>
+        <h1 class="text-3xl font-bold">Job Details</h1>
+        {% if job.status.value == 'succeeded' %}
+        <span class="badge badge-success badge-lg">{{ job.status.value }}</span>
+        {% elif job.status.value == 'failed' %}
+        <span class="badge badge-error badge-lg">{{ job.status.value }}</span>
+        {% elif job.status.value == 'canceled' %}
+        <span class="badge badge-warning badge-lg">{{ job.status.value }}</span>
+        {% elif job.status.value in ['recording', 'joining', 'waiting_lobby', 'starting', 'finalizing', 'uploading'] %}
+        <span class="badge badge-info badge-lg gap-1">
+            <span class="loading loading-spinner loading-xs"></span>
+            {{ job.status.value }}
+        </span>
+        {% else %}
+        <span class="badge badge-ghost badge-lg">{{ job.status.value }}</span>
+        {% endif %}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Basic Info -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Basic Information</h2>
+                <div class="overflow-x-auto">
+                    <table class="table table-sm">
+                        <tbody>
+                            <tr>
+                                <th class="w-40">Job ID</th>
+                                <td class="font-mono text-sm">{{ job.job_id }}</td>
+                            </tr>
+                            <tr>
+                                <th>Provider</th>
+                                <td>{{ job.provider.value }}</td>
+                            </tr>
+                            <tr>
+                                <th>Meeting Code</th>
+                                <td class="font-mono">{{ job.meeting_code }}</td>
+                            </tr>
+                            <tr>
+                                <th>Display Name</th>
+                                <td>{{ job.display_name or '-' }}</td>
+                            </tr>
+                            {% if job.schedule %}
+                            <tr>
+                                <th>Schedule</th>
+                                <td>
+                                    <a href="/schedules/{{ job.schedule.id }}/edit" class="link">
+                                        {{ job.schedule.meeting.name }}
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Timestamps -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Timeline</h2>
+                <ul class="steps steps-vertical">
+                    <li class="step {% if job.created_at %}step-primary{% endif %}">
+                        <div class="text-left">
+                            <div class="font-medium">Created</div>
+                            <div class="text-sm text-base-content/60">
+                                {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '-' }}
+                            </div>
+                        </div>
+                    </li>
+                    <li class="step {% if job.started_at %}step-primary{% endif %}">
+                        <div class="text-left">
+                            <div class="font-medium">Started</div>
+                            <div class="text-sm text-base-content/60">
+                                {{ job.started_at.strftime('%Y-%m-%d %H:%M:%S') if job.started_at else '-' }}
+                            </div>
+                        </div>
+                    </li>
+                    <li class="step {% if job.joined_at %}step-primary{% endif %}">
+                        <div class="text-left">
+                            <div class="font-medium">Joined</div>
+                            <div class="text-sm text-base-content/60">
+                                {{ job.joined_at.strftime('%Y-%m-%d %H:%M:%S') if job.joined_at else '-' }}
+                            </div>
+                        </div>
+                    </li>
+                    <li class="step {% if job.recording_started_at %}step-primary{% endif %}">
+                        <div class="text-left">
+                            <div class="font-medium">Recording Started</div>
+                            <div class="text-sm text-base-content/60">
+                                {{ job.recording_started_at.strftime('%Y-%m-%d %H:%M:%S') if job.recording_started_at else '-' }}
+                            </div>
+                        </div>
+                    </li>
+                    <li class="step {% if job.completed_at %}step-primary{% endif %}">
+                        <div class="text-left">
+                            <div class="font-medium">Completed</div>
+                            <div class="text-sm text-base-content/60">
+                                {{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else '-' }}
+                            </div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    {% if job.status.value == 'succeeded' and job.output_path %}
+    <!-- Recording Info -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">Recording</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <div class="text-sm text-base-content/60">Duration</div>
+                    <div class="font-medium">{{ (job.duration_actual_sec / 60) | int if job.duration_actual_sec else 0 }} minutes</div>
+                </div>
+                <div>
+                    <div class="text-sm text-base-content/60">File Size</div>
+                    <div class="font-medium">{{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else 0 }} MB</div>
+                </div>
+                <div>
+                    <div class="text-sm text-base-content/60">Output Path</div>
+                    <div class="font-mono text-sm truncate">{{ job.output_path }}</div>
+                </div>
+            </div>
+            <div class="card-actions justify-end mt-4">
+                <a href="/recordings/{{ job.job_id }}/download" class="btn btn-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                    Download Recording
+                </a>
+            </div>
+            {% if job.youtube_video_id %}
+            <div class="divider">YouTube</div>
+            <div class="flex items-center gap-4">
+                <span class="badge badge-success">Uploaded</span>
+                <a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank" class="link">
+                    https://youtu.be/{{ job.youtube_video_id }}
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if job.status.value in ['failed', 'canceled'] %}
+    <!-- Error Info -->
+    <div class="card bg-error/10 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title text-error">
+                {% if job.status.value == 'canceled' %}Canceled{% else %}Error Information{% endif %}
+            </h2>
+            <div class="space-y-4">
+                {% if job.error_code %}
+                <div>
+                    <div class="text-sm text-base-content/60">Error Code</div>
+                    <div class="font-mono text-error">{{ job.error_code.value }}</div>
+                </div>
+                <div>
+                    <div class="text-sm text-base-content/60">Description</div>
+                    {% set error_descriptions = {
+                        'JOIN_TIMEOUT': 'Unable to join meeting within timeout',
+                        'JOIN_FAILED': 'Failed to join meeting',
+                        'INVALID_URL': 'Invalid meeting URL',
+                        'MEETING_NOT_FOUND': 'Meeting does not exist',
+                        'PASSWORD_REQUIRED': 'Password required',
+                        'PASSWORD_INCORRECT': 'Incorrect password',
+                        'LOBBY_TIMEOUT': 'Lobby wait timeout (not admitted)',
+                        'LOBBY_REJECTED': 'Rejected by host',
+                        'RECORDING_START_FAILED': 'Recording startup failed',
+                        'RECORDING_INTERRUPTED': 'Recording interrupted',
+                        'FFMPEG_ERROR': 'FFmpeg error',
+                        'BROWSER_CRASHED': 'Browser crashed',
+                        'VIRTUAL_ENV_ERROR': 'Virtual environment error',
+                        'DISK_FULL': 'Disk full',
+                        'CANCELED': 'Canceled by user',
+                        'INTERNAL_ERROR': 'Internal error'
+                    } %}
+                    <div class="text-error">{{ error_descriptions.get(job.error_code.value, job.error_code.value) }}</div>
+                </div>
+                {% endif %}
+                {% if job.error_message %}
+                <div>
+                    <div class="text-sm text-base-content/60">Error Message</div>
+                    <div class="text-error">{{ job.error_message }}</div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {% if job.diagnostic_dir %}
+    <!-- Diagnostics -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">Diagnostics</h2>
+            <div class="text-sm text-base-content/60 mb-4">
+                Diagnostic data collected at: <code>{{ job.diagnostic_dir }}</code>
+            </div>
+            <div class="flex gap-4 flex-wrap">
+                {% if job.has_screenshot %}
+                <div class="flex-1 min-w-[300px]">
+                    <div class="text-sm font-medium mb-2">Screenshot</div>
+                    <img src="/jobs/{{ job.job_id }}/diagnostics/screenshot"
+                         alt="Failure screenshot"
+                         class="rounded-lg border border-base-300 max-w-full">
+                </div>
+                {% endif %}
+                <div class="flex flex-col gap-2">
+                    {% if job.has_html_dump %}
+                    <span class="badge badge-outline">HTML dump available</span>
+                    {% endif %}
+                    {% if job.has_console_log %}
+                    <span class="badge badge-outline">Console log available</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Recording Jobs</h1>
+        {% if current_job_id %}
+        <div class="badge badge-warning badge-lg gap-2">
+            <span class="loading loading-spinner loading-sm"></span>
+            Recording in progress
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Filters -->
+    <div class="flex gap-2 flex-wrap">
+        <a href="/jobs" class="btn btn-sm {% if not selected_status %}btn-primary{% else %}btn-ghost{% endif %}">All</a>
+        {% for status in statuses %}
+        <a href="/jobs?status={{ status.value }}"
+           class="btn btn-sm {% if selected_status == status.value %}btn-primary{% else %}btn-ghost{% endif %}">
+            {{ status.value }}
+        </a>
+        {% endfor %}
+    </div>
+
+    <!-- Jobs list -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            {% if jobs %}
+            <div class="overflow-x-auto">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Job ID</th>
+                            <th>Meeting</th>
+                            <th>Created</th>
+                            <th>Duration</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in jobs %}
+                        <tr class="hover cursor-pointer" onclick="location.href='/jobs/{{ job.job_id }}'">
+                            <td>
+                                {% if job.status.value == 'succeeded' %}
+                                <span class="badge badge-success">{{ job.status.value }}</span>
+                                {% elif job.status.value == 'failed' %}
+                                <span class="badge badge-error">{{ job.status.value }}</span>
+                                {% elif job.status.value == 'canceled' %}
+                                <span class="badge badge-warning">{{ job.status.value }}</span>
+                                {% elif job.status.value in ['recording', 'joining', 'waiting_lobby', 'starting', 'finalizing', 'uploading'] %}
+                                <span class="badge badge-info gap-1">
+                                    <span class="loading loading-spinner loading-xs"></span>
+                                    {{ job.status.value }}
+                                </span>
+                                {% else %}
+                                <span class="badge badge-ghost">{{ job.status.value }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="font-mono text-xs">{{ job.job_id[:8] }}...</td>
+                            <td>{{ job.meeting_code }}</td>
+                            <td class="text-sm">{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                            <td>
+                                {% if job.duration_actual_sec %}
+                                    {{ (job.duration_actual_sec / 60) | int }} min
+                                {% else %}
+                                    -
+                                {% endif %}
+                            </td>
+                            <td onclick="event.stopPropagation()">
+                                <div class="flex gap-2">
+                                    <a href="/jobs/{{ job.job_id }}" class="btn btn-ghost btn-sm">Details</a>
+                                    {% if job.job_id == current_job_id %}
+                                    <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+                                        <button type="submit" class="btn btn-error btn-sm">Stop</button>
+                                    </form>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center py-10">
+                <p class="text-base-content/60">No jobs found</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

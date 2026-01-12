@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}{% if schedule %}Edit{% else %}New{% endif %} Schedule - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex items-center gap-4">
+        <a href="/schedules" class="btn btn-ghost btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+            Back
+        </a>
+        <h1 class="text-3xl font-bold">{% if schedule %}Edit Schedule{% else %}New Schedule{% endif %}</h1>
+    </div>
+
+    {% if not meetings %}
+    <div class="alert alert-warning">
+        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+        <span>No meetings configured. <a href="/meetings/new" class="link">Create a meeting first</a>.</span>
+    </div>
+    {% else %}
+
+    <!-- Form -->
+    <div class="card bg-base-100 shadow-xl max-w-2xl">
+        <div class="card-body">
+            <form method="POST" action="/schedules/save">
+                {% if schedule %}
+                <input type="hidden" name="schedule_id" value="{{ schedule.id }}">
+                {% endif %}
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Meeting *</span>
+                    </label>
+                    <select name="meeting_id" class="select select-bordered w-full" required>
+                        {% for meeting in meetings %}
+                        <option value="{{ meeting.id }}" {% if schedule and schedule.meeting_id == meeting.id %}selected{% endif %}>
+                            {{ meeting.name }} ({{ meeting.provider.value }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Schedule Type *</span>
+                    </label>
+                    <select name="schedule_type" id="schedule_type" class="select select-bordered w-full" required
+                            onchange="toggleScheduleFields()">
+                        {% for st in schedule_types %}
+                        <option value="{{ st.value }}" {% if schedule and schedule.schedule_type == st %}selected{% endif %}>
+                            {{ st.value | upper }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div id="once-fields" class="{% if schedule and schedule.schedule_type.value != 'once' %}hidden{% endif %}">
+                    <div class="form-control w-full mb-4">
+                        <label class="label">
+                            <span class="label-text">Start Time *</span>
+                        </label>
+                        <input type="datetime-local" name="start_time"
+                               value="{{ schedule.start_time.strftime('%Y-%m-%dT%H:%M') if schedule and schedule.start_time else '' }}"
+                               class="input input-bordered w-full">
+                    </div>
+                </div>
+
+                <div id="cron-fields" class="{% if not schedule or schedule.schedule_type.value != 'cron' %}hidden{% endif %}">
+                    <div class="form-control w-full mb-4">
+                        <label class="label">
+                            <span class="label-text">Cron Expression *</span>
+                        </label>
+                        <input type="text" name="cron_expression"
+                               value="{{ schedule.cron_expression if schedule else '' }}"
+                               class="input input-bordered w-full font-mono"
+                               placeholder="0 9 * * 1-5">
+                        <label class="label">
+                            <span class="label-text-alt">Format: minute hour day month weekday (e.g., "0 9 * * 1-5" = 9:00 AM Mon-Fri)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Duration (minutes) *</span>
+                    </label>
+                    <input type="number" name="duration_min"
+                           value="{{ (schedule.duration_sec // 60) if schedule else 60 }}"
+                           class="input input-bordered w-full" required min="1" max="240" step="1">
+                    <label class="label">
+                        <span class="label-text-alt">Default: 60 min. Max: 240 min (4 hours)</span>
+                    </label>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Lobby Wait (seconds)</span>
+                    </label>
+                    <input type="number" name="lobby_wait_sec"
+                           value="{{ schedule.lobby_wait_sec if schedule else 900 }}"
+                           class="input input-bordered w-full" min="0" step="60">
+                    <label class="label">
+                        <span class="label-text-alt">Max time to wait in lobby. Default: 900 (15 min)</span>
+                    </label>
+                </div>
+
+                <div class="divider">Recording Settings</div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Resolution</span>
+                    </label>
+                    <select name="resolution_preset" id="resolution_preset" class="select select-bordered w-full"
+                            onchange="toggleResolutionFields()">
+                        <option value="1080p" {% if not schedule or (schedule.resolution_w == 1920 and schedule.resolution_h == 1080) %}selected{% endif %}>
+                            1080p (1920x1080) - Recommended
+                        </option>
+                        <option value="720p" {% if schedule and schedule.resolution_w == 1280 and schedule.resolution_h == 720 %}selected{% endif %}>
+                            720p (1280x720)
+                        </option>
+                        <option value="custom" {% if schedule and not ((schedule.resolution_w == 1920 and schedule.resolution_h == 1080) or (schedule.resolution_w == 1280 and schedule.resolution_h == 720)) %}selected{% endif %}>
+                            Custom
+                        </option>
+                    </select>
+                </div>
+
+                <div id="custom-resolution-fields" class="{% if not schedule or (schedule.resolution_w in [1280, 1920]) %}hidden{% endif %}">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div class="form-control">
+                            <label class="label">
+                                <span class="label-text">Width</span>
+                            </label>
+                            <input type="number" name="resolution_w" id="resolution_w"
+                                   value="{{ schedule.resolution_w if schedule else 1920 }}"
+                                   class="input input-bordered w-full" min="640" max="3840">
+                        </div>
+                        <div class="form-control">
+                            <label class="label">
+                                <span class="label-text">Height</span>
+                            </label>
+                            <input type="number" name="resolution_h" id="resolution_h"
+                                   value="{{ schedule.resolution_h if schedule else 1080 }}"
+                                   class="input input-bordered w-full" min="480" max="2160">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Override Display Name</span>
+                    </label>
+                    <input type="text" name="override_display_name"
+                           value="{{ schedule.override_display_name if schedule else '' }}"
+                           class="input input-bordered w-full"
+                           placeholder="Leave empty to use meeting default">
+                </div>
+
+                <div class="divider">YouTube Upload</div>
+
+                <div class="form-control mb-4">
+                    <label class="label cursor-pointer justify-start gap-4">
+                        <input type="checkbox" name="youtube_enabled" value="true"
+                               class="checkbox checkbox-primary"
+                               {% if schedule and schedule.youtube_enabled %}checked{% endif %}>
+                        <span class="label-text">Enable YouTube upload after recording</span>
+                    </label>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">YouTube Privacy</span>
+                    </label>
+                    <select name="youtube_privacy" class="select select-bordered w-full">
+                        <option value="unlisted" {% if not schedule or schedule.youtube_privacy == 'unlisted' %}selected{% endif %}>Unlisted</option>
+                        <option value="private" {% if schedule and schedule.youtube_privacy == 'private' %}selected{% endif %}>Private</option>
+                        <option value="public" {% if schedule and schedule.youtube_privacy == 'public' %}selected{% endif %}>Public</option>
+                    </select>
+                </div>
+
+                <div class="card-actions justify-end mt-6">
+                    <a href="/schedules" class="btn btn-ghost">Cancel</a>
+                    <button type="submit" class="btn btn-primary">Save Schedule</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function toggleScheduleFields() {
+    const type = document.getElementById('schedule_type').value;
+    document.getElementById('once-fields').classList.toggle('hidden', type !== 'once');
+    document.getElementById('cron-fields').classList.toggle('hidden', type !== 'cron');
+}
+
+function toggleResolutionFields() {
+    const preset = document.getElementById('resolution_preset').value;
+    const customFields = document.getElementById('custom-resolution-fields');
+    const widthInput = document.getElementById('resolution_w');
+    const heightInput = document.getElementById('resolution_h');
+
+    if (preset === 'custom') {
+        customFields.classList.remove('hidden');
+    } else {
+        customFields.classList.add('hidden');
+        // Set values based on preset
+        if (preset === '1080p') {
+            widthInput.value = 1920;
+            heightInput.value = 1080;
+        } else if (preset === '720p') {
+            widthInput.value = 1280;
+            heightInput.value = 720;
+        }
+    }
+}
+</script>
+{% endblock %}

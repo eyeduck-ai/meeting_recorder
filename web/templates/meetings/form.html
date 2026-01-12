@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}{% if meeting %}Edit{% else %}New{% endif %} Meeting - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex items-center gap-4">
+        <a href="/meetings" class="btn btn-ghost btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+            Back
+        </a>
+        <h1 class="text-3xl font-bold">{% if meeting %}Edit Meeting{% else %}New Meeting{% endif %}</h1>
+    </div>
+
+    <!-- Form -->
+    <div class="card bg-base-100 shadow-xl max-w-2xl">
+        <div class="card-body">
+            <form method="POST" action="/meetings/save">
+                {% if meeting %}
+                <input type="hidden" name="meeting_id" value="{{ meeting.id }}">
+                {% endif %}
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Name *</span>
+                    </label>
+                    <input type="text" name="name" value="{{ meeting.name if meeting else '' }}"
+                           class="input input-bordered w-full" required
+                           placeholder="Weekly Team Standup">
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Provider *</span>
+                    </label>
+                    <select name="provider" class="select select-bordered w-full" required>
+                        {% for provider in providers %}
+                        <option value="{{ provider.value }}" {% if meeting and meeting.provider == provider %}selected{% endif %}>
+                            {{ provider.value | upper }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Meeting Code *</span>
+                    </label>
+                    <input type="text" name="meeting_code" value="{{ meeting.meeting_code if meeting else '' }}"
+                           class="input input-bordered w-full" required
+                           placeholder="my-meeting-room">
+                    <label class="label">
+                        <span class="label-text-alt">For Jitsi: the room name (e.g., my-meeting-room)</span>
+                    </label>
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Base URL</span>
+                    </label>
+                    <input type="url" name="site_base_url" value="{{ meeting.site_base_url if meeting else '' }}"
+                           class="input input-bordered w-full"
+                           placeholder="https://meet.jit.si">
+                    <label class="label">
+                        <span class="label-text-alt">Leave empty to use default (Jitsi: meet.jit.si)</span>
+                    </label>
+                </div>
+
+                <div class="divider">Identity Settings</div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Display Name</span>
+                    </label>
+                    <input type="text" name="default_display_name" value="{{ meeting.default_display_name if meeting else '' }}"
+                           class="input input-bordered w-full"
+                           placeholder="Meeting Recorder">
+                </div>
+
+                <div class="form-control w-full mb-4">
+                    <label class="label">
+                        <span class="label-text">Guest Email</span>
+                    </label>
+                    <input type="email" name="default_guest_email" value="{{ meeting.default_guest_email if meeting else '' }}"
+                           class="input input-bordered w-full"
+                           placeholder="recorder@example.com">
+                    <label class="label">
+                        <span class="label-text-alt">Required for some platforms (Webex)</span>
+                    </label>
+                </div>
+
+                <div class="card-actions justify-end mt-6">
+                    <a href="/meetings" class="btn btn-ghost">Cancel</a>
+                    <button type="submit" class="btn btn-primary">Save Meeting</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Schedules - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Schedules</h1>
+        <a href="/schedules/new" class="btn btn-primary">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            New Schedule
+        </a>
+    </div>
+
+    <!-- Schedules list -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            {% if schedules %}
+            <div class="overflow-x-auto">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Meeting</th>
+                            <th>Type</th>
+                            <th>Schedule</th>
+                            <th>Duration</th>
+                            <th>Next Run</th>
+                            <th>YouTube</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="schedules-tbody">
+                        {% for schedule in schedules %}
+                        {% include "schedules/_row.html" %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="text-center py-10">
+                <p class="text-base-content/60 mb-4">No schedules configured yet</p>
+                <a href="/schedules/new" class="btn btn-primary">Create your first schedule</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
