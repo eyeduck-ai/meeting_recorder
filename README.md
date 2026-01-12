@@ -110,7 +110,7 @@ curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/.env.
 ```yaml
 services:
   meeting-recorder:
-    image: ghcr.io/eyeduckai/meeting_recorder:latest
+    image: ghcr.io/eyeduck-ai/meeting_recorder:latest
     container_name: meeting-recorder
     ports:
       - "8000:8000"
@@ -176,7 +176,7 @@ RESOLUTION_H=1080
 
 ```bash
 # 拉取最新映像檔
-docker pull ghcr.io/eyeduckai/meeting_recorder:latest
+docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
 
 # 啟動服務（背景執行）
 docker-compose -f docker-compose.hub.yml up -d
@@ -208,7 +208,7 @@ docker-compose -f docker-compose.hub.yml down
 docker-compose -f docker-compose.hub.yml restart
 
 # 更新到最新版本
-docker pull ghcr.io/eyeduckai/meeting_recorder:latest
+docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
 docker-compose -f docker-compose.hub.yml up -d
 
 # 查看容器日誌
@@ -589,7 +589,7 @@ DEBUG_VNC=1 docker-compose -f docker-compose.hub.yml up -d
 
 ```bash
 # 拉取最新映像檔
-docker pull ghcr.io/eyeduckai/meeting_recorder:latest
+docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
 
 # 重新啟動容器
 docker-compose -f docker-compose.hub.yml up -d
