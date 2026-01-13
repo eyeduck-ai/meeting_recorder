@@ -8,7 +8,8 @@
     <div class="flex justify-between items-center">
         <h1 class="text-3xl font-bold">Meetings</h1>
         <a href="/meetings/new" class="btn btn-primary">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-5 h-5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
             New Meeting
@@ -36,7 +37,13 @@
                         <tr id="meeting-{{ meeting.id }}">
                             <td class="font-medium">{{ meeting.name }}</td>
                             <td>
-                                <span class="badge badge-outline">{{ meeting.provider.value }}</span>
+                                {% if meeting.provider == 'jitsi' %}
+                                <span class="badge badge-info gap-2">JITSI</span>
+                                {% elif meeting.provider == 'webex' %}
+                                <span class="badge badge-warning gap-2">WEBEX</span>
+                                {% else %}
+                                <span class="badge badge-ghost">{{ meeting.provider | upper }}</span>
+                                {% endif %}
                             </td>
                             <td class="font-mono text-sm">{{ meeting.meeting_code }}</td>
                             <td>{{ meeting.default_display_name or '-' }}</td>
@@ -45,10 +52,9 @@
                                 <div class="flex gap-2">
                                     <a href="/meetings/{{ meeting.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
                                     <button class="btn btn-ghost btn-sm text-error"
-                                            hx-delete="/meetings/{{ meeting.id }}"
-                                            hx-target="#meeting-{{ meeting.id }}"
-                                            hx-swap="outerHTML"
-                                            hx-confirm="Delete meeting '{{ meeting.name }}'? This will also delete all associated schedules.">
+                                        hx-delete="/meetings/{{ meeting.id }}" hx-target="#meeting-{{ meeting.id }}"
+                                        hx-swap="outerHTML"
+                                        hx-confirm="Delete meeting '{{ meeting.name }}'? This will also delete all associated schedules.">
                                         Delete
                                     </button>
                                 </div>
