@@ -127,6 +127,8 @@ class JobRunner:
                 duration_sec=schedule.duration_sec,
                 base_url=meeting.site_base_url,
                 lobby_wait_sec=schedule.lobby_wait_sec,
+                duration_mode=schedule.duration_mode,
+                dry_run=schedule.dry_run,
             )
 
             # Store job in database

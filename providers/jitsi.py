@@ -323,23 +323,50 @@ class JitsiProvider(BaseProvider):
         Returns:
             True if meeting ended
         """
-        end_indicators = [
-            'text="meeting has ended"',
-            'text="會議已結束"',
-            'text="You have been disconnected"',
-            'text="連線已中斷"',
-            'text="kicked"',
-        ]
+        try:
+            # Check text indicators for meeting end
+            end_indicators = [
+                'text="meeting has ended"',
+                'text="會議已結束"',
+                'text="You have been disconnected"',
+                'text="連線已中斷"',
+                'text="kicked"',
+                'text="Conference not found"',
+                'text="會議不存在"',
+            ]
 
-        for indicator in end_indicators:
-            if await page.locator(indicator).count() > 0:
-                logger.info("Meeting end detected")
+            for indicator in end_indicators:
+                if await page.locator(indicator).count() > 0:
+                    logger.info(f"Meeting end detected: text indicator found")
+                    return True
+
+            # Check if page navigated away from meeting
+            url = page.url
+            if "meet.jit.si" in url and "/" not in url.split("meet.jit.si")[1].strip("/"):
+                logger.info("Navigated away from meeting")
                 return True
 
-        # Check if page navigated away from meeting
-        url = page.url
-        if "meet.jit.si" in url and "/" not in url.split("meet.jit.si")[1].strip("/"):
-            logger.info("Navigated away from meeting")
-            return True
+            # Check if video elements are gone (meeting may have ended)
+            video_count = await page.locator('video').count()
+            if video_count == 0:
+                # Double-check: wait a moment and check again to avoid false positives
+                await asyncio.sleep(2)
+                video_count = await page.locator('video').count()
+                if video_count == 0:
+                    logger.info("No video elements found - meeting may have ended")
+                    return True
+
+            # Check for "You are alone" indicator (host left)
+            alone_indicators = [
+                'text="You are the only one in the meeting"',
+                'text="你是會議中唯一的人"',
+            ]
+            for indicator in alone_indicators:
+                if await page.locator(indicator).count() > 0:
+                    logger.debug("Only participant remaining in meeting")
+                    # Don't end yet - host might return
+
+        except Exception as e:
+            logger.debug(f"Error in detect_meeting_end: {e}")
 
         return False

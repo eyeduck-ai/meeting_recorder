@@ -29,39 +29,60 @@
                         {% for job in jobs %}
                         <tr>
                             <td class="font-medium">{{ job.meeting_code }}</td>
-                            <td class="text-sm">{{ job.completed_at.strftime('%Y-%m-%d %H:%M') if job.completed_at else '-' }}</td>
+                            <td class="text-sm">{{ job.completed_at.strftime('%Y-%m-%d %H:%M') if job.completed_at else
+                                '-' }}</td>
                             <td>{{ (job.duration_actual_sec / 60) | int if job.duration_actual_sec else 0 }} min</td>
                             <td>{{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else 0 }} MB</td>
                             <td>
                                 {% if job.youtube_video_id %}
-                                <a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank" class="badge badge-success gap-1">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                                <a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank"
+                                    class="badge badge-success gap-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                        stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
                                     </svg>
                                     YouTube
                                 </a>
                                 {% elif youtube_configured and youtube_authorized %}
-                                <button class="btn btn-outline btn-error btn-xs gap-1"
-                                        onclick="uploadToYouTube('{{ job.job_id }}', '{{ job.meeting_code }}')"
-                                        id="upload-btn-{{ job.job_id }}">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                                <button
+                                    class="btn btn-outline btn-secondary btn-sm px-4 gap-1 rounded-full whitespace-nowrap shadow-sm hover:shadow-md transition-all"
+                                    onclick="uploadToYouTube('{{ job.job_id }}', '{{ job.meeting_code }}')"
+                                    id="upload-btn-{{ job.job_id }}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                        stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
                                     </svg>
                                     Upload
                                 </button>
                                 {% else %}
-                                <span class="badge badge-ghost badge-sm">-</span>
+                                <span class="badge badge-ghost badge-sm rounded-full">-</span>
                                 {% endif %}
                             </td>
-                            <td>
-                                <div class="flex gap-2">
-                                    <a href="/recordings/{{ job.job_id }}/download" class="btn btn-primary btn-sm">
-                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
-                                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                        </svg>
-                                        Download
+                            <td class="min-w-[300px]">
+                                <div class="flex items-center justify-between w-full">
+                                    <div class="flex gap-2 items-center">
+                                        <a href="/recordings/{{ job.job_id }}/download"
+                                            class="btn btn-primary btn-sm px-4 gap-1 rounded-full whitespace-nowrap shadow-sm hover:shadow-md transition-all">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                                stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                            </svg>
+                                            Download
+                                        </a>
+                                        <button
+                                            class="btn btn-outline btn-error btn-sm px-3 gap-1 rounded-full whitespace-nowrap shadow-sm hover:shadow-md transition-all"
+                                            hx-delete="/recordings/{{ job.job_id }}" hx-target="closest tr"
+                                            hx-swap="outerHTML" hx-confirm="Delete this recording permenantly?">
+                                            Delete
+                                        </button>
+                                    </div>
+                                    <a href="/jobs/{{ job.job_id }}"
+                                        class="btn btn-ghost btn-sm text-base-content/70 rounded-full hover:bg-base-content/10 ml-2">
+                                        Details >
                                     </a>
-                                    <a href="/jobs/{{ job.job_id }}" class="btn btn-ghost btn-sm">Details</a>
                                 </div>
                             </td>
                         </tr>
@@ -79,43 +100,43 @@
 </div>
 
 <script>
-async function uploadToYouTube(jobId, meetingCode) {
-    const btn = document.getElementById(`upload-btn-${jobId}`);
-    const originalContent = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Uploading...';
+    async function uploadToYouTube(jobId, meetingCode) {
+        const btn = document.getElementById(`upload-btn-${jobId}`);
+        const originalContent = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Uploading...';
 
-    try {
-        const response = await fetch('/api/v1/youtube/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                job_id: jobId,
-                title: `Recording - ${meetingCode}`,
-                privacy: 'unlisted'
-            })
-        });
+        try {
+            const response = await fetch('/api/v1/youtube/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    job_id: jobId,
+                    title: `Recording - ${meetingCode}`,
+                    privacy: 'unlisted'
+                })
+            });
 
-        const data = await response.json();
+            const data = await response.json();
 
-        if (data.success) {
-            btn.outerHTML = `<a href="${data.video_url}" target="_blank" class="badge badge-success gap-1">
+            if (data.success) {
+                btn.outerHTML = `<a href="${data.video_url}" target="_blank" class="badge badge-success gap-1">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
                 </svg>
                 YouTube
             </a>`;
-        } else {
-            alert('Upload failed: ' + (data.error || 'Unknown error'));
+            } else {
+                alert('Upload failed: ' + (data.error || 'Unknown error'));
+                btn.disabled = false;
+                btn.innerHTML = originalContent;
+            }
+        } catch (error) {
+            console.error('Upload error:', error);
+            alert('Upload failed: ' + error.message);
             btn.disabled = false;
             btn.innerHTML = originalContent;
         }
-    } catch (error) {
-        console.error('Upload error:', error);
-        alert('Upload failed: ' + error.message);
-        btn.disabled = false;
-        btn.innerHTML = originalContent;
     }
-}
 </script>
 {% endblock %}

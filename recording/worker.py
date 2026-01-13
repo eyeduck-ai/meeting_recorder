@@ -12,6 +12,8 @@ from config.settings import get_settings
 from database.models import ErrorCode, JobStatus
 from providers import get_provider
 from providers.base import BaseProvider, DiagnosticData
+from recording.detection import DetectionConfig, DetectionOrchestrator
+from recording.detectors import create_default_detectors
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
 
@@ -47,6 +49,8 @@ class RecordingJob:
     base_url: str | None = None
     password: str | None = None
     lobby_wait_sec: int = 900
+    duration_mode: str = "fixed"  # "fixed" or "auto"
+    dry_run: bool = False  # Log detection only, don't stop
 
     @classmethod
     def create(
@@ -119,6 +123,36 @@ class RecordingWorker:
                 self._status_callback(self._current_job.job_id, status)
             except Exception as e:
                 logger.warning(f"Status callback error: {e}")
+
+    def _load_detection_config(self) -> DetectionConfig:
+        """Load detection configuration from database."""
+        import json
+
+        from database.models import AppSettings, get_session_local
+
+        try:
+            SessionLocal = get_session_local()
+            session = SessionLocal()
+            try:
+                record = session.query(AppSettings).filter(AppSettings.key == "detection_config").first()
+                if record:
+                    data = json.loads(record.value)
+                    return DetectionConfig(
+                        text_indicator_enabled=data.get("text_indicator_enabled", True),
+                        video_element_enabled=data.get("video_element_enabled", True),
+                        webrtc_connection_enabled=data.get("webrtc_connection_enabled", True),
+                        screen_freeze_enabled=data.get("screen_freeze_enabled", False),
+                        url_change_enabled=data.get("url_change_enabled", True),
+                        screen_freeze_timeout_sec=data.get("screen_freeze_timeout_sec", 60),
+                        min_detectors_agree=data.get("min_detectors_agree", 1),
+                    )
+            finally:
+                session.close()
+        except Exception as e:
+            logger.warning(f"Failed to load detection config from database: {e}")
+
+        return DetectionConfig()  # Return defaults
+
 
     def request_cancel(self) -> bool:
         """Request cancellation of current job."""
@@ -279,6 +313,17 @@ class RecordingWorker:
             recording_start = asyncio.get_event_loop().time()
             check_interval = 5  # Check every 5 seconds
 
+            # Setup detection orchestrator for auto mode
+            detection_orchestrator = None
+            if job.duration_mode == "auto":
+                detection_config = self._load_detection_config()
+                detection_orchestrator = DetectionOrchestrator(detection_config)
+                detection_orchestrator.set_dry_run(job.dry_run)  # Enable dry run if specified
+                for detector in create_default_detectors(detection_config):
+                    detection_orchestrator.register_detector(detector)
+                await detection_orchestrator.setup_all(page)
+                logger.info(f"Auto-detection mode enabled (dry_run={job.dry_run})")
+
             while True:
                 elapsed = asyncio.get_event_loop().time() - recording_start
 
@@ -291,10 +336,20 @@ class RecordingWorker:
                 if self._cancel_requested:
                     raise asyncio.CancelledError("Job cancelled")
 
-                # Check if meeting ended
-                if await provider.detect_meeting_end(page):
-                    logger.info("Meeting ended")
-                    break
+                # Check if meeting ended (using orchestrator or legacy method)
+                if detection_orchestrator:
+                    # Use new detection framework
+                    should_end, results = await detection_orchestrator.check_all(page)
+                    if should_end:
+                        triggered = [r for r in results if r.detected]
+                        reasons = ", ".join(r.reason for r in triggered[:2])
+                        logger.info(f"Meeting ended detected: {reasons}")
+                        break
+                else:
+                    # Fallback to provider's legacy method
+                    if await provider.detect_meeting_end(page):
+                        logger.info("Meeting ended")
+                        break
 
                 # Log progress every minute
                 if int(elapsed) % 60 == 0 and int(elapsed) > 0:

@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}Detection Logs - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-3xl font-bold">Detection Logs</h1>
+            <p class="text-base-content/60">View and analyze meeting end detection events</p>
+        </div>
+        <div class="flex gap-2">
+            <a href="/api/detection/logs/export?format=csv" class="btn btn-outline btn-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                    stroke="currentColor" class="w-4 h-4">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                Export CSV
+            </a>
+            <button onclick="clearLogs()" class="btn btn-outline btn-error btn-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                    stroke="currentColor" class="w-4 h-4">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                </svg>
+                Clear All
+            </button>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body py-4">
+            <div class="flex flex-wrap gap-4 items-end">
+                <div class="form-control">
+                    <label class="label py-1">
+                        <span class="label-text text-sm">Job ID</span>
+                    </label>
+                    <input type="number" id="filter-job-id" class="input input-bordered input-sm w-32"
+                        placeholder="All">
+                </div>
+                <div class="form-control">
+                    <label class="label py-1">
+                        <span class="label-text text-sm">Detector Type</span>
+                    </label>
+                    <select id="filter-detector" class="select select-bordered select-sm">
+                        <option value="">All</option>
+                        <option value="text_indicator">Text Indicator</option>
+                        <option value="video_element">Video Element</option>
+                        <option value="webrtc_connection">WebRTC Connection</option>
+                        <option value="url_change">URL Change</option>
+                        <option value="screen_freeze">Screen Freeze</option>
+                    </select>
+                </div>
+                <div class="form-control">
+                    <label class="label py-1">
+                        <span class="label-text text-sm">Status</span>
+                    </label>
+                    <select id="filter-detected" class="select select-bordered select-sm">
+                        <option value="">All</option>
+                        <option value="true">Triggered</option>
+                        <option value="false">Not Triggered</option>
+                    </select>
+                </div>
+                <button onclick="loadLogs()" class="btn btn-primary btn-sm">Filter</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats shadow w-full">
+        <div class="stat">
+            <div class="stat-title">Total Events</div>
+            <div class="stat-value text-primary" id="stat-total">-</div>
+        </div>
+        <div class="stat">
+            <div class="stat-title">Triggered</div>
+            <div class="stat-value text-success" id="stat-triggered">-</div>
+        </div>
+        <div class="stat">
+            <div class="stat-title">Marked Accurate</div>
+            <div class="stat-value text-info" id="stat-accurate">-</div>
+        </div>
+        <div class="stat">
+            <div class="stat-title">Marked Inaccurate</div>
+            <div class="stat-value text-warning" id="stat-inaccurate">-</div>
+        </div>
+    </div>
+
+    <!-- Logs table -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <div class="overflow-x-auto">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Job ID</th>
+                            <th>Detector</th>
+                            <th>Status</th>
+                            <th>Confidence</th>
+                            <th>Reason</th>
+                            <th>Accuracy</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logs-tbody">
+                        <tr>
+                            <td colspan="8" class="text-center py-8">
+                                <span class="loading loading-spinner loading-lg"></span>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pagination -->
+            <div class="flex justify-center mt-4">
+                <div class="join">
+                    <button class="join-item btn btn-sm" onclick="prevPage()" id="btn-prev" disabled>«</button>
+                    <button class="join-item btn btn-sm">Page <span id="current-page">1</span></button>
+                    <button class="join-item btn btn-sm" onclick="nextPage()" id="btn-next">»</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let currentPage = 1;
+    const pageSize = 20;
+    let totalLogs = 0;
+
+    async function loadLogs() {
+        const jobId = document.getElementById('filter-job-id').value;
+        const detector = document.getElementById('filter-detector').value;
+        const detected = document.getElementById('filter-detected').value;
+
+        let url = `/api/detection/logs?limit=${pageSize}&offset=${(currentPage - 1) * pageSize}`;
+        if (jobId) url += `&job_id=${jobId}`;
+
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+
+            totalLogs = data.total;
+            renderLogs(data.logs, detector, detected);
+            updatePagination();
+            updateStats(data.logs);
+        } catch (error) {
+            console.error('Failed to load logs:', error);
+        }
+    }
+
+    function renderLogs(logs, filterDetector, filterDetected) {
+        const tbody = document.getElementById('logs-tbody');
+
+        // Client-side filtering for detector and detected status
+        let filtered = logs;
+        if (filterDetector) {
+            filtered = filtered.filter(log => log.detector_type === filterDetector);
+        }
+        if (filterDetected !== '') {
+            filtered = filtered.filter(log => log.detected === (filterDetected === 'true'));
+        }
+
+        if (filtered.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="8" class="text-center py-8 text-base-content/50">
+                        No detection logs found
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = filtered.map(log => `
+            <tr>
+                <td class="text-xs whitespace-nowrap">${formatTime(log.triggered_at)}</td>
+                <td>
+                    <a href="/jobs" class="link link-primary">${log.job_id}</a>
+                </td>
+                <td>
+                    <span class="badge badge-ghost badge-sm">${formatDetectorType(log.detector_type)}</span>
+                </td>
+                <td>
+                    ${log.detected
+                ? '<span class="badge badge-success badge-sm">Triggered</span>'
+                : '<span class="badge badge-ghost badge-sm">-</span>'}
+                </td>
+                <td>${(log.confidence * 100).toFixed(0)}%</td>
+                <td class="max-w-xs truncate text-sm" title="${log.reason || '-'}">${log.reason || '-'}</td>
+                <td>
+                    ${renderAccuracyBadge(log.was_accurate)}
+                </td>
+                <td>
+                    <div class="flex gap-1">
+                        <button onclick="markAccuracy(${log.id}, true)" class="btn btn-ghost btn-xs text-success" title="Mark as accurate">
+                            ✓
+                        </button>
+                        <button onclick="markAccuracy(${log.id}, false)" class="btn btn-ghost btn-xs text-error" title="Mark as inaccurate">
+                            ✗
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    function formatTime(isoString) {
+        if (!isoString) return '-';
+        const date = new Date(isoString);
+        return date.toLocaleString('zh-TW', {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    }
+
+    function formatDetectorType(type) {
+        const names = {
+            'text_indicator': 'Text',
+            'video_element': 'Video',
+            'webrtc_connection': 'WebRTC',
+            'url_change': 'URL',
+            'screen_freeze': 'Freeze'
+        };
+        return names[type] || type;
+    }
+
+    function renderAccuracyBadge(wasAccurate) {
+        if (wasAccurate === null || wasAccurate === undefined) {
+            return '<span class="badge badge-ghost badge-sm">Unreviewed</span>';
+        }
+        return wasAccurate
+            ? '<span class="badge badge-success badge-sm">Accurate</span>'
+            : '<span class="badge badge-warning badge-sm">Inaccurate</span>';
+    }
+
+    async function markAccuracy(logId, wasAccurate) {
+        try {
+            await fetch(`/api/detection/logs/${logId}/mark-accuracy?was_accurate=${wasAccurate}`, {
+                method: 'POST'
+            });
+            loadLogs();
+        } catch (error) {
+            console.error('Failed to mark accuracy:', error);
+        }
+    }
+
+    function updatePagination() {
+        const totalPages = Math.ceil(totalLogs / pageSize);
+        document.getElementById('current-page').textContent = currentPage;
+        document.getElementById('btn-prev').disabled = currentPage <= 1;
+        document.getElementById('btn-next').disabled = currentPage >= totalPages;
+    }
+
+    function prevPage() {
+        if (currentPage > 1) {
+            currentPage--;
+            loadLogs();
+        }
+    }
+
+    function nextPage() {
+        currentPage++;
+        loadLogs();
+    }
+
+    function updateStats(logs) {
+        document.getElementById('stat-total').textContent = totalLogs;
+        document.getElementById('stat-triggered').textContent = logs.filter(l => l.detected).length;
+        document.getElementById('stat-accurate').textContent = logs.filter(l => l.was_accurate === true).length;
+        document.getElementById('stat-inaccurate').textContent = logs.filter(l => l.was_accurate === false).length;
+    }
+
+    async function clearLogs() {
+        if (!confirm('Are you sure you want to clear all detection logs?')) return;
+
+        try {
+            await fetch('/api/detection/logs', { method: 'DELETE' });
+            loadLogs();
+        } catch (error) {
+            console.error('Failed to clear logs:', error);
+        }
+    }
+
+    // Load logs on page load
+    document.addEventListener('DOMContentLoaded', loadLogs);
+</script>
+{% endblock %}

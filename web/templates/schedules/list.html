@@ -7,8 +7,9 @@
     <!-- Page header -->
     <div class="flex justify-between items-center">
         <h1 class="text-3xl font-bold">Schedules</h1>
-        <a href="/schedules/new" class="btn btn-primary">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+        <a href="/schedules/new" class="btn btn-primary rounded-full">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-5 h-5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
             New Schedule
@@ -16,25 +17,25 @@
     </div>
 
     <!-- Schedules list -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
+    <div class="card glass-panel shadow-sm">
+        <div class="card-body p-0 sm:p-6">
             {% if schedules %}
             <div class="overflow-x-auto">
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Meeting</th>
-                            <th>Type</th>
-                            <th>Schedule</th>
-                            <th>Duration</th>
-                            <th>Next Run</th>
-                            <th>YouTube</th>
-                            <th>Status</th>
-                            <th>Actions</th>
+                            <th class="bg-base-200/50">Meeting</th>
+                            <th class="bg-base-200/50">排程</th>
+                            <th class="bg-base-200/50">Duration</th>
+                            <th class="bg-base-200/50">Next Run</th>
+                            <th class="bg-base-200/50">YouTube</th>
+                            <th class="bg-base-200/50">Status</th>
+                            <th class="bg-base-200/50 text-right">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="schedules-tbody">
                         {% for schedule in schedules %}
+                        {% set cron_description = cron_descriptions.get(schedule.id, '') %}
                         {% include "schedules/_row.html" %}
                         {% endfor %}
                     </tbody>
@@ -43,7 +44,7 @@
             {% else %}
             <div class="text-center py-10">
                 <p class="text-base-content/60 mb-4">No schedules configured yet</p>
-                <a href="/schedules/new" class="btn btn-primary">Create your first schedule</a>
+                <a href="/schedules/new" class="btn btn-primary rounded-full">Create your first schedule</a>
             </div>
             {% endif %}
         </div>

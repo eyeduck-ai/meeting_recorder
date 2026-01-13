@@ -17,41 +17,44 @@
     </div>
 
     <!-- Meetings list -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
+    <div class="card glass-panel shadow-sm">
+        <div class="card-body p-0 sm:p-6">
             {% if meetings %}
             <div class="overflow-x-auto">
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Name</th>
-                            <th>Provider</th>
-                            <th>Meeting Code</th>
-                            <th>Display Name</th>
-                            <th>Schedules</th>
-                            <th>Actions</th>
+                            <th class="bg-base-200/50">Name</th>
+                            <th class="bg-base-200/50">Provider</th>
+                            <th class="bg-base-200/50">Meeting Code</th>
+                            <th class="bg-base-200/50">Display Name</th>
+                            <th class="bg-base-200/50">Schedules</th>
+                            <th class="bg-base-200/50 text-right">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for meeting in meetings %}
-                        <tr id="meeting-{{ meeting.id }}">
+                        <tr id="meeting-{{ meeting.id }}"
+                            class="hover:bg-base-content/5 transition-colors border-b border-base-content/5 last:border-0">
                             <td class="font-medium">{{ meeting.name }}</td>
                             <td>
                                 {% if meeting.provider == 'jitsi' %}
-                                <span class="badge badge-info gap-2">JITSI</span>
+                                <span class="badge badge-info gap-2 rounded-lg font-mono">JITSI</span>
                                 {% elif meeting.provider == 'webex' %}
-                                <span class="badge badge-warning gap-2">WEBEX</span>
+                                <span class="badge badge-warning gap-2 rounded-lg font-mono">WEBEX</span>
                                 {% else %}
-                                <span class="badge badge-ghost">{{ meeting.provider | upper }}</span>
+                                <span class="badge badge-ghost rounded-lg font-mono">{{ meeting.provider | upper
+                                    }}</span>
                                 {% endif %}
                             </td>
-                            <td class="font-mono text-sm">{{ meeting.meeting_code }}</td>
+                            <td class="font-mono text-sm opacity-70">{{ meeting.meeting_code }}</td>
                             <td>{{ meeting.default_display_name or '-' }}</td>
                             <td>{{ meeting.schedules | length }}</td>
-                            <td>
-                                <div class="flex gap-2">
-                                    <a href="/meetings/{{ meeting.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
-                                    <button class="btn btn-ghost btn-sm text-error"
+                            <td class="text-right">
+                                <div class="flex gap-2 justify-end">
+                                    <a href="/meetings/{{ meeting.id }}/edit"
+                                        class="btn btn-ghost btn-sm rounded-full">Edit</a>
+                                    <button class="btn btn-ghost btn-sm text-error rounded-full"
                                         hx-delete="/meetings/{{ meeting.id }}" hx-target="#meeting-{{ meeting.id }}"
                                         hx-swap="outerHTML"
                                         hx-confirm="Delete meeting '{{ meeting.name }}'? This will also delete all associated schedules.">
@@ -67,7 +70,7 @@
             {% else %}
             <div class="text-center py-10">
                 <p class="text-base-content/60 mb-4">No meetings configured yet</p>
-                <a href="/meetings/new" class="btn btn-primary">Create your first meeting</a>
+                <a href="/meetings/new" class="btn btn-primary rounded-full">Create your first meeting</a>
             </div>
             {% endif %}
         </div>

@@ -21,6 +21,8 @@ from database.models import (
 )
 from scheduling.job_runner import get_job_runner
 from scheduling.scheduler import get_scheduler
+from services.app_settings import get_all_settings
+from utils.cron_helper import cron_to_chinese
 
 router = APIRouter(tags=["ui"])
 settings = get_settings()
@@ -158,6 +160,20 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 
 
 # =============================================================================
+# Detection Logs
+# =============================================================================
+
+
+@router.get("/detection-logs", response_class=HTMLResponse)
+async def detection_logs_page(request: Request):
+    """Detection logs viewer page."""
+    return templates.TemplateResponse(
+        "detection_logs.html",
+        get_context(request),
+    )
+
+
+# =============================================================================
 # Meetings
 # =============================================================================
 
@@ -244,9 +260,16 @@ async def meetings_delete(meeting_id: int, db: Session = Depends(get_db)):
 async def schedules_list(request: Request, db: Session = Depends(get_db)):
     """Schedules list page."""
     schedules = db.query(Schedule).join(Meeting).order_by(Meeting.name, Schedule.created_at.desc()).all()
+    
+    # Compute cron descriptions for each schedule
+    cron_descriptions = {}
+    for schedule in schedules:
+        if schedule.cron_expression:
+            cron_descriptions[schedule.id] = cron_to_chinese(schedule.cron_expression)
+    
     return templates.TemplateResponse(
         "schedules/list.html",
-        get_context(request, schedules=schedules),
+        get_context(request, schedules=schedules, cron_descriptions=cron_descriptions),
     )
 
 
@@ -291,18 +314,21 @@ async def schedules_save(
     meeting_id: int = Form(...),
     schedule_type: str = Form(...),
     start_time: str | None = Form(None),
+    duration_mode: str = Form("fixed"),
     duration_min: int = Form(60),
     cron_expression: str | None = Form(None),
     lobby_wait_sec: int = Form(900),
     resolution_preset: str = Form("1080p"),
     resolution_w: int = Form(1920),
     resolution_h: int = Form(1080),
+    dry_run: bool = Form(False),
     youtube_enabled: bool = Form(False),
     youtube_privacy: str = Form("unlisted"),
     override_display_name: str | None = Form(None),
 ):
     """Save schedule (create or update)."""
     scheduler = get_scheduler()
+    settings = get_settings()
 
     if schedule_id:
         schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
@@ -315,7 +341,11 @@ async def schedules_save(
         db.add(schedule)
 
     # Convert duration from minutes to seconds
-    duration_sec = duration_min * 60
+    # For auto mode, use max_recording_sec as the ceiling
+    if duration_mode == "auto":
+        duration_sec = settings.max_recording_sec
+    else:
+        duration_sec = duration_min * 60
 
     # Handle resolution preset
     if resolution_preset == "1080p":
@@ -327,9 +357,11 @@ async def schedules_save(
     schedule.meeting_id = meeting_id
     schedule.schedule_type = ScheduleType(schedule_type)
     schedule.duration_sec = duration_sec
+    schedule.duration_mode = duration_mode
     schedule.lobby_wait_sec = lobby_wait_sec
     schedule.resolution_w = resolution_w
     schedule.resolution_h = resolution_h
+    schedule.dry_run = dry_run
     schedule.youtube_enabled = youtube_enabled
     schedule.youtube_privacy = youtube_privacy
     schedule.override_display_name = override_display_name or None
@@ -367,9 +399,10 @@ async def schedules_toggle(request: Request, schedule_id: int, db: Session = Dep
         scheduler.remove_schedule(schedule_id)
 
     # Return updated row for HTMX
+    cron_description = cron_to_chinese(schedule.cron_expression) if schedule.cron_expression else None
     return templates.TemplateResponse(
         "schedules/_row.html",
-        get_context(request, schedule=schedule),
+        get_context(request, schedule=schedule, cron_description=cron_description),
     )
 
 
@@ -546,13 +579,34 @@ async def recordings_download(job_id: str, db: Session = Depends(get_db)):
     )
 
 
+@router.delete("/recordings/{job_id}", response_class=HTMLResponse)
+async def recordings_delete(job_id: str, db: Session = Depends(get_db)):
+    """Delete recording file and job."""
+    job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
+    if job:
+        # Try to delete file from disk if it exists
+        if job.output_path:
+            try:
+                file_path = Path(job.output_path)
+                if file_path.exists():
+                    file_path.unlink()
+            except Exception as e:
+                print(f"Error deleting file {job.output_path}: {e}")
+
+        # Delete job from database
+        db.delete(job)
+        db.commit()
+
+    return HTMLResponse("")
+
+
 # =============================================================================
 # Settings
 # =============================================================================
 
 
 @router.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
+async def settings_page(request: Request, db: Session = Depends(get_db)):
     """Settings page."""
     from uploading.youtube import get_youtube_uploader
 
@@ -566,6 +620,9 @@ async def settings_page(request: Request):
         "configured": bool(settings.telegram_bot_token),
     }
 
+    # Get editable settings from database
+    app_settings = get_all_settings(db)
+
     return templates.TemplateResponse(
         "settings.html",
         get_context(
@@ -573,5 +630,6 @@ async def settings_page(request: Request):
             youtube_status=youtube_status,
             telegram_status=telegram_status,
             settings=settings,
+            app_settings=app_settings,
         ),
     )

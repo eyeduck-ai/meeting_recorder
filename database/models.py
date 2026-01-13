@@ -27,6 +27,13 @@ class ScheduleType(str, Enum):
     CRON = "cron"
 
 
+class DurationMode(str, Enum):
+    """Duration mode for recordings."""
+
+    FIXED = "fixed"  # Use fixed duration_sec
+    AUTO = "auto"    # Auto-detect meeting end
+
+
 class JobStatus(str, Enum):
     """Recording job status."""
 
@@ -134,6 +141,7 @@ class Schedule(Base):
     schedule_type: Mapped[str] = mapped_column(String(32), default=ScheduleType.ONCE.value)
     start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     duration_sec: Mapped[int] = mapped_column(Integer, default=3600)
+    duration_mode: Mapped[str] = mapped_column(String(32), default=DurationMode.FIXED.value)  # fixed or auto
     cron_expression: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Recording settings
@@ -151,6 +159,9 @@ class Schedule(Base):
     # YouTube settings (Phase 4)
     youtube_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     youtube_privacy: Mapped[str] = mapped_column(String(32), default="unlisted")
+
+    # Detection settings
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)  # Log only, don't stop
 
     # Status
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -171,6 +182,7 @@ class Schedule(Base):
             "schedule_type": self.schedule_type,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "duration_sec": self.duration_sec,
+            "duration_mode": self.duration_mode,
             "cron_expression": self.cron_expression,
             "lobby_wait_sec": self.lobby_wait_sec,
             "layout_preset": self.layout_preset,
@@ -327,6 +339,43 @@ class TelegramUser(Base):
         elif self.first_name:
             return self.first_name + (f" {self.last_name}" if self.last_name else "")
         return f"User {self.chat_id}"
+
+
+class AppSettings(Base):
+    """Application settings stored in database (user-configurable)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DetectionLog(Base):
+    """Log of detection events for analysis and tuning."""
+
+    __tablename__ = "detection_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(Integer, ForeignKey("recording_jobs.id"), nullable=False)
+    detector_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    was_accurate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # For manual review
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "detector_type": self.detector_type,
+            "detected": self.detected,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "was_accurate": self.was_accurate,
+            "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
+        }
 
 
 # Database engine and session

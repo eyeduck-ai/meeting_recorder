@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.auth import AuthMiddleware
-from api.routes import health, jobs, meetings, schedules, ui, youtube
+from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
+from api.routes import detection as detection_routes
+from api.routes import recording_management as recording_mgmt_routes
 from api.routes import telegram as telegram_routes
 from config.settings import get_settings
 from database.models import init_db
@@ -19,7 +21,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-settings = get_settings()
+settings_config = get_settings()
 
 app = FastAPI(
     title="Meeting Recorder",
@@ -47,6 +49,9 @@ app.include_router(meetings.router, prefix="/api/v1")
 app.include_router(schedules.router, prefix="/api/v1")
 app.include_router(youtube.router, prefix="/api/v1")
 app.include_router(telegram_routes.router, prefix="/api/v1")
+app.include_router(detection_routes.router)  # Detection API
+app.include_router(recording_mgmt_routes.router)  # Recording management API
+app.include_router(settings.router)
 
 # Web UI routes (must be last to avoid catching API routes)
 app.include_router(ui.router)
@@ -61,9 +66,9 @@ if static_dir.exists():
 async def startup_event():
     """Application startup tasks."""
     logging.info("Meeting Recorder starting up...")
-    logging.info(f"Resolution: {settings.resolution_str}")
-    logging.info(f"Lobby wait: {settings.lobby_wait_sec}s")
-    logging.info(f"Jitsi base URL: {settings.jitsi_base_url}")
+    logging.info(f"Resolution: {settings_config.resolution_str}")
+    logging.info(f"Lobby wait: {settings_config.lobby_wait_sec}s")
+    logging.info(f"Jitsi base URL: {settings_config.jitsi_base_url}")
 
     # Initialize database
     init_db()
@@ -79,7 +84,7 @@ async def startup_event():
     logging.info("Scheduler started")
 
     # Start Telegram bot
-    if settings.telegram_bot_token:
+    if settings_config.telegram_bot_token:
         from telegram_bot.bot import start_bot
 
         await start_bot()
@@ -91,7 +96,7 @@ async def shutdown_event():
     logging.info("Meeting Recorder shutting down...")
 
     # Stop Telegram bot
-    if settings.telegram_bot_token:
+    if settings_config.telegram_bot_token:
         from telegram_bot.bot import stop_bot
 
         await stop_bot()

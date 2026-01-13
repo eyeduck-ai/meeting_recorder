@@ -13,9 +13,11 @@
 
 - **多平台支援**：Jitsi Meet、Cisco Webex (Guest Join)
 - **自動化錄製**：Playwright 自動加入會議、處理等候室
-- **排程管理**：支援單次與週期性 (cron) 排程
-- **Web UI**：Dashboard 管理介面
-- **Telegram Bot**：遠端控制與通知
+- **智慧會議結束偵測**：多種偵測器（WebRTC、文字指示、影片元素、URL 變更、螢幕凍結、音訊靜音）
+- **排程管理**：支援單次與週期性 (cron) 排程，自動偵測會議結束模式
+- **即時儀表板**：錄製進度、偵測器狀態、即時更新
+- **通知系統**：Email (SMTP)、Webhook、Telegram Bot 通知
+- **錄製管理**：磁碟空間監控、自動清理舊錄製
 - **YouTube 上傳**：錄製完成自動上傳
 - **簡易認證**：密碼保護 API 與 Web UI
 
@@ -145,9 +147,6 @@ notepad .env  # Windows
 **最小必要設定：**
 
 ```env
-# 時區設定
-TZ=Asia/Taipei
-
 # 登入密碼（建議設定）
 AUTH_PASSWORD=your-secure-password
 
@@ -164,11 +163,17 @@ TELEGRAM_BOT_TOKEN=your-bot-token
 # YouTube 上傳（需先在 Google Cloud Console 建立 OAuth 憑證）
 YOUTUBE_CLIENT_ID=your-client-id
 YOUTUBE_CLIENT_SECRET=your-client-secret
-
-# 錄製設定
-RESOLUTION_W=1920
-RESOLUTION_H=1080
 ```
+
+> **💡 錄製設定已移至 Web UI**
+>
+> 以下設定現在可透過 `/settings` 頁面直接調整，無需編輯環境變數：
+> - 解析度 (1080p, 720p, 自訂)
+> - FFmpeg 編碼預設
+> - Lobby 等待時間
+> - Jitsi Base URL
+> - 提前登入時間
+> - 時區
 
 ---
 
@@ -296,6 +301,16 @@ docker-compose --profile dev up
 | `LOBBY_WAIT_SEC` | 等候室最長等待時間 | `900` |
 | `FFMPEG_PRESET` | FFmpeg 編碼預設 | `ultrafast` |
 | `DEBUG_VNC` | 啟用 VNC 遠端桌面 | `0` |
+| `SMTP_ENABLED` | 啟用 Email 通知 | `false` |
+| `SMTP_HOST` | SMTP 伺服器 | - |
+| `SMTP_PORT` | SMTP 端口 | `587` |
+| `SMTP_USER` | SMTP 用戶名 | - |
+| `SMTP_PASSWORD` | SMTP 密碼 | - |
+| `SMTP_FROM` | 發件人地址 | - |
+| `SMTP_TO` | 收件人 (逗號分隔) | - |
+| `WEBHOOK_ENABLED` | 啟用 Webhook 通知 | `false` |
+| `WEBHOOK_URL` | Webhook URL | - |
+| `WEBHOOK_SECRET` | Webhook 簽名密鑰 | - |
 
 完整設定請參考 `.env.example`。
 
@@ -305,12 +320,13 @@ docker-compose --profile dev up
 
 | 頁面 | 說明 |
 |------|------|
-| `/` | Dashboard 總覽 |
+| `/` | Dashboard 總覽（含即時錄製狀態） |
 | `/meetings` | 會議設定管理 |
-| `/schedules` | 排程管理 |
+| `/schedules` | 排程管理（支援自動偵測會議結束） |
 | `/jobs` | 錄製工作記錄 |
 | `/recordings` | 錄製檔案下載 |
-| `/settings` | YouTube 授權、Telegram 設定 |
+| `/detection-logs` | 會議結束偵測日誌 |
+| `/settings` | 系統設定（偵測器、通知、錄製管理） |
 
 ### Telegram Bot 指令
 
@@ -351,6 +367,20 @@ POST /api/v1/meetings           # 建立會議
 GET  /api/v1/schedules          # 排程列表
 POST /api/v1/schedules          # 建立排程
 POST /api/v1/schedules/{id}/trigger  # 手動觸發
+
+# Detection (會議結束偵測)
+GET  /api/detection/config      # 偵測設定
+POST /api/detection/config      # 儲存偵測設定
+GET  /api/detection/logs        # 偵測日誌
+GET  /api/detection/logs/export # 匯出日誌 (JSON/CSV)
+
+# Recording Management (錄製管理)
+GET  /api/recordings/list       # 錄製列表
+GET  /api/recordings/disk-usage # 磁碟使用量
+POST /api/recordings/cleanup    # 清理舊錄製
+GET  /api/recordings/notification-config  # 通知設定
+POST /api/recordings/test-email  # 測試 Email
+POST /api/recordings/test-webhook # 測試 Webhook
 
 # YouTube
 GET  /api/v1/youtube/status     # 授權狀態
@@ -464,11 +494,13 @@ DEBUG_VNC=1 docker-compose up
 ├── database/           # SQLAlchemy 模型
 ├── docker/             # Docker 相關檔案
 ├── providers/          # 會議平台 Provider (Jitsi, Webex)
-├── recording/          # FFmpeg 錄製管線
+├── recording/          # FFmpeg 錄製管線 + 偵測框架
 ├── scheduling/         # APScheduler 排程
+├── services/           # 通知 + 錄製管理服務
 ├── telegram_bot/       # Telegram Bot
 ├── uploading/          # YouTube 上傳
 ├── web/                # Web UI 模板
+├── tests/              # 單元測試
 ├── data/               # SQLite 資料庫
 ├── recordings/         # 錄製檔案
 └── diagnostics/        # 診斷資料

@@ -560,16 +560,35 @@ class WebexProvider(BaseProvider):
                 ':text("已離開會議")',
                 ':text("disconnected")',
                 ':text("連線已中斷")',
+                ':text("The host ended the meeting")',
+                ':text("主持人已結束會議")',
+                ':text("Meeting unavailable")',
             ]
 
             for indicator in end_indicators:
                 if await iframe.locator(indicator).count() > 0:
-                    logger.info("Webex meeting end detected")
+                    logger.info("Webex meeting end detected: text indicator")
                     return True
+
+            # Check if video elements are gone within iframe
+            try:
+                video_count = await iframe.locator('video').count()
+                if video_count == 0:
+                    # Double-check after brief wait
+                    await asyncio.sleep(2)
+                    video_count = await iframe.locator('video').count()
+                    if video_count == 0:
+                        logger.info("No video elements in Webex iframe - meeting may have ended")
+                        return True
+            except Exception:
+                pass  # iframe might be gone
 
         except Exception as e:
             # If iframe is gone, meeting probably ended
             logger.debug(f"Error checking meeting end (iframe may be gone): {e}")
+            # Check if we're still on Webex - if not, meeting definitely ended
+            if "webex.com" not in page.url:
+                return True
 
         # Check URL change
         url = page.url

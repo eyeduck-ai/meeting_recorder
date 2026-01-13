@@ -19,7 +19,12 @@
     <div class="stats shadow w-full">
         <div class="stat">
             <div class="stat-figure text-primary">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                    class="inline-block w-8 h-8 stroke-current">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z">
+                    </path>
+                </svg>
             </div>
             <div class="stat-title">Meetings</div>
             <div class="stat-value text-primary">{{ stats.total_meetings }}</div>
@@ -28,7 +33,11 @@
 
         <div class="stat">
             <div class="stat-figure text-secondary">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                    class="inline-block w-8 h-8 stroke-current">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
             </div>
             <div class="stat-title">Schedules</div>
             <div class="stat-value text-secondary">{{ stats.active_schedules }}</div>
@@ -37,11 +46,56 @@
 
         <div class="stat">
             <div class="stat-figure text-accent">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-8 h-8 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                    class="inline-block w-8 h-8 stroke-current">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z">
+                    </path>
+                </svg>
             </div>
             <div class="stat-title">Recordings</div>
             <div class="stat-value text-accent">{{ stats.successful_jobs }}</div>
             <div class="stat-desc">{{ stats.total_jobs }} total jobs</div>
+        </div>
+    </div>
+
+    <!-- Live Recording Status (shown when recording) -->
+    <div id="live-recording-panel" class="card bg-base-100 shadow-xl border-2 border-warning hidden">
+        <div class="card-body">
+            <div class="flex items-center justify-between">
+                <h2 class="card-title text-warning">
+                    <span class="loading loading-spinner loading-sm"></span>
+                    Live Recording
+                </h2>
+                <span id="recording-elapsed" class="font-mono text-lg">00:00:00</span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <!-- Progress -->
+                <div>
+                    <div class="flex justify-between text-sm mb-1">
+                        <span>Progress</span>
+                        <span id="recording-progress-text">0%</span>
+                    </div>
+                    <progress id="recording-progress" class="progress progress-warning w-full" value="0"
+                        max="100"></progress>
+                    <div class="text-xs text-base-content/50 mt-1">
+                        <span id="recording-meeting">-</span> · Max: <span id="recording-duration">-</span>min
+                    </div>
+                </div>
+
+                <!-- Detector Status -->
+                <div>
+                    <div class="text-sm mb-2">Detector Status</div>
+                    <div id="detector-status" class="flex flex-wrap gap-2">
+                        <span class="badge badge-ghost badge-sm">Loading...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card-actions justify-end mt-2">
+                <a id="recording-job-link" href="/jobs" class="btn btn-ghost btn-sm">View Job Details</a>
+            </div>
         </div>
     </div>
 
@@ -141,13 +195,15 @@
             <h2 class="card-title">Quick Actions</h2>
             <div class="flex gap-4 flex-wrap">
                 <a href="/meetings/new" class="btn btn-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-5 h-5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                     </svg>
                     New Meeting
                 </a>
                 <a href="/schedules/new" class="btn btn-secondary">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-5 h-5">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                     </svg>
                     New Schedule
@@ -156,4 +212,96 @@
         </div>
     </div>
 </div>
+
+<script>
+    let pollInterval = null;
+    let recordingStartTime = null;
+
+    async function checkRecordingStatus() {
+        try {
+            const response = await fetch('/api/v1/jobs/current');
+            const data = await response.json();
+
+            const panel = document.getElementById('live-recording-panel');
+
+            if (data.active && data.job) {
+                panel.classList.remove('hidden');
+                updateRecordingUI(data.job);
+            } else {
+                panel.classList.add('hidden');
+                recordingStartTime = null;
+            }
+        } catch (error) {
+            console.error('Failed to check recording status:', error);
+        }
+    }
+
+    function updateRecordingUI(job) {
+        // Parse start time if needed
+        if (!recordingStartTime && job.started_at) {
+            recordingStartTime = new Date(job.started_at);
+        }
+
+        // Update elapsed time
+        if (recordingStartTime) {
+            const elapsed = Math.floor((Date.now() - recordingStartTime.getTime()) / 1000);
+            document.getElementById('recording-elapsed').textContent = formatDuration(elapsed);
+
+            // Update progress
+            if (job.duration_sec) {
+                const progress = Math.min(100, (elapsed / job.duration_sec) * 100);
+                document.getElementById('recording-progress').value = progress;
+                document.getElementById('recording-progress-text').textContent = progress.toFixed(0) + '%';
+                document.getElementById('recording-duration').textContent = Math.floor(job.duration_sec / 60);
+            }
+        }
+
+        // Update meeting info
+        document.getElementById('recording-meeting').textContent = job.meeting_code || 'Unknown';
+        document.getElementById('recording-job-link').href = '/jobs/' + job.job_id;
+
+        // Update detector status
+        updateDetectorStatus(job.detectors || {});
+    }
+
+    function updateDetectorStatus(detectors) {
+        const container = document.getElementById('detector-status');
+        const detectorNames = {
+            'text_indicator': 'Text',
+            'video_element': 'Video',
+            'webrtc_connection': 'WebRTC',
+            'url_change': 'URL',
+            'screen_freeze': 'Freeze',
+            'audio_silence': 'Audio'
+        };
+
+        let html = '';
+        for (const [key, value] of Object.entries(detectorNames)) {
+            const status = detectors[key];
+            let badgeClass = 'badge-ghost';
+            if (status === true) badgeClass = 'badge-success';
+            else if (status === false) badgeClass = 'badge-outline';
+            html += `<span class="badge ${badgeClass} badge-sm">${value}</span>`;
+        }
+        container.innerHTML = html || '<span class="badge badge-ghost badge-sm">No detectors</span>';
+    }
+
+    function formatDuration(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        return [hours, mins, secs].map(n => n.toString().padStart(2, '0')).join(':');
+    }
+
+    // Start polling when page loads
+    document.addEventListener('DOMContentLoaded', () => {
+        checkRecordingStatus();
+        pollInterval = setInterval(checkRecordingStatus, 3000); // Poll every 3 seconds
+    });
+
+    // Clean up on page unload
+    window.addEventListener('beforeunload', () => {
+        if (pollInterval) clearInterval(pollInterval);
+    });
+</script>
 {% endblock %}
