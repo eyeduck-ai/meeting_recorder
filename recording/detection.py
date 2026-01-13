@@ -3,7 +3,7 @@
 This module provides a pluggable detection system for identifying
 when a meeting has ended.
 """
-import asyncio
+
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -61,14 +61,16 @@ class DetectionConfig:
     min_detectors_agree: int = 1  # Minimum detectors that must agree
 
     # Priority (lower = higher priority)
-    priorities: dict = field(default_factory=lambda: {
-        DetectorType.WEBRTC_CONNECTION: 1,
-        DetectorType.TEXT_INDICATOR: 2,
-        DetectorType.VIDEO_ELEMENT: 3,
-        DetectorType.URL_CHANGE: 4,
-        DetectorType.SCREEN_FREEZE: 5,
-        DetectorType.AUDIO_SILENCE: 6,
-    })
+    priorities: dict = field(
+        default_factory=lambda: {
+            DetectorType.WEBRTC_CONNECTION: 1,
+            DetectorType.TEXT_INDICATOR: 2,
+            DetectorType.VIDEO_ELEMENT: 3,
+            DetectorType.URL_CHANGE: 4,
+            DetectorType.SCREEN_FREEZE: 5,
+            DetectorType.AUDIO_SILENCE: 6,
+        }
+    )
 
     def is_detector_enabled(self, detector_type: DetectorType) -> bool:
         """Check if a detector is enabled."""
@@ -118,7 +120,7 @@ class DetectorBase(ABC):
         """
         pass
 
-    async def setup(self, page: "Page") -> None:
+    async def setup(self, page: "Page") -> None:  # noqa: B027
         """Optional setup method called before recording starts.
 
         Override this for detectors that need to inject JS or initialize state.
@@ -179,9 +181,7 @@ class DetectionOrchestrator:
 
                 if result.detected:
                     triggered_count += 1
-                    logger.info(
-                        f"Detector {result.detector_type.value} triggered: {result.reason}"
-                    )
+                    logger.info(f"Detector {result.detector_type.value} triggered: {result.reason}")
 
                     # In non-dry-run mode, check if we have enough agreement
                     if not self._dry_run and triggered_count >= self.config.min_detectors_agree:

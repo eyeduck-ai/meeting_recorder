@@ -31,7 +31,7 @@ class DurationMode(str, Enum):
     """Duration mode for recordings."""
 
     FIXED = "fixed"  # Use fixed duration_sec
-    AUTO = "auto"    # Auto-detect meeting end
+    AUTO = "auto"  # Auto-detect meeting end
 
 
 class JobStatus(str, Enum):

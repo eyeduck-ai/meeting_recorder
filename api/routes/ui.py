@@ -260,13 +260,13 @@ async def meetings_delete(meeting_id: int, db: Session = Depends(get_db)):
 async def schedules_list(request: Request, db: Session = Depends(get_db)):
     """Schedules list page."""
     schedules = db.query(Schedule).join(Meeting).order_by(Meeting.name, Schedule.created_at.desc()).all()
-    
+
     # Compute cron descriptions for each schedule
     cron_descriptions = {}
     for schedule in schedules:
         if schedule.cron_expression:
             cron_descriptions[schedule.id] = cron_to_chinese(schedule.cron_expression)
-    
+
     return templates.TemplateResponse(
         "schedules/list.html",
         get_context(request, schedules=schedules, cron_descriptions=cron_descriptions),

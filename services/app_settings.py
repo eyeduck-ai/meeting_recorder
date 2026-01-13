@@ -20,11 +20,11 @@ SETTING_DEFAULTS = {
 
 def get_setting(db: Session, key: str) -> str:
     """Get a setting value, falling back to default if not set.
-    
+
     Args:
         db: Database session
         key: Setting key
-        
+
     Returns:
         Setting value as string
     """
@@ -41,7 +41,7 @@ def get_setting_int(db: Session, key: str) -> int:
 
 def set_setting(db: Session, key: str, value: str) -> None:
     """Set a setting value in the database.
-    
+
     Args:
         db: Database session
         key: Setting key
@@ -58,24 +58,24 @@ def set_setting(db: Session, key: str, value: str) -> None:
 
 def get_all_settings(db: Session) -> dict[str, str]:
     """Get all settings with defaults.
-    
+
     Returns:
         Dictionary of all settings with current values
     """
     # Start with defaults
     result = dict(SETTING_DEFAULTS)
-    
+
     # Override with database values
     settings = db.query(AppSettings).all()
     for setting in settings:
         result[setting.key] = setting.value
-    
+
     return result
 
 
 def update_settings(db: Session, settings: dict[str, str]) -> None:
     """Update multiple settings at once.
-    
+
     Args:
         db: Database session
         settings: Dictionary of key-value pairs to update

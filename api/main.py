@@ -6,8 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.auth import AuthMiddleware
-from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
 from api.routes import detection as detection_routes
+from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
 from api.routes import recording_management as recording_mgmt_routes
 from api.routes import telegram as telegram_routes
 from config.settings import get_settings

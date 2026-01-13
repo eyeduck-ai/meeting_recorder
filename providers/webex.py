@@ -572,11 +572,11 @@ class WebexProvider(BaseProvider):
 
             # Check if video elements are gone within iframe
             try:
-                video_count = await iframe.locator('video').count()
+                video_count = await iframe.locator("video").count()
                 if video_count == 0:
                     # Double-check after brief wait
                     await asyncio.sleep(2)
-                    video_count = await iframe.locator('video').count()
+                    video_count = await iframe.locator("video").count()
                     if video_count == 0:
                         logger.info("No video elements in Webex iframe - meeting may have ended")
                         return True

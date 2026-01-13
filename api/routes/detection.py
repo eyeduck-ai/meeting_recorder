@@ -1,4 +1,5 @@
 """API routes for detection settings and logs."""
+
 import json
 from datetime import datetime
 

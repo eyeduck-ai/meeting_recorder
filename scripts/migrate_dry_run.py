@@ -1,4 +1,5 @@
 """Database migration: Add dry_run column to schedules table."""
+
 import sqlite3
 from pathlib import Path
 

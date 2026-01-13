@@ -1,4 +1,5 @@
 """Recording management service for thumbnails, cleanup, and disk monitoring."""
+
 import asyncio
 import logging
 import shutil
@@ -25,19 +26,19 @@ class RecordingManager:
         height: int = 180,
     ) -> str | None:
         """Generate thumbnail from video using FFmpeg.
-        
+
         Args:
             video_path: Path to the video file
             output_path: Optional custom output path, defaults to thumbnails dir
             timestamp_sec: Time position to capture thumbnail
             width: Thumbnail width
             height: Thumbnail height
-            
+
         Returns:
             Path to generated thumbnail or None if failed
         """
         video_path = Path(video_path)
-        
+
         if not video_path.exists():
             logger.warning(f"Video not found: {video_path}")
             return None
@@ -51,11 +52,16 @@ class RecordingManager:
             cmd = [
                 "ffmpeg",
                 "-y",
-                "-ss", str(timestamp_sec),
-                "-i", str(video_path),
-                "-vframes", "1",
-                "-vf", f"scale={width}:{height}",
-                "-q:v", "2",
+                "-ss",
+                str(timestamp_sec),
+                "-i",
+                str(video_path),
+                "-vframes",
+                "1",
+                "-vf",
+                f"scale={width}:{height}",
+                "-q:v",
+                "2",
                 str(output_path),
             ]
 
@@ -84,12 +90,12 @@ class RecordingManager:
         dry_run: bool = False,
     ) -> dict:
         """Clean up old recordings based on age or count.
-        
+
         Args:
             max_age_days: Delete recordings older than this many days
             max_count: Keep only this many most recent recordings
             dry_run: If True, don't actually delete, just report
-            
+
         Returns:
             Summary of cleanup operation
         """
@@ -140,28 +146,32 @@ class RecordingManager:
         for video, reason in to_delete:
             try:
                 file_size = video.stat().st_size
-                
+
                 if not dry_run:
                     video.unlink()
-                    
+
                     # Also delete thumbnail if exists
                     thumbnail = self.thumbnails_dir / f"{video.stem}.jpg"
                     if thumbnail.exists():
                         thumbnail.unlink()
 
-                result["deleted_files"].append({
-                    "path": str(video),
-                    "size": file_size,
-                    "reason": reason,
-                })
+                result["deleted_files"].append(
+                    {
+                        "path": str(video),
+                        "size": file_size,
+                        "reason": reason,
+                    }
+                )
                 result["deleted_count"] += 1
                 result["freed_bytes"] += file_size
 
             except Exception as e:
-                result["errors"].append({
-                    "path": str(video),
-                    "error": str(e),
-                })
+                result["errors"].append(
+                    {
+                        "path": str(video),
+                        "error": str(e),
+                    }
+                )
 
         if dry_run:
             logger.info(f"Dry run: would delete {result['deleted_count']} files")
@@ -172,7 +182,7 @@ class RecordingManager:
 
     def get_disk_usage(self) -> dict:
         """Get disk usage information for recordings directory.
-        
+
         Returns:
             Dictionary with disk usage stats
         """
@@ -193,7 +203,7 @@ class RecordingManager:
         recordings_bytes = 0
         recordings_count = 0
         video_extensions = [".mkv", ".mp4", ".webm", ".avi"]
-        
+
         for ext in video_extensions:
             for video in self.recordings_dir.glob(f"*{ext}"):
                 try:
@@ -207,9 +217,9 @@ class RecordingManager:
             "total_bytes": disk_usage.total,
             "used_bytes": disk_usage.used,
             "free_bytes": disk_usage.free,
-            "free_gb": disk_usage.free / (1024 ** 3),
+            "free_gb": disk_usage.free / (1024**3),
             "recordings_bytes": recordings_bytes,
-            "recordings_gb": recordings_bytes / (1024 ** 3),
+            "recordings_gb": recordings_bytes / (1024**3),
             "recordings_count": recordings_count,
             "usage_percent": (disk_usage.used / disk_usage.total) * 100,
         }
@@ -221,17 +231,17 @@ class RecordingManager:
         cleanup_target_gb: float = 20.0,
     ) -> dict:
         """Check disk space and optionally trigger cleanup.
-        
+
         Args:
             threshold_gb: Warn if free space drops below this
             auto_cleanup: If True, automatically clean up when threshold is reached
             cleanup_target_gb: Target free space after cleanup
-            
+
         Returns:
             Disk status and any cleanup performed
         """
         usage = self.get_disk_usage()
-        
+
         result = {
             "status": "ok",
             "usage": usage,
@@ -244,15 +254,12 @@ class RecordingManager:
             logger.warning(f"Low disk space: {usage['free_gb']:.1f} GB remaining")
 
             if auto_cleanup:
-                # Calculate how much to free
-                target_bytes = (cleanup_target_gb - usage["free_gb"]) * (1024 ** 3)
-                
-                # Start with oldest recordings
+                # Start with oldest recordings (more aggressive when disk is low)
                 cleanup_result = await self.cleanup_old_recordings(
                     max_age_days=7,  # More aggressive when disk is low
                     dry_run=False,
                 )
-                
+
                 result["cleanup_performed"] = True
                 result["cleanup_result"] = cleanup_result
 
@@ -270,12 +277,12 @@ class RecordingManager:
         order_by: str = "newest",
     ) -> list[dict]:
         """List recordings with metadata.
-        
+
         Args:
             limit: Maximum number of recordings to return
             offset: Skip this many recordings
             order_by: Sort order ('newest', 'oldest', 'largest', 'smallest')
-            
+
         Returns:
             List of recording info dictionaries
         """
@@ -284,7 +291,7 @@ class RecordingManager:
 
         video_extensions = [".mkv", ".mp4", ".webm", ".avi"]
         videos = []
-        
+
         for ext in video_extensions:
             videos.extend(self.recordings_dir.glob(f"*{ext}"))
 
@@ -299,24 +306,26 @@ class RecordingManager:
             videos.sort(key=lambda f: f.stat().st_size)
 
         # Paginate
-        videos = videos[offset:offset + limit]
+        videos = videos[offset : offset + limit]
 
         # Build result
         result = []
         for video in videos:
             stat = video.stat()
             thumbnail = self.thumbnails_dir / f"{video.stem}.jpg"
-            
-            result.append({
-                "filename": video.name,
-                "path": str(video),
-                "size_bytes": stat.st_size,
-                "size_mb": stat.st_size / (1024 * 1024),
-                "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(),
-                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                "has_thumbnail": thumbnail.exists(),
-                "thumbnail_path": str(thumbnail) if thumbnail.exists() else None,
-            })
+
+            result.append(
+                {
+                    "filename": video.name,
+                    "path": str(video),
+                    "size_bytes": stat.st_size,
+                    "size_mb": stat.st_size / (1024 * 1024),
+                    "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "has_thumbnail": thumbnail.exists(),
+                    "thumbnail_path": str(thumbnail) if thumbnail.exists() else None,
+                }
+            )
 
         return result
 

@@ -273,19 +273,19 @@ async def list_jobs(
 async def get_current_recording(db: Session = Depends(get_db)):
     """Get currently active recording status for dashboard."""
     worker = get_worker()
-    
+
     # Check if worker is busy
     if not worker.is_busy or not worker._current_job:
         return {"active": False, "job": None}
-    
+
     # Get database record for the current job
     repo = JobRepository(db)
     current_job_id = worker._current_job.job_id
     db_job = repo.get_by_job_id(current_job_id)
-    
+
     if not db_job:
         return {"active": False, "job": None}
-    
+
     # Build response with live status
     return {
         "active": True,
@@ -299,7 +299,7 @@ async def get_current_recording(db: Session = Depends(get_db)):
             "recording_started_at": db_job.recording_started_at.isoformat() if db_job.recording_started_at else None,
             # Detector status placeholder - will be populated when detection is active
             "detectors": {},
-        }
+        },
     }
 
 

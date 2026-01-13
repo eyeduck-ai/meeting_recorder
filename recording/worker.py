@@ -153,7 +153,6 @@ class RecordingWorker:
 
         return DetectionConfig()  # Return defaults
 
-
     def request_cancel(self) -> bool:
         """Request cancellation of current job."""
         if self._current_job:

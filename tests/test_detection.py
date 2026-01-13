@@ -1,14 +1,13 @@
 """Tests for meeting end detection framework."""
+
 import asyncio
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from recording.detection import (
     DetectionConfig,
     DetectionOrchestrator,
-    DetectionResult,
     DetectorType,
 )
 from recording.detectors import (
@@ -65,6 +64,7 @@ def mock_page():
 # TextIndicatorDetector Tests
 # ============================================================================
 
+
 class TestTextIndicatorDetector:
     """Tests for TextIndicatorDetector."""
 
@@ -115,6 +115,7 @@ class TestTextIndicatorDetector:
 # VideoElementDetector Tests
 # ============================================================================
 
+
 class TestVideoElementDetector:
     """Tests for VideoElementDetector."""
 
@@ -160,6 +161,7 @@ class TestVideoElementDetector:
 # URLChangeDetector Tests
 # ============================================================================
 
+
 class TestURLChangeDetector:
     """Tests for URLChangeDetector."""
 
@@ -203,6 +205,7 @@ class TestURLChangeDetector:
 # ============================================================================
 # WebRTCConnectionDetector Tests
 # ============================================================================
+
 
 class TestWebRTCConnectionDetector:
     """Tests for WebRTCConnectionDetector."""
@@ -254,6 +257,7 @@ class TestWebRTCConnectionDetector:
 # ============================================================================
 # ScreenFreezeDetector Tests
 # ============================================================================
+
 
 class TestScreenFreezeDetector:
     """Tests for ScreenFreezeDetector."""
@@ -326,13 +330,14 @@ class TestScreenFreezeDetector:
 # DetectionOrchestrator Tests
 # ============================================================================
 
+
 class TestDetectionOrchestrator:
     """Tests for DetectionOrchestrator."""
 
     def test_register_detector_sorts_by_priority(self, detection_config):
         """Detectors should be sorted by priority after registration."""
         orchestrator = DetectionOrchestrator(detection_config)
-        
+
         # Register in wrong order
         orchestrator.register_detector(ScreenFreezeDetector(detection_config))  # Priority 5
         orchestrator.register_detector(WebRTCConnectionDetector(detection_config))  # Priority 1
@@ -356,7 +361,7 @@ class TestDetectionOrchestrator:
         """Dry run mode should never trigger end."""
         orchestrator = DetectionOrchestrator(detection_config)
         orchestrator.set_dry_run(True)
-        
+
         detector = TextIndicatorDetector(detection_config)
         orchestrator.register_detector(detector)
         mock_page._locator_results['text="Meeting has ended"'] = 1
@@ -380,6 +385,7 @@ class TestDetectionOrchestrator:
 # Factory Function Tests
 # ============================================================================
 
+
 class TestCreateDefaultDetectors:
     """Tests for create_default_detectors factory."""
 
@@ -388,7 +394,7 @@ class TestCreateDefaultDetectors:
         detectors = create_default_detectors(detection_config)
 
         assert len(detectors) == 5
-        
+
         types = {d.detector_type for d in detectors}
         assert DetectorType.TEXT_INDICATOR in types
         assert DetectorType.VIDEO_ELEMENT in types
@@ -408,6 +414,7 @@ class TestCreateDefaultDetectors:
 # ============================================================================
 # Detection Config Tests
 # ============================================================================
+
 
 class TestDetectionConfig:
     """Tests for DetectionConfig."""

@@ -1,4 +1,5 @@
 """Notification services for email, webhook, etc."""
+
 import asyncio
 import logging
 import smtplib
@@ -74,9 +75,7 @@ class EmailNotifier:
                 msg.attach(MIMEText(html_body, "html"))
 
             # Send in thread to avoid blocking
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._send_smtp, msg, recipients
-            )
+            await asyncio.get_event_loop().run_in_executor(None, self._send_smtp, msg, recipients)
 
             logger.info(f"Email sent to {recipients}")
             return True
@@ -170,10 +169,10 @@ class NotificationService:
             body = f"""
 Recording has started.
 
-Meeting: {job.get('meeting_code', 'Unknown')}
-Display Name: {job.get('display_name', 'Unknown')}
-Job ID: {job.get('job_id', 'Unknown')}
-Started At: {job.get('started_at', 'Unknown')}
+Meeting: {job.get("meeting_code", "Unknown")}
+Display Name: {job.get("display_name", "Unknown")}
+Job ID: {job.get("job_id", "Unknown")}
+Started At: {job.get("started_at", "Unknown")}
 """
             await self.email.send(subject, body)
 
@@ -189,10 +188,10 @@ Started At: {job.get('started_at', 'Unknown')}
             body = f"""
 Recording has completed successfully.
 
-Meeting: {job.get('meeting_code', 'Unknown')}
-Job ID: {job.get('job_id', 'Unknown')}
-Duration: {job.get('duration_actual_sec', 0):.0f} seconds
-Output: {job.get('output_path', 'Unknown')}
+Meeting: {job.get("meeting_code", "Unknown")}
+Job ID: {job.get("job_id", "Unknown")}
+Duration: {job.get("duration_actual_sec", 0):.0f} seconds
+Output: {job.get("output_path", "Unknown")}
 """
             await self.email.send(subject, body)
 
@@ -208,10 +207,10 @@ Output: {job.get('output_path', 'Unknown')}
             body = f"""
 Recording has failed.
 
-Meeting: {job.get('meeting_code', 'Unknown')}
-Job ID: {job.get('job_id', 'Unknown')}
-Error: {job.get('error_message', 'Unknown error')}
-Error Code: {job.get('error_code', 'Unknown')}
+Meeting: {job.get("meeting_code", "Unknown")}
+Job ID: {job.get("job_id", "Unknown")}
+Error: {job.get("error_message", "Unknown error")}
+Error Code: {job.get("error_code", "Unknown")}
 """
             await self.email.send(subject, body)
 
@@ -237,11 +236,14 @@ Please free up disk space or configure auto-cleanup.
 
         # Webhook
         if self.config.webhook_enabled:
-            await self.webhook.send("system.disk_low", {
-                "path": path,
-                "available_gb": available_gb,
-                "threshold_gb": threshold_gb,
-            })
+            await self.webhook.send(
+                "system.disk_low",
+                {
+                    "path": path,
+                    "available_gb": available_gb,
+                    "threshold_gb": threshold_gb,
+                },
+            )
 
 
 def load_notification_config() -> NotificationConfig:

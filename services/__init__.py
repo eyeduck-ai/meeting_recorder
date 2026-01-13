@@ -1,4 +1,5 @@
 """Service modules for the application."""
+
 from services.notification import (
     NotificationConfig,
     NotificationService,

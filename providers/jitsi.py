@@ -337,7 +337,7 @@ class JitsiProvider(BaseProvider):
 
             for indicator in end_indicators:
                 if await page.locator(indicator).count() > 0:
-                    logger.info(f"Meeting end detected: text indicator found")
+                    logger.info("Meeting end detected: text indicator found")
                     return True
 
             # Check if page navigated away from meeting
@@ -347,11 +347,11 @@ class JitsiProvider(BaseProvider):
                 return True
 
             # Check if video elements are gone (meeting may have ended)
-            video_count = await page.locator('video').count()
+            video_count = await page.locator("video").count()
             if video_count == 0:
                 # Double-check: wait a moment and check again to avoid false positives
                 await asyncio.sleep(2)
-                video_count = await page.locator('video').count()
+                video_count = await page.locator("video").count()
                 if video_count == 0:
                     logger.info("No video elements found - meeting may have ended")
                     return True

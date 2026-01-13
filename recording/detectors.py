@@ -3,6 +3,7 @@
 This module contains all individual detector implementations
 that plug into the detection framework.
 """
+
 import asyncio
 import logging
 from typing import TYPE_CHECKING
@@ -113,7 +114,7 @@ class VideoElementDetector(DetectorBase):
         return DetectionResult(
             detector_type=self.detector_type,
             detected=False,
-            reason=f"Video elements present",
+            reason="Video elements present",
         )
 
     def reset(self) -> None:
@@ -175,35 +176,35 @@ class WebRTCConnectionDetector(DetectorBase):
     JS_INJECT_SCRIPT = """
     window._rtcConnectionLost = false;
     window._rtcConnectionChecked = true;
-    
+
     if (window.RTCPeerConnection && !window._rtcPatched) {
         window._rtcPatched = true;
         const OriginalRTCPeerConnection = window.RTCPeerConnection;
-        
+
         window.RTCPeerConnection = function(...args) {
             const pc = new OriginalRTCPeerConnection(...args);
-            
+
             pc.addEventListener('connectionstatechange', () => {
-                if (pc.connectionState === 'disconnected' || 
+                if (pc.connectionState === 'disconnected' ||
                     pc.connectionState === 'failed' ||
                     pc.connectionState === 'closed') {
                     console.log('[RTCDetector] Connection state:', pc.connectionState);
                     window._rtcConnectionLost = true;
                 }
             });
-            
+
             pc.addEventListener('iceconnectionstatechange', () => {
-                if (pc.iceConnectionState === 'disconnected' || 
+                if (pc.iceConnectionState === 'disconnected' ||
                     pc.iceConnectionState === 'failed' ||
                     pc.iceConnectionState === 'closed') {
                     console.log('[RTCDetector] ICE state:', pc.iceConnectionState);
                     window._rtcConnectionLost = true;
                 }
             });
-            
+
             return pc;
         };
-        
+
         // Copy static properties
         Object.assign(window.RTCPeerConnection, OriginalRTCPeerConnection);
         window.RTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype;
@@ -309,7 +310,7 @@ class ScreenFreezeDetector(DetectorBase):
 
     def _compare_screenshots(self, img1: bytes, img2: bytes) -> float:
         """Compare two screenshots and return similarity (0-1).
-        
+
         Uses PIL to compute normalized pixel difference.
         Higher values mean more similar images.
         """
@@ -336,8 +337,8 @@ class ScreenFreezeDetector(DetectorBase):
 
             # Calculate normalized mean squared difference
             total_pixels = len(pixels1)
-            diff_sum = sum(abs(p1 - p2) for p1, p2 in zip(pixels1, pixels2))
-            
+            diff_sum = sum(abs(p1 - p2) for p1, p2 in zip(pixels1, pixels2, strict=False))
+
             # Max possible difference per pixel is 255
             max_diff = 255 * total_pixels
             similarity = 1.0 - (diff_sum / max_diff)
@@ -359,7 +360,7 @@ class ScreenFreezeDetector(DetectorBase):
 
 class AudioSilenceDetector(DetectorBase):
     """Detects meeting end when audio is silent for too long.
-    
+
     This detector monitors audio levels via the FFmpeg process or
     PulseAudio to detect prolonged silence that may indicate
     the meeting has ended.
@@ -381,7 +382,7 @@ class AudioSilenceDetector(DetectorBase):
 
     async def check(self, page: "Page") -> DetectionResult:
         """Check if audio has been silent for too long.
-        
+
         Note: This detector doesn't use the page object directly,
         it monitors the audio source set via set_audio_source().
         """
@@ -426,7 +427,7 @@ class AudioSilenceDetector(DetectorBase):
 
     async def _get_audio_level(self) -> float:
         """Get current audio level from PulseAudio source.
-        
+
         Returns value between 0.0 (silence) and 1.0 (max volume).
         """
         import subprocess
@@ -440,13 +441,14 @@ class AudioSilenceDetector(DetectorBase):
                 text=True,
                 timeout=1,
             )
-            
+
             if result.returncode == 0:
                 # Parse output like "Volume: front-left: 65536 / 100%"
                 output = result.stdout
                 if "%" in output:
                     # Extract percentage
                     import re
+
                     match = re.search(r"(\d+)%", output)
                     if match:
                         return int(match.group(1)) / 100.0
@@ -458,7 +460,7 @@ class AudioSilenceDetector(DetectorBase):
                 text=True,
                 timeout=1,
             )
-            
+
             # If there are active source outputs, assume audio is present
             if result.returncode == 0 and result.stdout.strip():
                 return 0.5  # Assume moderate audio level
@@ -489,9 +491,9 @@ def create_default_detectors(config: DetectionConfig | None = None) -> list[Dete
         WebRTCConnectionDetector(config),
         ScreenFreezeDetector(config),
     ]
-    
+
     # Add AudioSilenceDetector if enabled
     if config.audio_silence_enabled:
         detectors.append(AudioSilenceDetector(config))
-    
+
     return detectors

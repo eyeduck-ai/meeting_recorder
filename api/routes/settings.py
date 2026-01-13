@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
 class SettingsUpdate(BaseModel):
     """Request model for updating settings."""
+
     resolution_w: int | None = None
     resolution_h: int | None = None
     lobby_wait_sec: int | None = None
@@ -49,8 +50,8 @@ def update_settings_endpoint(settings: SettingsUpdate, db: Session = Depends(get
     for key, value in settings.model_dump().items():
         if value is not None:
             updates[key] = str(value)
-    
+
     update_settings(db, updates)
-    
+
     # Return updated settings
     return get_settings_endpoint(db)
