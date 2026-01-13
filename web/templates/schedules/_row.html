@@ -2,10 +2,10 @@
     <td class="font-medium">{{ schedule.meeting.name }}</td>
     <td>
         {% if schedule.schedule_type.value == 'cron' %}
-        <span class="badge badge-warning badge-sm font-bold mr-2 rounded">週期</span>
+        <span class="badge badge-warning badge-sm font-bold mr-2 rounded">CRON</span>
         <span class="text-sm">{{ cron_description or schedule.cron_expression or '-' }}</span>
         {% else %}
-        <span class="badge badge-info badge-sm font-bold mr-2 rounded">單次</span>
+        <span class="badge badge-info badge-sm font-bold mr-2 rounded">ONCE</span>
         <span class="text-sm">{{ schedule.start_time.strftime('%Y-%m-%d %H:%M') if schedule.start_time else '-'
             }}</span>
         {% endif %}
@@ -33,8 +33,8 @@
     </td>
     <td>
         <form hx-post="/schedules/{{ schedule.id }}/toggle" hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML">
-            <input type="checkbox" class="toggle toggle-sm toggle-success rounded-full bg-base-100 hover:bg-base-200" {%
-                if schedule.enabled %}checked{% endif %} onchange="this.form.requestSubmit()">
+            <input type="checkbox" class="toggle toggle-sm toggle-primary" {% if schedule.enabled %}checked{% endif %}
+                onchange="this.form.requestSubmit()">
         </form>
     </td>
     <td>
