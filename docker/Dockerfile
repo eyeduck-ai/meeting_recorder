@@ -55,6 +55,9 @@ ENV PATH="/root/.local/bin:$PATH"
 # Set working directory
 WORKDIR /app
 
+# Add a build argument to force cache invalidation for the copy step
+ARG BUILD_TIMESTAMP=unknown
+
 # Copy all application code first
 COPY . .
 
