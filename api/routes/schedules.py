@@ -17,7 +17,7 @@ class ScheduleCreate(BaseModel):
     meeting_id: int
     schedule_type: Literal["once", "cron"] = "once"
     start_time: datetime
-    duration_sec: int = Field(default=3600, ge=60, le=14400)
+    duration_sec: int = Field(default=4200, ge=60, le=14400)
     cron_expression: str | None = None
     lobby_wait_sec: int = Field(default=900, ge=0, le=1800)
     layout_preset: str = "speaker"

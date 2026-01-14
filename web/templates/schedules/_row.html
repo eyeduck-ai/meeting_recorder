@@ -1,7 +1,10 @@
-<tr id="schedule-{{ schedule.id }}">
+<tr id="schedule-{{ schedule.id }}" {% if is_expired %}data-expired="true" {% endif %}
+    class="{% if is_expired %}opacity-50{% endif %}">
     <td class="font-medium">{{ schedule.meeting.name }}</td>
     <td>
-        {% if schedule.schedule_type.value == 'cron' %}
+        {% set st_val = schedule.schedule_type.value if schedule.schedule_type is not string else schedule.schedule_type
+        %}
+        {% if st_val == 'cron' %}
         <span class="badge badge-warning badge-sm font-bold mr-2 rounded">CRON</span>
         <span class="text-sm">{{ cron_description or schedule.cron_expression or '-' }}</span>
         {% else %}
@@ -48,9 +51,12 @@
                     </svg>
                 </button>
             </form>
-            <a href="/schedules/{{ schedule.id }}/edit" class="btn btn-ghost btn-xs">Edit</a>
+            <a href="/schedules/{{ schedule.id }}/edit"
+                class="btn btn-ghost btn-xs {% if is_expired %}btn-disabled opacity-50{% endif %}" {% if is_expired
+                %}aria-disabled="true" tabindex="-1" {% endif %}>Edit</a>
             <button class="btn btn-ghost btn-xs text-error" hx-delete="/schedules/{{ schedule.id }}"
-                hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML" hx-confirm="Delete this schedule?">
+                hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML" hx-confirm="Delete this schedule?" {% if
+                is_expired %}disabled{% endif %}>
                 Delete
             </button>
         </div>

@@ -214,6 +214,40 @@ async def start_recording(
     return _model_to_response(db_job)
 
 
+@router.get("/current")
+async def get_current_recording(db: Session = Depends(get_db)):
+    """Get currently active recording status for dashboard."""
+    worker = get_worker()
+
+    # Check if worker is busy
+    if not worker.is_busy or not worker._current_job:
+        return {"active": False, "job": None}
+
+    # Get database record for the current job
+    repo = JobRepository(db)
+    current_job_id = worker._current_job.job_id
+    db_job = repo.get_by_job_id(current_job_id)
+
+    if not db_job:
+        return {"active": False, "job": None}
+
+    # Build response with live status
+    return {
+        "active": True,
+        "job": {
+            "job_id": db_job.job_id,
+            "status": db_job.status,
+            "meeting_code": db_job.meeting_code,
+            "display_name": db_job.display_name,
+            "duration_sec": db_job.duration_sec,
+            "started_at": db_job.started_at.isoformat() if db_job.started_at else None,
+            "recording_started_at": db_job.recording_started_at.isoformat() if db_job.recording_started_at else None,
+            # Detector status placeholder - will be populated when detection is active
+            "detectors": {},
+        },
+    }
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(job_id: str, db: Session = Depends(get_db)):
     """Get job status and details."""
@@ -267,40 +301,6 @@ async def list_jobs(
     repo = JobRepository(db)
     jobs = repo.get_all(limit=limit, offset=offset)
     return [_model_to_response(job) for job in jobs]
-
-
-@router.get("/current")
-async def get_current_recording(db: Session = Depends(get_db)):
-    """Get currently active recording status for dashboard."""
-    worker = get_worker()
-
-    # Check if worker is busy
-    if not worker.is_busy or not worker._current_job:
-        return {"active": False, "job": None}
-
-    # Get database record for the current job
-    repo = JobRepository(db)
-    current_job_id = worker._current_job.job_id
-    db_job = repo.get_by_job_id(current_job_id)
-
-    if not db_job:
-        return {"active": False, "job": None}
-
-    # Build response with live status
-    return {
-        "active": True,
-        "job": {
-            "job_id": db_job.job_id,
-            "status": db_job.status,
-            "meeting_code": db_job.meeting_code,
-            "display_name": db_job.display_name,
-            "duration_sec": db_job.duration_sec,
-            "started_at": db_job.started_at.isoformat() if db_job.started_at else None,
-            "recording_started_at": db_job.recording_started_at.isoformat() if db_job.recording_started_at else None,
-            # Detector status placeholder - will be populated when detection is active
-            "detectors": {},
-        },
-    }
 
 
 @router.get("/{job_id}/diagnostics")

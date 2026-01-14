@@ -259,17 +259,39 @@ async def meetings_delete(meeting_id: int, db: Session = Depends(get_db)):
 @router.get("/schedules", response_class=HTMLResponse)
 async def schedules_list(request: Request, db: Session = Depends(get_db)):
     """Schedules list page."""
-    schedules = db.query(Schedule).join(Meeting).order_by(Meeting.name, Schedule.created_at.desc()).all()
+    # Sort by next_run_at ascending (upcoming first), NULL values last
+    schedules = db.query(Schedule).join(Meeting).order_by(
+        Schedule.next_run_at.asc().nullslast(),
+        Meeting.name
+    ).all()
 
     # Compute cron descriptions for each schedule
     cron_descriptions = {}
+    # Track expired schedules (ONCE schedules with past start_time and no next_run)
+    expired_ids = set()
+    now = datetime.utcnow()
+    
     for schedule in schedules:
         if schedule.cron_expression:
             cron_descriptions[schedule.id] = cron_to_chinese(schedule.cron_expression)
+        
+        # Mark as expired: ONCE schedule with past start_time OR no next_run_at
+        schedule_type = schedule.schedule_type.value if hasattr(schedule.schedule_type, 'value') else schedule.schedule_type
+        if schedule_type == 'once':
+            if schedule.start_time and schedule.start_time < now:
+                expired_ids.add(schedule.id)
+            elif not schedule.next_run_at:
+                expired_ids.add(schedule.id)
 
     return templates.TemplateResponse(
         "schedules/list.html",
-        get_context(request, schedules=schedules, cron_descriptions=cron_descriptions),
+        get_context(
+            request, 
+            schedules=schedules, 
+            cron_descriptions=cron_descriptions,
+            expired_ids=expired_ids,
+            has_expired=len(expired_ids) > 0
+        ),
     )
 
 
@@ -443,13 +465,9 @@ async def jobs_list(
     db: Session = Depends(get_db),
 ):
     """Jobs list page."""
-    query = db.query(RecordingJob).order_by(RecordingJob.created_at.desc())
-    if status:
-        query = query.filter(RecordingJob.status == JobStatus(status))
-    jobs = query.limit(50).all()
-
-    # Find currently running job from database
-    running_statuses = [
+    # Define status groups for simplified filtering
+    active_statuses = [
+        JobStatus.QUEUED,
         JobStatus.STARTING,
         JobStatus.JOINING,
         JobStatus.WAITING_LOBBY,
@@ -457,9 +475,26 @@ async def jobs_list(
         JobStatus.FINALIZING,
         JobStatus.UPLOADING,
     ]
+    
+    query = db.query(RecordingJob).order_by(RecordingJob.created_at.desc())
+    
+    # Apply simplified filter
+    if status == 'active':
+        query = query.filter(RecordingJob.status.in_([s.value for s in active_statuses]))
+    elif status == 'succeeded':
+        query = query.filter(RecordingJob.status == JobStatus.SUCCEEDED.value)
+    elif status == 'failed':
+        query = query.filter(RecordingJob.status.in_([
+            JobStatus.FAILED.value,
+            JobStatus.CANCELED.value
+        ]))
+    
+    jobs = query.limit(50).all()
+
+    # Find currently running job from database
     current_job = (
         db.query(RecordingJob)
-        .filter(RecordingJob.status.in_([s.value for s in running_statuses]))
+        .filter(RecordingJob.status.in_([s.value for s in active_statuses]))
         .order_by(RecordingJob.created_at.desc())
         .first()
     )
@@ -471,7 +506,6 @@ async def jobs_list(
             request,
             jobs=jobs,
             current_job_id=current_job_id,
-            statuses=list(JobStatus),
             selected_status=status,
         ),
     )

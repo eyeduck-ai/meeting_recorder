@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -13,6 +14,35 @@ from config.settings import get_settings
 from database.models import Schedule, ScheduleType, get_session_local
 
 logger = logging.getLogger(__name__)
+
+
+def convert_cron_weekday(cron_expression: str) -> str:
+    """Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon).
+    
+    Standard CRON: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+    APScheduler:   0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+    
+    This function converts the weekday field so that user can use familiar
+    standard CRON format while APScheduler executes correctly.
+    """
+    parts = cron_expression.split()
+    if len(parts) != 5:
+        return cron_expression  # Invalid format, return as-is
+    
+    minute, hour, day, month, weekday = parts
+    
+    # Convert weekday field
+    def convert_day(match):
+        day_num = int(match.group())
+        # 0 (Sun) -> 6, 1 (Mon) -> 0, 2 (Tue) -> 1, etc.
+        if day_num == 0:
+            return "6"  # Sunday
+        return str(day_num - 1)
+    
+    # Handle ranges like 1-5, lists like 1,4, and single values
+    converted_weekday = re.sub(r'\d+', convert_day, weekday)
+    
+    return f"{minute} {hour} {day} {month} {converted_weekday}"
 
 
 class SchedulerService:
@@ -110,7 +140,14 @@ class SchedulerService:
         self.remove_schedule(schedule.id)
 
         try:
-            if schedule.schedule_type == ScheduleType.ONCE.value:
+            # Normalize schedule_type to string value for comparison
+            schedule_type_value = (
+                schedule.schedule_type.value
+                if hasattr(schedule.schedule_type, "value")
+                else schedule.schedule_type
+            )
+
+            if schedule_type_value == ScheduleType.ONCE.value:
                 # One-time schedule
                 if schedule.start_time <= datetime.utcnow():
                     logger.warning(f"Schedule {schedule.id} start_time is in the past, skipping")
@@ -118,13 +155,15 @@ class SchedulerService:
 
                 trigger = DateTrigger(run_date=schedule.start_time)
 
-            elif schedule.schedule_type == ScheduleType.CRON.value:
+            elif schedule_type_value == ScheduleType.CRON.value:
                 # Cron schedule
                 if not schedule.cron_expression:
                     logger.error(f"Schedule {schedule.id} has no cron expression")
                     return None
 
-                trigger = CronTrigger.from_crontab(schedule.cron_expression)
+                # Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon)
+                converted_cron = convert_cron_weekday(schedule.cron_expression)
+                trigger = CronTrigger.from_crontab(converted_cron)
 
             else:
                 logger.error(f"Unknown schedule type: {schedule.schedule_type}")

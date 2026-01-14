@@ -32,6 +32,10 @@
             <form method="POST" action="/schedules/save">
                 {% if schedule %}
                 <input type="hidden" name="schedule_id" value="{{ schedule.id }}">
+                <div class="text-sm text-base-content/60 mb-4">
+                    <span>上次修改：{{ schedule.updated_at.strftime('%Y-%m-%d %H:%M') if schedule.updated_at else '-'
+                        }}</span>
+                </div>
                 {% endif %}
 
                 <div class="form-control w-full mb-4">
@@ -55,8 +59,9 @@
                     <select name="schedule_type" id="schedule_type" class="select select-bordered w-full" required
                         onchange="toggleScheduleFields()">
                         {% for st in schedule_types %}
-                        <option value="{{ st.value }}" {% if schedule and schedule.schedule_type==st %}selected{% endif
-                            %}>
+                        <option value="{{ st.value }}" {% if schedule and (schedule.schedule_type.value if
+                            schedule.schedule_type is not string else schedule.schedule_type)==st.value %}selected{%
+                            endif %}>
                             {{ st.value | upper }}
                         </option>
                         {% endfor %}
@@ -64,7 +69,7 @@
                 </div>
 
                 <div id="once-fields"
-                    class="{% if schedule and schedule.schedule_type.value != 'once' %}hidden{% endif %}">
+                    class="{% set st_val = (schedule.schedule_type.value if schedule.schedule_type is not string else schedule.schedule_type) if schedule else 'once' %}{% if st_val != 'once' %}hidden{% endif %}">
                     <div class="form-control w-full mb-4">
                         <label class="label">
                             <span class="label-text">Start Time *</span>
@@ -76,17 +81,18 @@
                 </div>
 
                 <div id="cron-fields"
-                    class="{% if not schedule or schedule.schedule_type.value != 'cron' %}hidden{% endif %}">
+                    class="{% set st_val = (schedule.schedule_type.value if schedule.schedule_type is not string else schedule.schedule_type) if schedule else 'once' %}{% if st_val != 'cron' %}hidden{% endif %}">
                     <div class="form-control w-full mb-4">
                         <label class="label">
                             <span class="label-text">Cron Expression *</span>
                         </label>
                         <input type="text" name="cron_expression"
                             value="{{ schedule.cron_expression if schedule else '' }}"
-                            class="input input-bordered w-full font-mono" placeholder="0 9 * * 1-5">
+                            class="input input-bordered w-full font-mono" placeholder="30 14 * * 1,4">
                         <label class="label">
-                            <span class="label-text-alt">Format: minute hour day month weekday (e.g., "0 9 * * 1-5" =
-                                9:00 AM Mon-Fri)</span>
+                            <span class="label-text-alt">Format: minute hour day month weekday<br>
+                                Weekday: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat<br>
+                                Example: "30 14 * * 1,4" = 14:30 Mon &amp; Thu</span>
                         </label>
                     </div>
                 </div>
@@ -118,10 +124,10 @@
                             <span class="label-text">Duration (minutes) *</span>
                         </label>
                         <input type="number" name="duration_min"
-                            value="{{ (schedule.duration_sec // 60) if schedule else 60 }}"
+                            value="{{ (schedule.duration_sec // 60) if schedule else 70 }}"
                             class="input input-bordered w-full" min="1" max="240" step="1">
                         <label class="label">
-                            <span class="label-text-alt">Default: 60 min. Max: 240 min (4 hours)</span>
+                            <span class="label-text-alt">Default: 70 min. Max: 240 min (4 hours)</span>
                         </label>
                     </div>
                 </div>
@@ -293,6 +299,17 @@
             const now = new Date();
             now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
             startTimeInput.value = now.toISOString().slice(0, 16);
+        }
+
+        // Add confirmation dialog before saving (only for edit mode)
+        const form = document.querySelector('form');
+        const isEditMode = document.querySelector('input[name="schedule_id"]') !== null;
+        if (form && isEditMode) {
+            form.addEventListener('submit', function (e) {
+                if (!confirm('確定要儲存變更嗎？ / Save changes?')) {
+                    e.preventDefault();
+                }
+            });
         }
     });
 </script>

@@ -139,8 +139,8 @@ class Schedule(Base):
 
     # Schedule timing
     schedule_type: Mapped[str] = mapped_column(String(32), default=ScheduleType.ONCE.value)
-    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    duration_sec: Mapped[int] = mapped_column(Integer, default=3600)
+    start_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_sec: Mapped[int] = mapped_column(Integer, default=4200)
     duration_mode: Mapped[str] = mapped_column(String(32), default=DurationMode.FIXED.value)  # fixed or auto
     cron_expression: Mapped[str | None] = mapped_column(String(128), nullable=True)
 

@@ -64,7 +64,7 @@
                         <span class="label-text">Base URL</span>
                     </label>
                     <input type="url" name="site_base_url" id="base-url-input"
-                        value="{{ meeting.site_base_url if meeting else '' }}" class="input input-bordered w-full"
+                        value="{{ meeting.site_base_url or '' if meeting else '' }}" class="input input-bordered w-full"
                         placeholder="https://meet.jit.si">
                     <label class="label">
                         <span class="label-text-alt">Leave empty to use default (Jitsi: meet.jit.si)</span>
@@ -87,8 +87,8 @@
                         <span class="label-text">Guest Email</span>
                     </label>
                     <input type="email" name="default_guest_email"
-                        value="{{ meeting.default_guest_email if meeting else '' }}" class="input input-bordered w-full"
-                        placeholder="recorder@example.com">
+                        value="{{ meeting.default_guest_email or '' if meeting else '' }}"
+                        class="input input-bordered w-full" placeholder="recorder@example.com">
                     <label class="label">
                         <span class="label-text-alt">Required for some platforms (Webex)</span>
                     </label>

@@ -15,15 +15,24 @@
         {% endif %}
     </div>
 
-    <!-- Filters -->
+    <!-- Simplified Filters: All | Active | Succeeded | Failed -->
     <div class="flex gap-2 flex-wrap">
-        <a href="/jobs" class="btn btn-sm {% if not selected_status %}btn-primary{% else %}btn-ghost{% endif %}">All</a>
-        {% for status in statuses %}
-        <a href="/jobs?status={{ status.value }}"
-           class="btn btn-sm {% if selected_status == status.value %}btn-primary{% else %}btn-ghost{% endif %}">
-            {{ status.value }}
+        <a href="/jobs" class="btn btn-sm {% if not selected_status %}btn-primary{% else %}btn-ghost{% endif %}">
+            All
         </a>
-        {% endfor %}
+        <a href="/jobs?status=active"
+            class="btn btn-sm {% if selected_status == 'active' %}btn-primary{% else %}btn-ghost{% endif %}">
+            <span class="loading loading-spinner loading-xs mr-1"></span>
+            Active
+        </a>
+        <a href="/jobs?status=succeeded"
+            class="btn btn-sm {% if selected_status == 'succeeded' %}btn-success{% else %}btn-ghost{% endif %}">
+            Succeeded
+        </a>
+        <a href="/jobs?status=failed"
+            class="btn btn-sm {% if selected_status == 'failed' %}btn-error{% else %}btn-ghost{% endif %}">
+            Failed
+        </a>
     </div>
 
     <!-- Jobs list -->
@@ -34,41 +43,43 @@
                 <table class="table">
                     <thead>
                         <tr>
-                            <th>Status</th>
                             <th>Job ID</th>
                             <th>Meeting</th>
                             <th>Created</th>
                             <th>Duration</th>
+                            <th>Result</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for job in jobs %}
                         <tr class="hover cursor-pointer" onclick="location.href='/jobs/{{ job.job_id }}'">
-                            <td>
-                                {% if job.status.value == 'succeeded' %}
-                                <span class="badge badge-success">{{ job.status.value }}</span>
-                                {% elif job.status.value == 'failed' %}
-                                <span class="badge badge-error">{{ job.status.value }}</span>
-                                {% elif job.status.value == 'canceled' %}
-                                <span class="badge badge-warning">{{ job.status.value }}</span>
-                                {% elif job.status.value in ['recording', 'joining', 'waiting_lobby', 'starting', 'finalizing', 'uploading'] %}
-                                <span class="badge badge-info gap-1">
-                                    <span class="loading loading-spinner loading-xs"></span>
-                                    {{ job.status.value }}
-                                </span>
-                                {% else %}
-                                <span class="badge badge-ghost">{{ job.status.value }}</span>
-                                {% endif %}
-                            </td>
                             <td class="font-mono text-xs">{{ job.job_id[:8] }}...</td>
                             <td>{{ job.meeting_code }}</td>
                             <td class="text-sm">{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
                             <td>
                                 {% if job.duration_actual_sec %}
-                                    {{ (job.duration_actual_sec / 60) | int }} min
+                                {{ (job.duration_actual_sec / 60) | int }} min
                                 {% else %}
-                                    -
+                                -
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% set status_val = job.status.value if job.status is not string else job.status %}
+                                {% if status_val == 'succeeded' %}
+                                <span class="badge badge-success">Success</span>
+                                {% elif status_val == 'failed' %}
+                                <span class="badge badge-error">Failed</span>
+                                {% elif status_val == 'canceled' %}
+                                <span class="badge badge-warning">Canceled</span>
+                                {% elif status_val in ['recording', 'joining', 'waiting_lobby', 'starting',
+                                'finalizing', 'uploading', 'queued'] %}
+                                <span class="badge badge-info gap-1">
+                                    <span class="loading loading-spinner loading-xs"></span>
+                                    Running
+                                </span>
+                                {% else %}
+                                <span class="badge badge-ghost">{{ status_val }}</span>
                                 {% endif %}
                             </td>
                             <td onclick="event.stopPropagation()">
