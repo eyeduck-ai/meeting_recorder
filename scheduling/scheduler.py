@@ -18,19 +18,19 @@ logger = logging.getLogger(__name__)
 
 def convert_cron_weekday(cron_expression: str) -> str:
     """Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon).
-    
+
     Standard CRON: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
     APScheduler:   0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
-    
+
     This function converts the weekday field so that user can use familiar
     standard CRON format while APScheduler executes correctly.
     """
     parts = cron_expression.split()
     if len(parts) != 5:
         return cron_expression  # Invalid format, return as-is
-    
+
     minute, hour, day, month, weekday = parts
-    
+
     # Convert weekday field
     def convert_day(match):
         day_num = int(match.group())
@@ -38,10 +38,10 @@ def convert_cron_weekday(cron_expression: str) -> str:
         if day_num == 0:
             return "6"  # Sunday
         return str(day_num - 1)
-    
+
     # Handle ranges like 1-5, lists like 1,4, and single values
-    converted_weekday = re.sub(r'\d+', convert_day, weekday)
-    
+    converted_weekday = re.sub(r"\d+", convert_day, weekday)
+
     return f"{minute} {hour} {day} {month} {converted_weekday}"
 
 
@@ -142,9 +142,7 @@ class SchedulerService:
         try:
             # Normalize schedule_type to string value for comparison
             schedule_type_value = (
-                schedule.schedule_type.value
-                if hasattr(schedule.schedule_type, "value")
-                else schedule.schedule_type
+                schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
             )
 
             if schedule_type_value == ScheduleType.ONCE.value:
