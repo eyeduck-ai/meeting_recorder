@@ -50,7 +50,7 @@ class VirtualEnvironment:
         """Return environment variables for subprocess."""
         return {
             "DISPLAY": self.display,
-            "PULSE_SERVER": "unix:/tmp/pulseaudio.socket",
+            "PULSE_SERVER": "unix:/var/run/pulse/native",
         }
 
     async def start(self) -> dict[str, str]:

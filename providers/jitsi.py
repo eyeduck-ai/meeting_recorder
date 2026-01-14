@@ -76,6 +76,15 @@ class JitsiProvider(BaseProvider):
         else:
             logger.warning("Could not find display name input")
 
+        # Handle "unsafe room name" consent checkbox if present
+        consent_checkbox = page.locator('label[class*="consent"] input[type="checkbox"]')
+        if await consent_checkbox.count() > 0:
+            is_checked = await consent_checkbox.is_checked()
+            if not is_checked:
+                await consent_checkbox.click()
+                logger.info("Consent checkbox clicked (unsafe room name warning)")
+                await asyncio.sleep(0.5)
+
         # Handle password if provided
         if password:
             password_input = page.locator('input[type="password"]')
