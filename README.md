@@ -518,12 +518,20 @@ DEBUG_VNC=1 docker-compose up
 
 ## 開發
 
+### 安裝開發依賴
+
+```bash
+# 安裝所有開發依賴（含 pytest, ruff, pre-commit）
+uv sync --extra dev
+
+# 安裝 pre-commit hooks（推薦）
+uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
+```
+
 ### 執行測試
 
 ```bash
-# 安裝開發依賴
-uv pip install pytest pytest-asyncio pytest-cov ruff
-
 # 執行所有測試
 uv run pytest tests/ -v
 
@@ -532,6 +540,23 @@ uv run pytest tests/ --cov=api --cov=providers --cov=database --cov=recording
 
 # 執行 linter
 uv run ruff check .
+
+# 執行 formatter
+uv run ruff format .
+```
+
+### Pre-commit Hooks
+
+專案使用 pre-commit 在本地執行 CI 檢查：
+
+| 時機 | 自動執行 |
+|------|----------|
+| `git commit` | ruff check + ruff format |
+| `git push` | pytest 測試 |
+
+手動執行所有檢查：
+```bash
+uv run pre-commit run --all-files
 ```
 
 ### CI/CD Pipeline
@@ -543,6 +568,8 @@ uv run ruff check .
 | `test` | push / PR | 執行 pytest 測試 |
 | `lint` | push / PR | 執行 ruff 檢查 |
 | `docker` | push main | 建置並推送 Docker image 至 GHCR |
+
+> **本地 CI 與 GitHub Actions 一致**：pre-commit hooks 執行的檢查與 GitHub Actions 相同，確保 push 前能在本地發現問題。
 
 Docker image 會自動推送至 GitHub Container Registry：
 - `ghcr.io/eyeduck-ai/meeting_recorder:latest` - 最新版本
