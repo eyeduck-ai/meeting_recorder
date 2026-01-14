@@ -435,7 +435,7 @@ async def schedules_trigger(request: Request, schedule_id: int, db: Session = De
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     job_runner = get_job_runner()
-    await job_runner.queue_schedule(schedule.id)
+    job_runner.queue_schedule(schedule.id)
 
     return RedirectResponse(url="/jobs", status_code=303)
 
