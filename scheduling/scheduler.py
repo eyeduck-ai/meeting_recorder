@@ -167,6 +167,10 @@ class SchedulerService:
                 logger.error(f"Unknown schedule type: {schedule.schedule_type}")
                 return None
 
+            # Use duration_sec as misfire grace time so that if system starts late
+            # (e.g., after reboot), it will still run the job within the recording window
+            grace_time = schedule.duration_sec
+
             self._scheduler.add_job(
                 self._on_schedule_trigger,
                 trigger=trigger,
@@ -174,6 +178,7 @@ class SchedulerService:
                 args=[schedule.id],
                 name=f"Recording schedule {schedule.id}",
                 replace_existing=True,
+                misfire_grace_time=grace_time,
             )
 
             # Update next_run_at
