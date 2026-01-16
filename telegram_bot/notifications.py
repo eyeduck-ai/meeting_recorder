@@ -32,12 +32,16 @@ _ERROR_DESCRIPTIONS = {
 
 
 def _format_time(dt: datetime | None) -> str:
-    """Format datetime to local time string."""
+    """Format datetime to local time string.
+
+    Note: DB stores naive UTC datetimes. This function converts them to local time.
+    """
     if not dt:
         return "-"
     try:
         settings = get_settings()
         tz = ZoneInfo(settings.timezone)
+        # Strip any tzinfo (treat as UTC), then convert to local
         if dt.tzinfo is not None:
             dt = dt.replace(tzinfo=None)
         local_dt = dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)

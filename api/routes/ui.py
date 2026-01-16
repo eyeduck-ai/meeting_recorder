@@ -417,7 +417,13 @@ async def schedules_save(
     schedule.stillness_timeout_sec = stillness_timeout_sec
 
     if schedule.schedule_type == ScheduleType.ONCE and start_time:
-        schedule.start_time = datetime.fromisoformat(start_time)
+        # Parse local time and convert to UTC for storage
+        local_dt = datetime.fromisoformat(start_time)
+        tz = ZoneInfo(settings.timezone)
+        # Treat input as local time, convert to UTC
+        local_aware = local_dt.replace(tzinfo=tz)
+        utc_dt = local_aware.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        schedule.start_time = utc_dt
         schedule.cron_expression = None
     elif schedule.schedule_type == ScheduleType.CRON and cron_expression:
         schedule.cron_expression = cron_expression
