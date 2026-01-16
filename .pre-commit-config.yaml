@@ -7,11 +7,23 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.6
     hooks:
-      # Linter
+      # Linter (with auto-fix)
       - id: ruff
         args: [--fix]
       # Formatter
       - id: ruff-format
+
+  # Auto-stage files modified by formatters
+  # This ensures formatted files are included in the commit
+  - repo: local
+    hooks:
+      - id: auto-stage-formatted
+        name: auto-stage formatted files
+        entry: git add -u
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+        always_run: true
 
   # Run tests (only on push, not on every commit)
   - repo: local
@@ -23,3 +35,4 @@ repos:
         pass_filenames: false
         stages: [pre-push]
         always_run: true
+

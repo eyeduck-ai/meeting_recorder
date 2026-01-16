@@ -1,52 +1,24 @@
-FROM ubuntu:22.04
+FROM python:3.12-slim-bookworm
 
-# Prevent interactive prompts during package installation
+# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Taipei
 
-# Install system dependencies and Python 3.12
-RUN apt-get update && apt-get install -y \
-    # Required for adding PPA
-    software-properties-common \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    # Python 3.12
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
-    # FFmpeg with codecs
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Media & Display
     ffmpeg \
-    # Virtual display
     xvfb \
-    # Virtual audio
     pulseaudio \
-    # VNC for debugging
     x11vnc \
-    # Browser dependencies
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
     # Utilities
     curl \
     wget \
     dbus \
+    procps \
+    # Build dependencies
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-# Set up Python 3.12 as default
-RUN ln -sf /usr/bin/python3.12 /usr/bin/python3 && \
-    ln -sf /usr/bin/python3 /usr/bin/python
 
 # Install uv for fast package management
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -58,7 +30,7 @@ WORKDIR /app
 # Add a build argument to force cache invalidation for the copy step
 ARG BUILD_TIMESTAMP=unknown
 
-# Copy all application code first
+# Copy all application code
 COPY . .
 
 # Copy .env.example to .env if .env doesn't exist
@@ -67,7 +39,8 @@ RUN cp -n .env.example .env 2>/dev/null || true
 # Install Python dependencies with uv
 RUN uv pip install --system -e .
 
-# Install Playwright and Chromium
+# Install Playwright and Chromium dependencies
+# playwight install-deps handles all the library dependencies
 RUN playwright install chromium && \
     playwright install-deps chromium
 
