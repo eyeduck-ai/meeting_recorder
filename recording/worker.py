@@ -186,7 +186,7 @@ class RecordingWorker:
         # Ensure output directory exists
         job.output_dir.mkdir(parents=True, exist_ok=True)
         # Use job_id for safe filename (meeting_code may contain URLs or special chars)
-        output_file = job.output_dir / f"recording_{job.job_id}.mp4"
+        output_file = job.output_dir / f"recording_{job.job_id}.mkv"
         diagnostics_dir = settings.diagnostics_dir / job.job_id
 
         virtual_env = None

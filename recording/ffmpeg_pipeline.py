@@ -109,9 +109,7 @@ class FFmpegPipeline:
                 "aac",
                 "-b:a",
                 settings.ffmpeg_audio_bitrate,
-                # Output
-                "-movflags",
-                "+faststart",  # Enable streaming
+                # Output (MKV format for resilience)
                 str(self.output_path),
             ]
         else:
@@ -148,9 +146,7 @@ class FFmpegPipeline:
                 "-b:a",
                 settings.ffmpeg_audio_bitrate,
                 "-shortest",  # Stop when video ends
-                # Output
-                "-movflags",
-                "+faststart",  # Enable streaming
+                # Output (MKV format for resilience)
                 str(self.output_path),
             ]
 
