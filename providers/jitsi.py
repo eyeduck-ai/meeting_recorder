@@ -206,7 +206,7 @@ class JitsiProvider(BaseProvider):
             # - #filmstripLocalVideo: local video filmstrip (most reliable)
             # - #remoteVideos: remote video filmstrip
             # - .details-container: meeting details bar (timer, subject name)
-            in_meeting_indicators = page.locator("#filmstripLocalVideo," "#remoteVideos," ".details-container")
+            in_meeting_indicators = page.locator("#filmstripLocalVideo,#remoteVideos,.details-container")
             is_in_meeting = await in_meeting_indicators.count() > 0
 
             # Check error indicators

@@ -129,9 +129,9 @@ Examples:
 
 def print_step(step: int, message: str) -> None:
     """Print a step message with formatting."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Step {step}: {message}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def print_info(message: str) -> None:
@@ -222,7 +222,7 @@ async def dump_debug_info(page, output_dir: Path, step_name: str, error_msg: str
                 # List available frames for debugging
                 all_frames = page.frames
                 if len(all_frames) > 1:
-                    print_info(f"iframe HTML: (found {len(all_frames)-1} frame(s), but could not extract)")
+                    print_info(f"iframe HTML: (found {len(all_frames) - 1} frame(s), but could not extract)")
                 else:
                     print_info("iframe HTML: (no iframe found at this stage)")
     except Exception as e:
@@ -244,12 +244,12 @@ Step: {step_name}
 Time: {datetime.now().isoformat()}
 URL: {page.url}
 Title: {page_title}
-Error: {error_msg or 'User requested debug dump'}
+Error: {error_msg or "User requested debug dump"}
 
 Files:
 - Screenshot: {prefix}.png
 - HTML: {prefix}.html
-{f'- iframe HTML: {prefix}_iframe.html' if iframe_html_path else '- iframe HTML: (not available)'}
+{f"- iframe HTML: {prefix}_iframe.html" if iframe_html_path else "- iframe HTML: (not available)"}
 
 Hint: Check the HTML file for expected element selectors
 """
@@ -389,7 +389,7 @@ async def run_test(page, provider, args, output_dir: Path, timestamp: str) -> bo
                     # Wait for user to signal they're ready to check
                     user_input = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda a=attempt: input(f"  [{a+1}] Check status? [Enter]=check | skip=exit > ")
+                        lambda a=attempt: input(f"  [{a + 1}] Check status? [Enter]=check | skip=exit > ")
                         .strip()
                         .lower(),
                     )
@@ -398,7 +398,7 @@ async def run_test(page, provider, args, output_dir: Path, timestamp: str) -> bo
                         print_info("Skipping in-meeting wait phase")
                         break
                     elif user_input == "html":
-                        await dump_debug_info(page, output_dir, f"check_{attempt+1}")
+                        await dump_debug_info(page, output_dir, f"check_{attempt + 1}")
                         continue
 
                     # Re-check status

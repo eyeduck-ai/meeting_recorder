@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+
+{% block title %}Test Center - Meeting Recorder{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Page header -->
+    <div class="flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Test Center</h1>
+        <div id="vnc-info" class="badge badge-info gap-2">
+            Loading VNC info...
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Left: Test Cards -->
+        <div class="space-y-4">
+            <!-- Environment Test -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        Environment Check
+                    </h2>
+                    <p class="text-sm text-base-content/60">Check Xvfb, PulseAudio, FFmpeg, Playwright</p>
+                    <div class="card-actions justify-end">
+                        <button class="btn btn-primary btn-sm" onclick="runTest('environment')">
+                            Run
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Browser Test -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
+                        </svg>
+                        Browser Test
+                    </h2>
+                    <p class="text-sm text-base-content/60">Launch browser and take screenshot</p>
+                    <div class="card-actions justify-end">
+                        <button class="btn btn-primary btn-sm" onclick="runTest('browser')">
+                            Run
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Provider Test -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+                        </svg>
+                        Provider Test
+                    </h2>
+                    <p class="text-sm text-base-content/60">Test meeting join flow</p>
+                    <div class="space-y-2 mt-2">
+                        <select id="provider-select" class="select select-bordered select-sm w-full">
+                            <option value="jitsi">Jitsi</option>
+                            <option value="webex">Webex</option>
+                        </select>
+                        <input type="text" id="meeting-url" class="input input-bordered input-sm w-full" placeholder="Meeting URL">
+                        <input type="text" id="display-name" class="input input-bordered input-sm w-full" placeholder="Display Name" value="Test Recorder">
+                    </div>
+                    <div class="card-actions justify-end mt-2">
+                        <button class="btn btn-primary btn-sm" onclick="runProviderTest()">
+                            Run
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recording Test -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 text-error">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 9.563C9 9.252 9.252 9 9.563 9h4.874c.311 0 .563.252.563.563v4.874c0 .311-.252.563-.563.563H9.564A.562.562 0 019 14.437V9.564z" />
+                        </svg>
+                        Recording Test
+                    </h2>
+                    <p class="text-sm text-base-content/60">Test FFmpeg recording</p>
+                    <div class="form-control mt-2">
+                        <label class="label py-1">
+                            <span class="label-text">Duration (seconds)</span>
+                        </label>
+                        <input type="number" id="recording-duration" class="input input-bordered input-sm w-full" value="10" min="5" max="60">
+                    </div>
+                    <div class="card-actions justify-end mt-2">
+                        <button class="btn btn-primary btn-sm" onclick="runRecordingTest()">
+                            Run
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Telegram Test -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 text-blue-500">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+                        </svg>
+                        Telegram Test
+                    </h2>
+                    <p class="text-sm text-base-content/60">Check bot status and send test message</p>
+                    <div class="form-control mt-2">
+                        <label class="label cursor-pointer justify-start gap-2">
+                            <input type="checkbox" id="telegram-send-message" class="checkbox checkbox-sm">
+                            <span class="label-text">Send test message</span>
+                        </label>
+                    </div>
+                    <div class="card-actions justify-end">
+                        <button class="btn btn-primary btn-sm" onclick="runTelegramTest()">
+                            Run
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- YouTube Test -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body p-4">
+                    <h2 class="card-title text-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 text-red-500">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15.91 11.672a.375.375 0 010 .656l-5.603 3.113a.375.375 0 01-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112z" />
+                        </svg>
+                        YouTube Test
+                    </h2>
+                    <p class="text-sm text-base-content/60">Check authorization and upload test</p>
+                    <div class="form-control mt-2">
+                        <label class="label cursor-pointer justify-start gap-2">
+                            <input type="checkbox" id="youtube-upload-test" class="checkbox checkbox-sm">
+                            <span class="label-text">Upload test video (private)</span>
+                        </label>
+                    </div>
+                    <div class="card-actions justify-end">
+                        <button class="btn btn-primary btn-sm" onclick="runYouTubeTest()">
+                            Run
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Log Output -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body p-4">
+                <div class="flex justify-between items-center mb-2">
+                    <h2 class="card-title text-lg">Test Output</h2>
+                    <div class="flex gap-2">
+                        <button class="btn btn-ghost btn-xs" onclick="clearLogs()">Clear</button>
+                        <button class="btn btn-error btn-xs" onclick="stopCurrentTest()" id="stop-btn" disabled>Stop</button>
+                    </div>
+                </div>
+                <div id="log-container" class="bg-base-200 rounded-lg p-3 h-[600px] overflow-y-auto font-mono text-sm">
+                    <div class="text-base-content/50">Ready to run tests...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let currentTestId = null;
+    let eventSource = null;
+
+    document.addEventListener('DOMContentLoaded', loadVncInfo);
+
+    async function loadVncInfo() {
+        try {
+            const response = await fetch('/api/v1/test/vnc-info');
+            const data = await response.json();
+            const vncInfo = document.getElementById('vnc-info');
+            if (data.enabled) {
+                vncInfo.className = 'badge badge-success gap-2';
+                vncInfo.textContent = `VNC: ${data.display} (${data.resolution})`;
+            } else {
+                vncInfo.className = 'badge badge-ghost gap-2';
+                vncInfo.textContent = 'VNC: Disabled';
+            }
+        } catch (error) {
+            console.error('Failed to load VNC info:', error);
+        }
+    }
+
+    function addLog(message, level = 'INFO') {
+        const container = document.getElementById('log-container');
+        const firstChild = container.firstElementChild;
+        if (firstChild && firstChild.classList.contains('text-base-content/50')) {
+            container.innerHTML = '';
+        }
+        const div = document.createElement('div');
+        div.className = 'py-0.5';
+        if (level === 'ERROR') div.className += ' text-error';
+        else if (level === 'WARNING') div.className += ' text-warning';
+        else if (level === 'SUCCESS') div.className += ' text-success';
+        div.textContent = message;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function clearLogs() {
+        const container = document.getElementById('log-container');
+        container.innerHTML = '<div class="text-base-content/50">Ready to run tests...</div>';
+    }
+
+    function setStopButtonEnabled(enabled) {
+        document.getElementById('stop-btn').disabled = !enabled;
+    }
+
+    async function runTest(testType, params = {}) {
+        if (currentTestId) {
+            addLog('A test is already running', 'WARNING');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/v1/test/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_type: testType, params: params })
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                addLog(`Failed to start test: ${error.detail}`, 'ERROR');
+                return;
+            }
+
+            const data = await response.json();
+            currentTestId = data.test_id;
+            setStopButtonEnabled(true);
+            addLog(`Starting ${testType} test (ID: ${currentTestId})...`);
+
+            startLogStream(currentTestId);
+        } catch (error) {
+            addLog(`Error: ${error.message}`, 'ERROR');
+        }
+    }
+
+    function startLogStream(testId) {
+        if (eventSource) {
+            eventSource.close();
+        }
+
+        eventSource = new EventSource(`/api/v1/test/${testId}/logs`);
+
+        eventSource.onmessage = function(event) {
+            addLog(event.data);
+        };
+
+        eventSource.addEventListener('complete', function(event) {
+            addLog(`Test completed: ${event.data}`, event.data === 'succeeded' ? 'SUCCESS' : 'WARNING');
+            cleanup();
+        });
+
+        eventSource.addEventListener('error', function(event) {
+            addLog('Connection error', 'ERROR');
+            cleanup();
+        });
+
+        eventSource.onerror = function() {
+            cleanup();
+        };
+    }
+
+    function cleanup() {
+        if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+        }
+        currentTestId = null;
+        setStopButtonEnabled(false);
+    }
+
+    async function stopCurrentTest() {
+        if (!currentTestId) return;
+        try {
+            await fetch(`/api/v1/test/${currentTestId}/stop`, { method: 'POST' });
+            addLog('Stop requested...', 'WARNING');
+        } catch (error) {
+            addLog(`Stop failed: ${error.message}`, 'ERROR');
+        }
+    }
+
+    function runProviderTest() {
+        const provider = document.getElementById('provider-select').value;
+        const meetingUrl = document.getElementById('meeting-url').value;
+        const displayName = document.getElementById('display-name').value || 'Test Recorder';
+
+        if (!meetingUrl) {
+            addLog('Please enter a meeting URL', 'ERROR');
+            return;
+        }
+
+        runTest('provider', {
+            meeting_url: meetingUrl,
+            provider: provider,
+            display_name: displayName
+        });
+    }
+
+    function runRecordingTest() {
+        const duration = parseInt(document.getElementById('recording-duration').value) || 10;
+        runTest('recording', { duration_sec: duration });
+    }
+
+    function runTelegramTest() {
+        const sendMessage = document.getElementById('telegram-send-message').checked;
+        runTest('telegram', { send_test_message: sendMessage });
+    }
+
+    function runYouTubeTest() {
+        const uploadTest = document.getElementById('youtube-upload-test').checked;
+        runTest('youtube', { upload_test_video: uploadTest });
+    }
+
+</script>
+{% endblock %}
