@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -215,26 +216,50 @@ class FFmpegPipeline:
         end_time = datetime.now()
 
         try:
-            # Send 'q' to FFmpeg to gracefully stop
+            # Step 1: Send 'q' to FFmpeg to gracefully stop
             if self._process.stdin:
                 try:
                     self._process.stdin.write(b"q")
                     self._process.stdin.flush()
+                    logger.info("Sent 'q' to FFmpeg for graceful stop")
                 except (BrokenPipeError, OSError):
+                    logger.warning("Could not send 'q' to FFmpeg (pipe broken)")
+
+            # Step 2: Wait 3 seconds for graceful stop
+            try:
+                self._process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                # Step 3: Send SIGINT (Ctrl+C) - FFmpeg handles this gracefully
+                logger.info("Sending SIGINT to FFmpeg")
+                try:
+                    self._process.send_signal(signal.SIGINT)
+                except OSError:
                     pass
 
-            # Wait for process to finish
-            try:
-                self._process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                logger.warning("FFmpeg didn't stop gracefully, terminating")
-                self._process.terminate()
                 try:
                     self._process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    logger.warning("FFmpeg still running, killing")
-                    self._process.kill()
-                    self._process.wait()
+                    # Step 4: SIGTERM
+                    logger.warning("FFmpeg didn't respond to SIGINT, terminating")
+                    self._process.terminate()
+                    try:
+                        self._process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # Step 5: SIGKILL (last resort)
+                        logger.warning("FFmpeg still running, killing")
+                        self._process.kill()
+                        self._process.wait()
+
+            # Collect stderr for logging
+            if self._process.stderr:
+                try:
+                    self._stderr_output = self._process.stderr.read().decode(errors="ignore")
+                    if self._stderr_output and self.log_path:
+                        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                        self.log_path.write_text(self._stderr_output)
+                        logger.info(f"FFmpeg log saved to: {self.log_path}")
+                except Exception as e:
+                    logger.warning(f"Could not save FFmpeg log: {e}")
 
             logger.info("FFmpeg stopped")
 

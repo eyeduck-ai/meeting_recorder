@@ -26,3 +26,8 @@ services:
     privileged: true
     shm_size: '2gb'
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

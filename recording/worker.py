@@ -311,6 +311,7 @@ class RecordingWorker:
                 audio_source=virtual_env.pulse_monitor,
                 width=settings.resolution_w,
                 height=settings.resolution_h,
+                log_path=diagnostics_dir / "ffmpeg.log",
             )
             await ffmpeg.start()
 
