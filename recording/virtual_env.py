@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 class VirtualEnvironmentConfig:
     """Configuration for virtual display and audio."""
 
-    width: int = 1280
-    height: int = 720
+    width: int = 1920
+    height: int = 1080
     depth: int = 24
     display_num: int = 99
     pulse_sink_name: str = "virtual_speaker"
@@ -29,6 +29,7 @@ class VirtualEnvironment:
     config: VirtualEnvironmentConfig = field(default_factory=VirtualEnvironmentConfig)
     _xvfb_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
+    _xvfb_owned: bool = field(default=False, init=False)
 
     @property
     def display(self) -> str:
@@ -83,7 +84,8 @@ class VirtualEnvironment:
 
         logger.info("Stopping virtual environment")
 
-        if self._xvfb_process:
+        # Only stop Xvfb if we started it
+        if self._xvfb_owned and self._xvfb_process:
             try:
                 self._xvfb_process.terminate()
                 try:
@@ -96,8 +98,11 @@ class VirtualEnvironment:
                 logger.warning(f"Error stopping Xvfb: {e}")
             finally:
                 self._xvfb_process = None
+        elif not self._xvfb_owned:
+            logger.info("Xvfb was reused, not stopping it")
 
         self._started = False
+        self._xvfb_owned = False
         logger.info("Virtual environment stopped")
 
     async def _start_xvfb(self) -> None:
@@ -111,6 +116,25 @@ class VirtualEnvironment:
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise RuntimeError("Xvfb not found. Please install xvfb package.")
+
+        # Check if Xvfb is already running on this display
+        try:
+            result = subprocess.run(
+                ["pgrep", "-x", "Xvfb"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                # Xvfb is already running, reuse it
+                logger.info(f"Xvfb already running on display {self.display}, reusing existing instance")
+                self._xvfb_owned = False
+                self._xvfb_process = None
+                return
+        except Exception as e:
+            logger.warning(f"Error checking for existing Xvfb: {e}")
+
+        # No existing Xvfb, start a new one
+        logger.info(f"Starting new Xvfb on display {self.display}")
 
         # Kill any existing Xvfb on this display
         lock_file = f"/tmp/.X{self.config.display_num}-lock"
@@ -146,6 +170,7 @@ class VirtualEnvironment:
             stderr=subprocess.DEVNULL,
             preexec_fn=os.setsid if hasattr(os, "setsid") else None,
         )
+        self._xvfb_owned = True
 
         # Wait a bit for Xvfb to start
         await asyncio.sleep(1)

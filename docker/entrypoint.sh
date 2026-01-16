@@ -81,14 +81,32 @@ fi
 # Start VNC server if DEBUG_VNC is set
 if [ "${DEBUG_VNC:-0}" = "1" ]; then
     echo "Starting VNC server on port 5900 for debugging..."
-    # Start Xvfb first if not already running
-    if ! pgrep -x Xvfb > /dev/null; then
-        Xvfb :99 -screen 0 1280x720x24 &
-        sleep 1
+
+    # 从环境变量读取分辨率，默认 1920x1080
+    VNC_WIDTH="${RESOLUTION_W:-1920}"
+    VNC_HEIGHT="${RESOLUTION_H:-1080}"
+    VNC_DEPTH="24"
+    VNC_DISPLAY=":99"
+
+    # 清理旧的 lock 文件
+    if [ -f "/tmp/.X99-lock" ]; then
+        echo "Removing stale X lock file..."
+        rm -f /tmp/.X99-lock
     fi
-    export DISPLAY=:99
-    x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log 2>/dev/null
-    echo "VNC server started - connect to localhost:5900"
+
+    # 检查 Xvfb 是否已运行
+    if ! pgrep -x Xvfb > /dev/null; then
+        echo "Starting Xvfb with resolution ${VNC_WIDTH}x${VNC_HEIGHT}..."
+        Xvfb ${VNC_DISPLAY} -screen 0 ${VNC_WIDTH}x${VNC_HEIGHT}x${VNC_DEPTH} \
+            -ac +extension GLX +extension RANDR +extension RENDER &
+        sleep 2
+    else
+        echo "Xvfb already running, reusing existing instance"
+    fi
+
+    export DISPLAY=${VNC_DISPLAY}
+    x11vnc -display ${VNC_DISPLAY} -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log 2>/dev/null
+    echo "VNC server started - connect to localhost:5900 (${VNC_WIDTH}x${VNC_HEIGHT})"
 fi
 
 echo "=== Starting Application ==="

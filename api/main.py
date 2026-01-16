@@ -10,6 +10,7 @@ from api.routes import detection as detection_routes
 from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
 from api.routes import recording_management as recording_mgmt_routes
 from api.routes import telegram as telegram_routes
+from api.routes import test as test_routes
 from config.settings import get_settings
 from database.models import init_db
 from scheduling.job_runner import get_job_runner
@@ -49,6 +50,7 @@ app.include_router(meetings.router, prefix="/api/v1")
 app.include_router(schedules.router, prefix="/api/v1")
 app.include_router(youtube.router, prefix="/api/v1")
 app.include_router(telegram_routes.router, prefix="/api/v1")
+app.include_router(test_routes.router)  # Test API
 app.include_router(detection_routes.router)  # Detection API
 app.include_router(recording_mgmt_routes.router)  # Recording management API
 app.include_router(settings.router)

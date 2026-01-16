@@ -241,7 +241,8 @@ class RecordingWorker:
 
             context = await browser.new_context(
                 viewport={"width": settings.resolution_w, "height": settings.resolution_h},
-                # No permissions granted - let providers handle dialogs
+                # Only grant microphone permission (not camera) = video OFF by default
+                permissions=["microphone"],
             )
             page = await context.new_page()
 

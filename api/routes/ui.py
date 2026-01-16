@@ -663,3 +663,17 @@ async def settings_page(request: Request, db: Session = Depends(get_db)):
             app_settings=app_settings,
         ),
     )
+
+
+# =============================================================================
+# Test Center
+# =============================================================================
+
+
+@router.get("/test", response_class=HTMLResponse)
+async def test_page(request: Request):
+    """Test center page for system diagnostics."""
+    return templates.TemplateResponse(
+        "test.html",
+        get_context(request),
+    )

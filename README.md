@@ -277,8 +277,14 @@ docker-compose --profile dev up
 
 # VNC 連線資訊
 # 地址: localhost:5900
-# 密碼: secret
+# 密碼: 無需密碼
 ```
+
+> **💡 VNC 與錄影的關係**
+>
+> - VNC 只是調試工具，用於觀察容器內的虛擬顯示
+> - 錄影功能不依賴 VNC，移除 VNC 不會影響錄影
+> - VNC 可以實時觀察錄影過程（分辨率：1920x1080）
 
 推薦 VNC 客戶端：
 - Windows: [TightVNC Viewer](https://www.tightvnc.com/)
@@ -474,7 +480,7 @@ curl -X POST "http://localhost:8000/api/v1/schedules/1/trigger" \
 # 啟用 VNC
 DEBUG_VNC=1 docker-compose up
 
-# 連線到 localhost:5900（密碼：secret）
+# 連線到 localhost:5900（無需密碼）
 ```
 
 ### 診斷資料
@@ -484,6 +490,63 @@ DEBUG_VNC=1 docker-compose up
 - `diagnostics/{job_id}/page.html` - 頁面 HTML
 - `diagnostics/{job_id}/console.log` - 瀏覽器 console
 - `diagnostics/{job_id}/metadata.json` - 錯誤資訊
+
+### Provider 測試腳本（本地端）
+
+獨立的 CLI 腳本，可在本地端（Windows/Linux）測試 Provider 登入流程，無需 Docker。
+
+> **💡 用途**：當 Jitsi 或 Webex 更新網站版本時，可使用此腳本快速驗證現有的加入會議邏輯是否仍然正常運作。
+
+**支援的 Provider**：
+- `jitsi` - Jitsi Meet (預設)
+- `webex` - Cisco Webex (Guest Join)
+
+**基本用法**：
+
+```bash
+# Jitsi 測試
+python -m scripts.test_provider --url "https://meet.jit.si/test-room"
+
+# Webex 測試
+python -m scripts.test_provider --url "https://company.webex.com/meet/username" --provider webex
+
+# 帶密碼的會議
+python -m scripts.test_provider --url "https://meet.jit.si/private-room" --password "meeting-password"
+```
+
+**互動模式**（推薦用於除錯）：
+
+```bash
+# 每步暫停，可檢查瀏覽器狀態
+python -m scripts.test_provider --url "https://meet.jit.si/test-room" --interactive
+
+# 互動模式 + 放慢操作（適合觀察每個步驟）
+python -m scripts.test_provider --url "https://meet.jit.si/test-room" --interactive --slowmo 500
+```
+
+**互動模式指令**：
+| 輸入 | 說明 |
+|------|------|
+| `Enter` | 繼續下一步 |
+| `e` | 標記錯誤，輸出 debug 資訊並退出 |
+| `html` | 輸出 debug 資訊（截圖、HTML）但不退出 |
+| `skip` | 跳過此步驟 |
+
+**完整參數**：
+
+```bash
+python -m scripts.test_provider \
+  --url "https://meet.jit.si/room" \  # 會議 URL（必填）
+  --provider jitsi \                   # Provider 類型（jitsi/webex）
+  --name "Test Recorder" \             # 顯示名稱
+  --password "secret" \                # 會議密碼
+  --interactive \                      # 互動模式
+  --slowmo 500 \                       # 放慢操作（毫秒）
+  --timeout 60 \                       # 加入超時（秒）
+  --output-dir ./test_output           # 輸出目錄
+```
+
+錯誤時會自動輸出截圖、HTML、debug 摘要至 `test_output/` 目錄，方便分析問題。
 
 ## 專案結構
 
@@ -625,7 +688,9 @@ docker-compose --profile dev up
 DEBUG_VNC=1 docker-compose -f docker-compose.hub.yml up -d
 ```
 
-然後使用 VNC 客戶端連線到 `localhost:5900`，密碼為 `secret`。
+然後使用 VNC 客戶端連線到 `localhost:5900`（無需密碼）。
+
+> **💡 提示**：VNC 和錄影功能共享同一個虛擬顯示（1920x1080），可以實時觀察錄影過程。
 
 ### Q: 錄製失敗如何排查？
 
@@ -678,6 +743,27 @@ ports:
 
 即使刪除容器，這些資料也會保留。
 
+## 未來改進方向
+
+以下是目前已知可持續優化的方向：
+
+### 瀏覽器媒體控制
+目前使用以下配置讓 Webex 預設關閉視訊：
+- 只授予 `microphone` 權限，不授予 `camera` 權限
+- 不使用 `--use-fake-device-for-media-stream` 和 `--use-fake-ui-for-media-stream`
+
+**可改進方向**：
+- 探索更底層的 Chromium 參數（如 `--disable-media-stream`）
+- 研究 Playwright 的 `browserContext.grantPermissions` 進階用法
+- 調查是否有方法在 browser launch 時直接禁用攝影機
+
+### Provider 狀態偵測
+目前使用優先級偵測（in_meeting > error > lobby），可持續優化：
+- 增加更多平台專屬的偵測選擇器
+- 建立自動化測試流程驗證選擇器有效性
+- 考慮增加 Google Meet 等其他平台支援
+
 ## License
 
 MIT
+
