@@ -236,7 +236,10 @@ class RecordingWorker:
                     f"--window-size={settings.resolution_w},{settings.resolution_h}",
                     "--window-position=0,0",
                     "--autoplay-policy=no-user-gesture-required",
-                    "--kiosk",  # Fullscreen mode
+                    "--start-fullscreen",
+                    "--hide-scrollbars",
+                    "--disable-infobars",
+                    "--app=about:blank",  # App mode - no address bar
                 ],
                 env={**env_vars},
             )

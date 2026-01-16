@@ -173,11 +173,23 @@ class JobRunner:
                 r.update_status(job_id, status.value, **update_fields)
                 s.commit()
 
-                # Send start notification when recording begins
+                # Send start notification when recording begins and save message_id
                 if status == JobStatus.RECORDING:
                     db_job = r.get_by_job_id(job_id)
                     if db_job:
-                        asyncio.create_task(notify_recording_started(db_job))
+
+                        async def send_and_save():
+                            msg_id = await notify_recording_started(db_job)
+                            if msg_id:
+                                ss = SessionLocal()
+                                try:
+                                    rr = JobRepository(ss)
+                                    rr.update_status(job_id, status.value, telegram_message_id=msg_id)
+                                    ss.commit()
+                                finally:
+                                    ss.close()
+
+                        asyncio.create_task(send_and_save())
             finally:
                 s.close()
 

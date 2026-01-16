@@ -40,7 +40,10 @@ def localtime_filter(value: datetime | None, format: str = "%Y-%m-%d %H:%M:%S") 
         return "-"
     try:
         tz = ZoneInfo(settings.timezone)
-        # Assume input is UTC naive, convert to aware then to local
+        # If already timezone-aware, strip tzinfo first (assume it's UTC)
+        if value.tzinfo is not None:
+            value = value.replace(tzinfo=None)
+        # Mark as UTC then convert to local
         utc_dt = value.replace(tzinfo=ZoneInfo("UTC"))
         local_dt = utc_dt.astimezone(tz)
         return local_dt.strftime(format)

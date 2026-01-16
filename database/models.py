@@ -267,6 +267,9 @@ class RecordingJob(Base):
     youtube_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     youtube_video_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # Telegram notification tracking (Phase 12)
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {

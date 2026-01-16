@@ -1,19 +1,14 @@
-"""Telegram notification functions."""
+"""Telegram notification functions with single-message updates."""
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+from config.settings import get_settings
 from database.models import RecordingJob, TelegramUser, get_session_local
 from telegram_bot.bot import get_bot
 
 logger = logging.getLogger(__name__)
-
-# Map notification types to TelegramUser filter attributes
-_NOTIFICATION_FILTERS = {
-    "start": "notify_on_start",
-    "complete": "notify_on_complete",
-    "failure": "notify_on_failure",
-    "upload": "notify_on_upload",
-}
 
 # Map error codes to user-friendly descriptions (in Chinese)
 _ERROR_DESCRIPTIONS = {
@@ -36,90 +31,223 @@ _ERROR_DESCRIPTIONS = {
 }
 
 
-async def send_to_approved_users(message: str, notification_type: str = "all") -> None:
-    """Send a message to all approved users based on their notification preferences.
+def _format_time(dt: datetime | None) -> str:
+    """Format datetime to local time string."""
+    if not dt:
+        return "-"
+    try:
+        settings = get_settings()
+        tz = ZoneInfo(settings.timezone)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        local_dt = dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+        return local_dt.strftime("%H:%M:%S")
+    except Exception:
+        return dt.strftime("%H:%M:%S") if dt else "-"
+
+
+def _build_status_message(
+    job: RecordingJob,
+    phase: str = "started",
+    video_url: str | None = None,
+) -> str:
+    """Build a unified status message for a recording job.
 
     Args:
-        message: The message to send
-        notification_type: One of 'start', 'complete', 'failure', 'upload', or 'all'
+        job: The recording job
+        phase: One of 'started', 'completed', 'failed', 'uploading', 'uploaded'
+        video_url: YouTube video URL (for uploaded phase)
     """
-    bot = await get_bot()
-    if bot is None:
-        return
+    # Header
+    lines = [f"🎬 錄製任務 | {job.meeting_code}", ""]
+
+    # Status line
+    status_icons = {
+        "started": "🔴 錄製中",
+        "completed": "✅ 錄製完成",
+        "failed": "❌ 錄製失敗",
+        "uploading": "⏳ 上傳中",
+        "uploaded": "📺 已上傳",
+    }
+    lines.append(f"📋 狀態：{status_icons.get(phase, phase)}")
+    lines.append("━━━━━━━━━━━━━━━━━")
+
+    # Timeline
+    if job.started_at:
+        lines.append(f"⏱ 開始：{_format_time(job.started_at)}")
+    if phase in ("completed", "failed", "uploading", "uploaded") and job.completed_at:
+        lines.append(f"⏱ 結束：{_format_time(job.completed_at)}")
+
+    # Recording info (for completed/uploaded)
+    if phase in ("completed", "uploading", "uploaded"):
+        if job.duration_actual_sec:
+            lines.append(f"⏱ 時長：{job.duration_actual_sec / 60:.1f} 分鐘")
+        if job.file_size:
+            lines.append(f"📦 大小：{job.file_size / 1024 / 1024:.1f} MB")
+
+    # Error info (for failed)
+    if phase == "failed":
+        if job.error_code:
+            error_code = job.error_code.value if hasattr(job.error_code, "value") else str(job.error_code)
+            desc = _ERROR_DESCRIPTIONS.get(error_code, error_code)
+            lines.append(f"❌ 原因：{desc}")
+        if job.has_screenshot or job.has_html_dump:
+            lines.append("")
+            lines.append("📎 診斷資料可在 Web UI 查看")
+
+    # YouTube section
+    if job.youtube_enabled:
+        lines.append("━━━━━━━━━━━━━━━━━")
+        if phase == "uploading":
+            lines.append("📺 YouTube：上傳中...")
+        elif phase == "uploaded" and video_url:
+            lines.append(f"📺 YouTube：{video_url}")
+        elif phase == "completed":
+            lines.append("📺 YouTube：等待上傳")
+
+    return "\n".join(lines)
+
+
+async def _get_approved_chat_ids(notification_type: str) -> list[int]:
+    """Get list of approved chat IDs based on notification preferences."""
+    # Map notification types to TelegramUser filter attributes
+    filter_attrs = {
+        "start": "notify_on_start",
+        "complete": "notify_on_complete",
+        "failure": "notify_on_failure",
+        "upload": "notify_on_upload",
+    }
 
     SessionLocal = get_session_local()
     db = SessionLocal()
     try:
         query = db.query(TelegramUser).filter(TelegramUser.approved == True)
-
-        # Filter by notification preference if specified
-        filter_attr = _NOTIFICATION_FILTERS.get(notification_type)
+        filter_attr = filter_attrs.get(notification_type)
         if filter_attr:
             query = query.filter(getattr(TelegramUser, filter_attr) == True)
-
         users = query.all()
-
-        for user in users:
-            try:
-                await bot.send_message(chat_id=user.chat_id, text=message)
-            except Exception as e:
-                logger.error(f"Failed to send message to {user.display_name}: {e}")
+        return [user.chat_id for user in users]
     finally:
         db.close()
 
 
-async def notify_recording_started(job: RecordingJob) -> None:
-    """Notify users that a recording has started."""
-    message = f"🔴 開始錄製\n\n會議: {job.meeting_code}\n名稱: {job.display_name}\n時長: {job.duration_sec // 60} 分鐘"
-    await send_to_approved_users(message, "start")
+async def notify_recording_started(job: RecordingJob) -> int | None:
+    """Send initial recording notification and return message_id for updates."""
+    bot = await get_bot()
+    if bot is None:
+        return None
+
+    message = _build_status_message(job, "started")
+    chat_ids = await _get_approved_chat_ids("start")
+
+    first_message_id = None
+    for chat_id in chat_ids:
+        try:
+            sent = await bot.send_message(chat_id=chat_id, text=message)
+            if first_message_id is None:
+                first_message_id = sent.message_id
+        except Exception as e:
+            logger.error(f"Failed to send start notification to {chat_id}: {e}")
+
     logger.info(f"Sent recording start notification for job {job.job_id}")
+    return first_message_id
 
 
 async def notify_recording_completed(job: RecordingJob) -> None:
-    """Notify users that a recording has completed successfully."""
-    duration_str = f"{job.duration_actual_sec / 60:.1f}" if job.duration_actual_sec else "-"
-    file_size_str = f"{job.file_size / 1024 / 1024:.1f} MB" if job.file_size else "-"
+    """Update notification to show recording completed."""
+    bot = await get_bot()
+    if bot is None:
+        return
 
-    message = f"✅ 錄製完成\n\n會議: {job.meeting_code}\n時長: {duration_str} 分鐘\n大小: {file_size_str}"
+    phase = "completed" if job.youtube_enabled else "completed"
+    if job.youtube_enabled:
+        phase = "uploading"
 
-    if job.youtube_enabled and not job.youtube_video_id:
-        message += "\n\n上傳 YouTube 中..."
+    message = _build_status_message(job, phase)
+    chat_ids = await _get_approved_chat_ids("complete")
 
-    await send_to_approved_users(message, "complete")
-    logger.info(f"Sent recording complete notification for job {job.job_id}")
+    for chat_id in chat_ids:
+        try:
+            if job.telegram_message_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job.telegram_message_id,
+                    text=message,
+                )
+            else:
+                await bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to update completion notification to {chat_id}: {e}")
+
+    logger.info(f"Updated recording complete notification for job {job.job_id}")
 
 
 async def notify_recording_failed(job: RecordingJob) -> None:
-    """Notify users that a recording has failed."""
-    # Build detailed error information
-    error_info = ""
-    if job.error_code:
-        error_code = job.error_code.value if hasattr(job.error_code, "value") else str(job.error_code)
-        desc = _ERROR_DESCRIPTIONS.get(error_code, error_code)
-        error_info = f"\n原因: {desc}"
+    """Update notification to show recording failed."""
+    bot = await get_bot()
+    if bot is None:
+        return
 
-    if job.error_message:
-        error_info += f"\n詳情: {job.error_message[:100]}"
+    message = _build_status_message(job, "failed")
+    chat_ids = await _get_approved_chat_ids("failure")
 
-    # Check for diagnostic data availability
-    diagnostic_hint = ""
-    if job.has_screenshot or job.has_html_dump or job.has_console_log:
-        diagnostic_hint = "\n\n📎 已收集診斷資料，可在 Web UI 查看"
+    for chat_id in chat_ids:
+        try:
+            if job.telegram_message_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job.telegram_message_id,
+                    text=message,
+                )
+            else:
+                await bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to update failure notification to {chat_id}: {e}")
 
-    status_value = job.status.value if hasattr(job.status, "value") else str(job.status)
-    message = f"❌ 錄製失敗\n\n會議: {job.meeting_code}\n狀態: {status_value}{error_info}{diagnostic_hint}"
-    await send_to_approved_users(message, "failure")
-    logger.info(f"Sent recording failure notification for job {job.job_id}")
+    logger.info(f"Updated recording failure notification for job {job.job_id}")
 
 
 async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> None:
-    """Notify users that a YouTube upload has completed."""
-    message = f"📺 YouTube 上傳完成\n\n會議: {job.meeting_code}\n連結: {video_url}"
-    await send_to_approved_users(message, "upload")
-    logger.info(f"Sent YouTube upload notification for job {job.job_id}")
+    """Update notification to show YouTube upload completed."""
+    bot = await get_bot()
+    if bot is None:
+        return
+
+    message = _build_status_message(job, "uploaded", video_url)
+    chat_ids = await _get_approved_chat_ids("upload")
+
+    for chat_id in chat_ids:
+        try:
+            if job.telegram_message_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job.telegram_message_id,
+                    text=message,
+                )
+            else:
+                await bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to update YouTube notification to {chat_id}: {e}")
+
+    logger.info(f"Updated YouTube upload notification for job {job.job_id}")
 
 
-async def send_to_user(chat_id: int, message: str):
+# Legacy functions for backward compatibility
+async def send_to_approved_users(message: str, notification_type: str = "all") -> None:
+    """Send a message to all approved users (legacy)."""
+    bot = await get_bot()
+    if bot is None:
+        return
+
+    chat_ids = await _get_approved_chat_ids(notification_type)
+    for chat_id in chat_ids:
+        try:
+            await bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+
+
+async def send_to_user(chat_id: int, message: str) -> bool:
     """Send a message to a specific user."""
     bot = await get_bot()
     if bot is None:

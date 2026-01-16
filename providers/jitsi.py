@@ -34,8 +34,10 @@ class JitsiProvider(BaseProvider):
         if not base_url.endswith("/"):
             base_url += "/"
 
-        # Add config parameters to start with video and audio muted
-        config_params = "#config.startWithVideoMuted=true&config.startWithAudioMuted=true"
+        # Add config parameters:
+        # - Start with video and audio muted
+        # - Disable tile view to use stage view (better for screen sharing)
+        config_params = "#config.startWithVideoMuted=true&config.startWithAudioMuted=true&config.disableTileView=true"
         return urljoin(base_url, meeting_code) + config_params
 
     async def prejoin(
