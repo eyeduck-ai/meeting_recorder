@@ -129,7 +129,7 @@
                                     {% endif %}
                                 </td>
                                 <td class="truncate max-w-[150px]">{{ job.meeting_code }}</td>
-                                <td class="text-xs">{{ job.created_at.strftime('%m/%d %H:%M') }}</td>
+                                <td class="text-xs">{{ job.created_at | localtime('%m/%d %H:%M') }}</td>
                             </tr>
                             {% endfor %}
                         </tbody>

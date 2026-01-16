@@ -7,7 +7,8 @@
     <!-- Page header -->
     <div class="flex items-center gap-4">
         <a href="javascript:history.back()" class="btn btn-ghost btn-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-5 h-5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
             </svg>
             Back
@@ -78,7 +79,7 @@
                         <div class="text-left">
                             <div class="font-medium">Created</div>
                             <div class="text-sm text-base-content/60">
-                                {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '-' }}
+                                {{ job.created_at | localtime }}
                             </div>
                         </div>
                     </li>
@@ -86,7 +87,7 @@
                         <div class="text-left">
                             <div class="font-medium">Started</div>
                             <div class="text-sm text-base-content/60">
-                                {{ job.started_at.strftime('%Y-%m-%d %H:%M:%S') if job.started_at else '-' }}
+                                {{ job.started_at | localtime }}
                             </div>
                         </div>
                     </li>
@@ -94,7 +95,7 @@
                         <div class="text-left">
                             <div class="font-medium">Joined</div>
                             <div class="text-sm text-base-content/60">
-                                {{ job.joined_at.strftime('%Y-%m-%d %H:%M:%S') if job.joined_at else '-' }}
+                                {{ job.joined_at | localtime }}
                             </div>
                         </div>
                     </li>
@@ -102,7 +103,7 @@
                         <div class="text-left">
                             <div class="font-medium">Recording Started</div>
                             <div class="text-sm text-base-content/60">
-                                {{ job.recording_started_at.strftime('%Y-%m-%d %H:%M:%S') if job.recording_started_at else '-' }}
+                                {{ job.recording_started_at | localtime }}
                             </div>
                         </div>
                     </li>
@@ -110,7 +111,7 @@
                         <div class="text-left">
                             <div class="font-medium">Completed</div>
                             <div class="text-sm text-base-content/60">
-                                {{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else '-' }}
+                                {{ job.completed_at | localtime }}
                             </div>
                         </div>
                     </li>
@@ -127,11 +128,13 @@
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                     <div class="text-sm text-base-content/60">Duration</div>
-                    <div class="font-medium">{{ (job.duration_actual_sec / 60) | int if job.duration_actual_sec else 0 }} minutes</div>
+                    <div class="font-medium">{{ (job.duration_actual_sec / 60) | int if job.duration_actual_sec else 0
+                        }} minutes</div>
                 </div>
                 <div>
                     <div class="text-sm text-base-content/60">File Size</div>
-                    <div class="font-medium">{{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else 0 }} MB</div>
+                    <div class="font-medium">{{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else 0 }} MB
+                    </div>
                 </div>
                 <div>
                     <div class="text-sm text-base-content/60">Output Path</div>
@@ -140,8 +143,10 @@
             </div>
             <div class="card-actions justify-end mt-4">
                 <a href="/recordings/{{ job.job_id }}/download" class="btn btn-primary">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-5 h-5">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
                     </svg>
                     Download Recording
                 </a>
@@ -175,24 +180,25 @@
                 <div>
                     <div class="text-sm text-base-content/60">Description</div>
                     {% set error_descriptions = {
-                        'JOIN_TIMEOUT': 'Unable to join meeting within timeout',
-                        'JOIN_FAILED': 'Failed to join meeting',
-                        'INVALID_URL': 'Invalid meeting URL',
-                        'MEETING_NOT_FOUND': 'Meeting does not exist',
-                        'PASSWORD_REQUIRED': 'Password required',
-                        'PASSWORD_INCORRECT': 'Incorrect password',
-                        'LOBBY_TIMEOUT': 'Lobby wait timeout (not admitted)',
-                        'LOBBY_REJECTED': 'Rejected by host',
-                        'RECORDING_START_FAILED': 'Recording startup failed',
-                        'RECORDING_INTERRUPTED': 'Recording interrupted',
-                        'FFMPEG_ERROR': 'FFmpeg error',
-                        'BROWSER_CRASHED': 'Browser crashed',
-                        'VIRTUAL_ENV_ERROR': 'Virtual environment error',
-                        'DISK_FULL': 'Disk full',
-                        'CANCELED': 'Canceled by user',
-                        'INTERNAL_ERROR': 'Internal error'
+                    'JOIN_TIMEOUT': 'Unable to join meeting within timeout',
+                    'JOIN_FAILED': 'Failed to join meeting',
+                    'INVALID_URL': 'Invalid meeting URL',
+                    'MEETING_NOT_FOUND': 'Meeting does not exist',
+                    'PASSWORD_REQUIRED': 'Password required',
+                    'PASSWORD_INCORRECT': 'Incorrect password',
+                    'LOBBY_TIMEOUT': 'Lobby wait timeout (not admitted)',
+                    'LOBBY_REJECTED': 'Rejected by host',
+                    'RECORDING_START_FAILED': 'Recording startup failed',
+                    'RECORDING_INTERRUPTED': 'Recording interrupted',
+                    'FFMPEG_ERROR': 'FFmpeg error',
+                    'BROWSER_CRASHED': 'Browser crashed',
+                    'VIRTUAL_ENV_ERROR': 'Virtual environment error',
+                    'DISK_FULL': 'Disk full',
+                    'CANCELED': 'Canceled by user',
+                    'INTERNAL_ERROR': 'Internal error'
                     } %}
-                    <div class="text-error">{{ error_descriptions.get(job.error_code.value, job.error_code.value) }}</div>
+                    <div class="text-error">{{ error_descriptions.get(job.error_code.value, job.error_code.value) }}
+                    </div>
                 </div>
                 {% endif %}
                 {% if job.error_message %}
@@ -217,9 +223,8 @@
                 {% if job.has_screenshot %}
                 <div class="flex-1 min-w-[300px]">
                     <div class="text-sm font-medium mb-2">Screenshot</div>
-                    <img src="/jobs/{{ job.job_id }}/diagnostics/screenshot"
-                         alt="Failure screenshot"
-                         class="rounded-lg border border-base-300 max-w-full">
+                    <img src="/jobs/{{ job.job_id }}/diagnostics/screenshot" alt="Failure screenshot"
+                        class="rounded-lg border border-base-300 max-w-full">
                 </div>
                 {% endif %}
                 <div class="flex flex-col gap-2">

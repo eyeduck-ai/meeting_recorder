@@ -1,7 +1,7 @@
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.executors.asyncio import AsyncIOExecutor
@@ -146,12 +146,16 @@ class SchedulerService:
             )
 
             if schedule_type_value == ScheduleType.ONCE.value:
-                # One-time schedule
-                if schedule.start_time <= datetime.utcnow():
-                    logger.warning(f"Schedule {schedule.id} start_time is in the past, skipping")
+                # One-time schedule - trigger early_join_sec before start_time
+                early_join = timedelta(seconds=schedule.early_join_sec)
+                trigger_time = schedule.start_time - early_join
+
+                if trigger_time <= datetime.utcnow():
+                    logger.warning(f"Schedule {schedule.id} trigger_time is in the past, skipping")
                     return None
 
-                trigger = DateTrigger(run_date=schedule.start_time)
+                trigger = DateTrigger(run_date=trigger_time)
+                logger.info(f"Schedule {schedule.id} will trigger {schedule.early_join_sec}s early at {trigger_time}")
 
             elif schedule_type_value == ScheduleType.CRON.value:
                 # Cron schedule

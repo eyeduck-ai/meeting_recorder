@@ -3,6 +3,7 @@
 import hmac
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -30,6 +31,25 @@ settings = get_settings()
 # Setup templates
 templates_dir = Path(__file__).parent.parent.parent / "web" / "templates"
 templates = Jinja2Templates(directory=str(templates_dir))
+
+
+# Custom Jinja2 filter: convert UTC to local timezone
+def localtime_filter(value: datetime | None, format: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Convert UTC datetime to local timezone and format."""
+    if not value:
+        return "-"
+    try:
+        tz = ZoneInfo(settings.timezone)
+        # Assume input is UTC naive, convert to aware then to local
+        utc_dt = value.replace(tzinfo=ZoneInfo("UTC"))
+        local_dt = utc_dt.astimezone(tz)
+        return local_dt.strftime(format)
+    except Exception:
+        return value.strftime(format) if value else "-"
+
+
+# Register filter
+templates.env.filters["localtime"] = localtime_filter
 
 
 def get_context(request: Request, **kwargs) -> dict:
@@ -346,6 +366,9 @@ async def schedules_save(
     youtube_enabled: bool = Form(False),
     youtube_privacy: str = Form("unlisted"),
     override_display_name: str | None = Form(None),
+    early_join_sec: int = Form(30),
+    min_duration_min: int | None = Form(None),
+    stillness_timeout_sec: int = Form(180),
 ):
     """Save schedule (create or update)."""
     scheduler = get_scheduler()
@@ -386,6 +409,9 @@ async def schedules_save(
     schedule.youtube_enabled = youtube_enabled
     schedule.youtube_privacy = youtube_privacy
     schedule.override_display_name = override_display_name or None
+    schedule.early_join_sec = early_join_sec
+    schedule.min_duration_sec = min_duration_min * 60 if min_duration_min else None
+    schedule.stillness_timeout_sec = stillness_timeout_sec
 
     if schedule.schedule_type == ScheduleType.ONCE and start_time:
         schedule.start_time = datetime.fromisoformat(start_time)

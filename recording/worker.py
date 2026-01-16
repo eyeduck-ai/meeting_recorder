@@ -51,6 +51,8 @@ class RecordingJob:
     lobby_wait_sec: int = 900
     duration_mode: str = "fixed"  # "fixed" or "auto"
     dry_run: bool = False  # Log detection only, don't stop
+    min_duration_sec: int | None = None  # Min recording time (None = use duration_sec)
+    stillness_timeout_sec: int = 180  # Stillness detection timeout after min_duration
 
     @classmethod
     def create(
@@ -234,7 +236,7 @@ class RecordingWorker:
                     f"--window-size={settings.resolution_w},{settings.resolution_h}",
                     "--window-position=0,0",
                     "--autoplay-policy=no-user-gesture-required",
-                    # No fake-ui - let permission dialogs appear and be rejected
+                    "--kiosk",  # Fullscreen mode
                 ],
                 env={**env_vars},
             )
@@ -313,43 +315,59 @@ class RecordingWorker:
             recording_start = asyncio.get_event_loop().time()
             check_interval = 5  # Check every 5 seconds
 
+            # Calculate effective min_duration - below this, ignore all detection
+            effective_min_duration = job.min_duration_sec if job.min_duration_sec is not None else job.duration_sec
+            logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={job.duration_sec}s")
+
             # Setup detection orchestrator for auto mode
             detection_orchestrator = None
             if job.duration_mode == "auto":
                 detection_config = self._load_detection_config()
+                # Use job's stillness_timeout_sec for screen freeze detection
+                detection_config.screen_freeze_timeout_sec = job.stillness_timeout_sec
+                detection_config.screen_freeze_enabled = True  # Enable screen freeze detection
                 detection_orchestrator = DetectionOrchestrator(detection_config)
                 detection_orchestrator.set_dry_run(job.dry_run)  # Enable dry run if specified
                 for detector in create_default_detectors(detection_config):
                     detection_orchestrator.register_detector(detector)
                 await detection_orchestrator.setup_all(page)
-                logger.info(f"Auto-detection mode enabled (dry_run={job.dry_run})")
+                logger.info(
+                    f"Auto-detection mode enabled (dry_run={job.dry_run}, stillness_timeout={job.stillness_timeout_sec}s)"
+                )
 
             while True:
                 elapsed = asyncio.get_event_loop().time() - recording_start
 
-                # Check if duration reached
+                # Check if max duration reached
                 if elapsed >= job.duration_sec:
                     logger.info(f"Duration reached ({job.duration_sec}s)")
                     break
 
-                # Check for cancellation
+                # Check for cancellation (always allowed)
                 if self._cancel_requested:
                     raise asyncio.CancelledError("Job cancelled")
 
-                # Check if meeting ended (using orchestrator or legacy method)
-                if detection_orchestrator:
-                    # Use new detection framework
-                    should_end, results = await detection_orchestrator.check_all(page)
-                    if should_end:
-                        triggered = [r for r in results if r.detected]
-                        reasons = ", ".join(r.reason for r in triggered[:2])
-                        logger.info(f"Meeting ended detected: {reasons}")
-                        break
+                # Only check detection after min_duration is reached
+                if elapsed >= effective_min_duration:
+                    # Check if meeting ended (using orchestrator or legacy method)
+                    if detection_orchestrator:
+                        # Use new detection framework
+                        should_end, results = await detection_orchestrator.check_all(page)
+                        if should_end:
+                            triggered = [r for r in results if r.detected]
+                            reasons = ", ".join(r.reason for r in triggered[:2])
+                            logger.info(f"Meeting ended detected after min_duration: {reasons}")
+                            break
+                    else:
+                        # Fallback to provider's legacy method
+                        if await provider.detect_meeting_end(page):
+                            logger.info("Meeting ended")
+                            break
                 else:
-                    # Fallback to provider's legacy method
-                    if await provider.detect_meeting_end(page):
-                        logger.info("Meeting ended")
-                        break
+                    # Log that we're in protected period
+                    if int(elapsed) % 60 == 0 and int(elapsed) > 0:
+                        remaining_protection = effective_min_duration - elapsed
+                        logger.debug(f"Min duration protection: {remaining_protection:.0f}s remaining")
 
                 # Log progress every minute
                 if int(elapsed) % 60 == 0 and int(elapsed) > 0:

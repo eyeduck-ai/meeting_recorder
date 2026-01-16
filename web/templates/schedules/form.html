@@ -210,18 +210,68 @@
                         class="input input-bordered w-full" placeholder="Leave empty to use meeting default">
                 </div>
 
-                <div class="divider">Advanced Options</div>
-
-                <div class="form-control mb-4">
-                    <label class="label cursor-pointer justify-start gap-4">
-                        <input type="checkbox" name="dry_run" value="true" class="checkbox checkbox-warning" {% if
-                            schedule and schedule.dry_run %}checked{% endif %}>
-                        <div>
-                            <span class="label-text font-medium">Dry Run Mode (Testing)</span>
-                            <p class="text-xs text-base-content/50">Log detection events without stopping recording.
-                                Useful for tuning detection settings.</p>
+                <div class="collapse collapse-arrow bg-base-200 mb-4">
+                    <input type="checkbox" />
+                    <div class="collapse-title font-medium">
+                        <span class="flex items-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                                stroke="currentColor" class="w-5 h-5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
+                            </svg>
+                            進階選項 / Advanced Options
+                        </span>
+                    </div>
+                    <div class="collapse-content space-y-4">
+                        <div class="form-control w-full">
+                            <label class="label">
+                                <span class="label-text">提前加入時間 (秒)</span>
+                            </label>
+                            <input type="number" name="early_join_sec"
+                                value="{{ schedule.early_join_sec if schedule else 30 }}"
+                                class="input input-bordered w-full" min="0" max="300" step="10">
+                            <label class="label">
+                                <span class="label-text-alt">排程會提前這個時間觸發加入會議。預設：30 秒</span>
+                            </label>
                         </div>
-                    </label>
+
+                        <div class="form-control w-full">
+                            <label class="label">
+                                <span class="label-text">最少錄製時間 (分鐘)</span>
+                            </label>
+                            <input type="number" name="min_duration_min"
+                                value="{{ (schedule.min_duration_sec // 60) if schedule and schedule.min_duration_sec else '' }}"
+                                class="input input-bordered w-full" min="1" max="240" placeholder="留空則使用會議時長">
+                            <label class="label">
+                                <span class="label-text-alt">在此時間內忽略所有結束偵測，確保最少錄製時長</span>
+                            </label>
+                        </div>
+
+                        <div class="form-control w-full">
+                            <label class="label">
+                                <span class="label-text">靜止偵測超時 (秒)</span>
+                            </label>
+                            <input type="number" name="stillness_timeout_sec"
+                                value="{{ schedule.stillness_timeout_sec if schedule else 180 }}"
+                                class="input input-bordered w-full" min="30" max="600" step="30">
+                            <label class="label">
+                                <span class="label-text-alt">超過最少錄製時間後，連續靜止此時間則結束錄影。預設：180 秒 (3 分鐘)</span>
+                            </label>
+                        </div>
+
+                        <div class="form-control">
+                            <label class="label cursor-pointer justify-start gap-4">
+                                <input type="checkbox" name="dry_run" value="true" class="checkbox checkbox-warning" {%
+                                    if schedule and schedule.dry_run %}checked{% endif %}>
+                                <div>
+                                    <span class="label-text font-medium">Dry Run Mode (Testing)</span>
+                                    <p class="text-xs text-base-content/50">Log detection events without stopping
+                                        recording.
+                                        Useful for tuning detection settings.</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="divider">YouTube Upload</div>

@@ -129,6 +129,8 @@ class JobRunner:
                 lobby_wait_sec=schedule.lobby_wait_sec,
                 duration_mode=schedule.duration_mode,
                 dry_run=schedule.dry_run,
+                min_duration_sec=schedule.min_duration_sec,
+                stillness_timeout_sec=schedule.stillness_timeout_sec,
             )
 
             # Store job in database

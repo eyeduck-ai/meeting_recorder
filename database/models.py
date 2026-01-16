@@ -160,6 +160,15 @@ class Schedule(Base):
     youtube_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     youtube_privacy: Mapped[str] = mapped_column(String(32), default="unlisted")
 
+    # Advanced timing settings
+    early_join_sec: Mapped[int] = mapped_column(Integer, default=30)  # Join meeting early
+    min_duration_sec: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )  # Min recording time (None = use duration_sec)
+    stillness_timeout_sec: Mapped[int] = mapped_column(
+        Integer, default=180
+    )  # Stillness detection timeout after duration
+
     # Detection settings
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)  # Log only, don't stop
 
@@ -192,6 +201,9 @@ class Schedule(Base):
             "override_display_name": self.override_display_name,
             "youtube_enabled": self.youtube_enabled,
             "youtube_privacy": self.youtube_privacy,
+            "early_join_sec": self.early_join_sec,
+            "min_duration_sec": self.min_duration_sec,
+            "stillness_timeout_sec": self.stillness_timeout_sec,
             "enabled": self.enabled,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
