@@ -14,6 +14,7 @@
 - **多平台支援**：Jitsi Meet、Cisco Webex (Guest Join)
 - **自動化錄製**：Playwright 自動加入會議、處理等候室
 - **智慧會議結束偵測**：多種偵測器（WebRTC、文字指示、影片元素、URL 變更、螢幕凍結、音訊靜音）
+- **錄影可靠性增強**：最少錄製時間保護、靜止偵測超時、提前加入時間
 - **排程管理**：支援單次與週期性 (cron) 排程，自動偵測會議結束模式
 - **即時儀表板**：錄製進度、偵測器狀態、即時更新
 - **通知系統**：Email (SMTP)、Webhook、Telegram Bot 通知
@@ -317,6 +318,9 @@ docker-compose --profile dev up
 | `WEBHOOK_ENABLED` | 啟用 Webhook 通知 | `false` |
 | `WEBHOOK_URL` | Webhook URL | - |
 | `WEBHOOK_SECRET` | Webhook 簽名密鑰 | - |
+| `EARLY_JOIN_SEC` | 提前加入時間 | `30` |
+| `MIN_DURATION_SEC` | 最少錄製時間（可在排程設定） | - |
+| `STILLNESS_TIMEOUT_SEC` | 靜止偵測超時 | `180` |
 
 完整設定請參考 `.env.example`。
 
