@@ -52,7 +52,7 @@ class FFmpegPipeline:
     """FFmpeg recording pipeline for capturing screen and audio.
 
     Captures video from X11 display and audio from PulseAudio,
-    encoding to MP4 (H.264 + AAC).
+    encoding to Fragmented MP4 (H.264 + AAC) for crash resilience.
     """
 
     output_path: Path
@@ -90,7 +90,10 @@ class FFmpegPipeline:
                 "-video_size",
                 f"{self.width}x{self.height}",
                 "-framerate",
+                "-framerate",
                 str(self.framerate),
+                "-g",
+                "60",  # Force keyframe every 2s for crash resilience
                 "-i",
                 self.display,
                 # Audio input (PulseAudio)
@@ -112,7 +115,10 @@ class FFmpegPipeline:
                 "aac",
                 "-b:a",
                 settings.ffmpeg_audio_bitrate,
-                # Output (MKV format for resilience)
+                # Fragmented MP4 for crash resilience + YouTube compatibility
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof",
+                # Output
                 str(self.output_path),
             ]
         else:
@@ -127,6 +133,8 @@ class FFmpegPipeline:
                 f"{self.width}x{self.height}",
                 "-framerate",
                 str(self.framerate),
+                "-g",
+                "60",  # Force keyframe every 2s for crash resilience
                 "-i",
                 self.display,
                 # Silent audio source (fallback when PulseAudio unavailable)
@@ -149,7 +157,10 @@ class FFmpegPipeline:
                 "-b:a",
                 settings.ffmpeg_audio_bitrate,
                 "-shortest",  # Stop when video ends
-                # Output (MKV format for resilience)
+                # Fragmented MP4 for crash resilience + YouTube compatibility
+                "-movflags",
+                "+frag_keyframe+empty_moov+default_base_moof",
+                # Output
                 str(self.output_path),
             ]
 

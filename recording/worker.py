@@ -187,7 +187,7 @@ class RecordingWorker:
         # Ensure output directory exists
         job.output_dir.mkdir(parents=True, exist_ok=True)
         # Use job_id for safe filename (meeting_code may contain URLs or special chars)
-        output_file = job.output_dir / f"recording_{job.job_id}.mkv"
+        output_file = job.output_dir / f"recording_{job.job_id}.mp4"
         diagnostics_dir = settings.diagnostics_dir / job.job_id
 
         virtual_env = None
@@ -237,7 +237,7 @@ class RecordingWorker:
                     f"--window-size={settings.resolution_w},{settings.resolution_h}",
                     "--window-position=0,0",
                     "--autoplay-policy=no-user-gesture-required",
-                    "--start-fullscreen",
+                    # "--start-fullscreen",  # Removed: inconsistent behavior
                     "--hide-scrollbars",
                     "--disable-infobars",
                     "--app=about:blank",  # App mode - no address bar
@@ -252,6 +252,14 @@ class RecordingWorker:
             )
             page = await context.new_page()
 
+            # Force fullscreen via JS and hide scrollbars
+            await page.add_init_script("""
+                window.addEventListener('load', () => {
+                   document.body.style.overflow = 'hidden';
+                   document.documentElement.style.overflow = 'hidden';
+                });
+            """)
+
             # Capture console messages
             page.on("console", capture_console)
 
@@ -263,6 +271,14 @@ class RecordingWorker:
             join_url = provider.build_join_url(job.meeting_code, job.base_url)
             logger.info(f"Navigating to: {join_url}")
             await page.goto(join_url, wait_until="domcontentloaded")
+
+            # Request fullscreen after navigation (might fail without user gesture, but worth trying)
+            try:
+                await page.evaluate(
+                    "document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e))"
+                )
+            except Exception:
+                pass
 
             # Handle prejoin
             logger.info("Handling prejoin page")

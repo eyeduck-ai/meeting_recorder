@@ -336,30 +336,58 @@ class JitsiProvider(BaseProvider):
     async def set_layout(self, page: Page, preset: str = "speaker") -> bool:
         """Attempt to set speaker view layout.
 
+        Strategy:
+        1. Check if we are in Tile View (look for .tile-view class).
+        2. If in Tile View, press 'w' to toggle.
+        3. Double check and retry with button if needed.
+
         Args:
             page: Playwright page instance
             preset: Layout preset (only 'speaker' supported currently)
 
         Returns:
-            True if layout was set
+            True if layout seems correct (Speaker View)
         """
         if preset != "speaker":
             logger.warning(f"Unsupported layout preset: {preset}, using speaker")
 
-        logger.info("Attempting to set speaker view layout")
+        logger.info("Attempting to ensure speaker view layout")
 
         try:
-            # Try to click tile view button to ensure we're not in tile view
-            tile_button = page.locator('[aria-label*="tile" i], [aria-label*="grid" i]')
-            if await tile_button.count() > 0:
-                # Check current state and toggle if needed
-                await tile_button.first.click()
-                await asyncio.sleep(0.5)
-                # Check if we need to click again to get to speaker view
-                await tile_button.first.click()
-                logger.info("Layout toggled")
+            # Check if we are in Tile View
+            # Based on debug info: .tile-view exists when in tile view
+            tile_view_indicator = page.locator(".tile-view")
 
-            return True
+            if await tile_view_indicator.count() > 0 and await tile_view_indicator.first.is_visible():
+                logger.info("Detected Tile View, toggling to Speaker View via 'w' key")
+
+                # Method 1: Keyboard shortcut 'w' (most robust)
+                await page.keyboard.press("w")
+                await asyncio.sleep(1)
+
+                # Verify
+                if await tile_view_indicator.count() == 0 or not await tile_view_indicator.first.is_visible():
+                    logger.info("Successfully toggled to Speaker View")
+                    return True
+
+                logger.warning("Keyboard toggle failed, trying button click")
+
+                # Method 2: Click toggle button (fallback)
+                tile_button = page.locator('[aria-label*="tile" i], [aria-label*="grid" i]')
+                if await tile_button.count() > 0:
+                    await tile_button.first.click()
+                    await asyncio.sleep(1)
+
+                    if await tile_view_indicator.count() == 0:
+                        logger.info("Successfully toggled to Speaker View via button")
+                        return True
+            else:
+                logger.info("Already in Speaker View (no .tile-view detected)")
+                return True
+
+            logger.warning("Failed to exit Tile View")
+            return False
+
         except Exception as e:
             logger.warning(f"Could not set layout: {e}")
             return False
