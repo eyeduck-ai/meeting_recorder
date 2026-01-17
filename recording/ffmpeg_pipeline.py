@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import get_settings
+from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ class FFmpegPipeline:
                 raise RuntimeError(f"FFmpeg failed to start: {stderr.decode()}")
 
             self._recording = True
-            self._start_time = datetime.now()
+            self._start_time = utc_now()
             logger.info(f"Recording started: {self.output_path}")
 
         except Exception as e:
@@ -214,7 +215,7 @@ class FFmpegPipeline:
 
         logger.info("Stopping FFmpeg recording")
 
-        end_time = datetime.now()
+        end_time = utc_now()
 
         try:
             # Step 1: Send 'q' to FFmpeg to gracefully stop

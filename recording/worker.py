@@ -16,6 +16,7 @@ from recording.detection import DetectionConfig, DetectionOrchestrator
 from recording.detectors import create_default_detectors
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
+from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ class RecordingJob:
         """Create a new recording job with generated ID."""
         settings = get_settings()
         job_id = str(uuid.uuid4())[:8]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
 
         if output_dir is None:
             # Use timestamp + job_id for safe directory naming
@@ -176,7 +177,7 @@ class RecordingWorker:
         self._update_status(JobStatus.STARTING)
 
         settings = get_settings()
-        start_time = datetime.now()
+        start_time = utc_now()
         result = RecordingResult(
             job_id=job.job_id,
             status=JobStatus.STARTING,
@@ -202,7 +203,7 @@ class RecordingWorker:
                 {
                     "type": msg.type,
                     "text": msg.text,
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": utc_now().isoformat(),
                 }
             )
 
@@ -291,7 +292,7 @@ class RecordingWorker:
                 raise RuntimeError(f"Failed to join meeting: {join_result.error_code} - {join_result.error_message}")
 
             # Successfully joined - record timestamp
-            result.joined_at = datetime.now()
+            result.joined_at = utc_now()
 
             if self._cancel_requested:
                 raise asyncio.CancelledError("Job cancelled")
@@ -302,7 +303,7 @@ class RecordingWorker:
 
             # Start recording
             self._update_status(JobStatus.RECORDING)
-            result.recording_started_at = datetime.now()
+            result.recording_started_at = utc_now()
             logger.info(f"Starting recording: {output_file}")
 
             ffmpeg = FFmpegPipeline(
@@ -388,7 +389,7 @@ class RecordingWorker:
             # Success
             result.status = JobStatus.SUCCEEDED
             result.recording_info = recording_info
-            result.end_time = datetime.now()
+            result.end_time = utc_now()
             self._update_status(JobStatus.SUCCEEDED)
 
             logger.info(f"Recording completed successfully: {recording_info.output_path}")
@@ -397,7 +398,7 @@ class RecordingWorker:
             result.status = JobStatus.CANCELED
             result.error_code = ErrorCode.CANCELED.value
             result.error_message = "Job was cancelled"
-            result.end_time = datetime.now()
+            result.end_time = utc_now()
             self._update_status(JobStatus.CANCELED)
             logger.info("Recording cancelled")
 
@@ -406,7 +407,7 @@ class RecordingWorker:
             if not result.error_code:
                 result.error_code = ErrorCode.INTERNAL_ERROR.value
             result.error_message = str(e)
-            result.end_time = datetime.now()
+            result.end_time = utc_now()
             self._update_status(JobStatus.FAILED)
             logger.error(f"Recording failed: {e}")
 
