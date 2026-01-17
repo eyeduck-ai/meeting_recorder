@@ -45,6 +45,8 @@ recordings/*
 !recordings/.gitkeep
 diagnostics/*
 !diagnostics/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # Testing
 .pytest_cache/
