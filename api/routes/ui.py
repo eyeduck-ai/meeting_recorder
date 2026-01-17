@@ -24,7 +24,7 @@ from scheduling.job_runner import get_job_runner
 from scheduling.scheduler import get_scheduler
 from services.app_settings import get_all_settings
 from utils.cron_helper import cron_to_chinese
-from utils.timezone import utc_now
+from utils.timezone import ensure_utc, utc_now
 
 router = APIRouter(tags=["ui"])
 settings = get_settings()
@@ -301,7 +301,7 @@ async def schedules_list(request: Request, db: Session = Depends(get_db)):
             schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
         )
         if schedule_type == "once":
-            if schedule.start_time and schedule.start_time < now:
+            if schedule.start_time and ensure_utc(schedule.start_time) < now:
                 expired_ids.add(schedule.id)
             elif not schedule.next_run_at:
                 expired_ids.add(schedule.id)

@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 
 from config.settings import get_settings
-from utils.timezone import utc_now
+from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class OAuthToken:
     @property
     def is_expired(self) -> bool:
         """Check if token is expired (with 5 minute buffer)."""
-        return utc_now() >= (self.expires_at - timedelta(minutes=5))
+        return utc_now() >= (ensure_utc(self.expires_at) - timedelta(minutes=5))
 
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
