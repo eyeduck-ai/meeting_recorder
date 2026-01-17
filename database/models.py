@@ -5,6 +5,7 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Te
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from config.settings import get_settings
+from utils.timezone import utc_now
 
 
 class Base(DeclarativeBase):
@@ -105,8 +106,8 @@ class Meeting(Base):
     default_guest_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Metadata
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
     # Relationships
     schedules: Mapped[list["Schedule"]] = relationship(
@@ -178,8 +179,8 @@ class Schedule(Base):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Metadata
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
     # Relationships
     meeting: Mapped["Meeting"] = relationship("Meeting", back_populates="schedules")
@@ -246,7 +247,7 @@ class RecordingJob(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timestamps
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     recording_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -324,8 +325,8 @@ class TelegramUser(Base):
     notify_on_upload: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Metadata
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
     last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def to_dict(self) -> dict:
@@ -363,7 +364,7 @@ class AppSettings(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
 
 
 class DetectionLog(Base):
@@ -378,7 +379,7 @@ class DetectionLog(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     was_accurate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # For manual review
-    triggered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     def to_dict(self) -> dict:
         return {

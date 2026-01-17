@@ -1,7 +1,6 @@
 """API routes for detection settings and logs."""
 
 import json
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -9,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database.models import AppSettings, DetectionLog, get_db
+from utils.timezone import utc_now
 
 router = APIRouter(prefix="/api/detection", tags=["detection"])
 
@@ -60,7 +60,7 @@ async def save_detection_config(config: DetectionConfigRequest, db: Session = De
 
     if settings_record:
         settings_record.value = config_json
-        settings_record.updated_at = datetime.utcnow()
+        settings_record.updated_at = utc_now()
     else:
         settings_record = AppSettings(key="detection_config", value=config_json)
         db.add(settings_record)

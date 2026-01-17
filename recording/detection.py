@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
+from utils.timezone import utc_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,7 @@ class DetectionResult:
     detected: bool
     confidence: float = 1.0  # 0.0 to 1.0
     reason: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
 
 
 @dataclass

@@ -1,7 +1,7 @@
 """Telegram command handlers."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from telegram import Update
 from telegram.ext import (
@@ -22,6 +22,7 @@ from database.models import (
 from scheduling.scheduler import get_scheduler
 from telegram_bot import get_db_session
 from telegram_bot.keyboards import get_main_menu_keyboard
+from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def get_or_create_user(
             user.username = username
             user.first_name = first_name
             user.last_name = last_name
-            user.last_interaction_at = datetime.utcnow()
+            user.last_interaction_at = utc_now()
             db.commit()
     return user
 
@@ -117,7 +118,7 @@ def require_approved(func):
                 return
 
             # Update last interaction
-            user.last_interaction_at = datetime.utcnow()
+            user.last_interaction_at = utc_now()
             db.commit()
 
             return await func(update, context)

@@ -21,6 +21,7 @@ from uploading.youtube import (
     VideoMetadata,
     get_youtube_uploader,
 )
+from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +168,9 @@ class JobRunner:
                 r = JobRepository(s)
                 update_fields = {}
                 if status == JobStatus.STARTING:
-                    update_fields["started_at"] = datetime.now()
+                    update_fields["started_at"] = utc_now()
                 elif status == JobStatus.RECORDING:
-                    update_fields["recording_started_at"] = datetime.now()
+                    update_fields["recording_started_at"] = utc_now()
                 r.update_status(job_id, status.value, **update_fields)
                 s.commit()
 
@@ -407,9 +408,9 @@ class JobRunner:
                     r = JobRepository(s)
                     update_fields = {}
                     if status == JobStatus.STARTING:
-                        update_fields["started_at"] = datetime.now()
+                        update_fields["started_at"] = utc_now()
                     elif status == JobStatus.RECORDING:
-                        update_fields["recording_started_at"] = datetime.now()
+                        update_fields["recording_started_at"] = utc_now()
                     r.update_status(job_id, status.value, **update_fields)
                     s.commit()
 

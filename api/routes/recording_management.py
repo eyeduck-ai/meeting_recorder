@@ -1,7 +1,6 @@
 """API routes for recording management."""
 
 import json
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
@@ -10,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from database.models import AppSettings, get_db
 from services.recording_manager import get_recording_manager
+from utils.timezone import utc_now
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 
@@ -154,7 +154,7 @@ async def save_notification_config(
 
     if existing_record:
         existing_record.value = config_json
-        existing_record.updated_at = datetime.utcnow()
+        existing_record.updated_at = utc_now()
     else:
         record = AppSettings(key="notification_config", value=config_json)
         db.add(record)

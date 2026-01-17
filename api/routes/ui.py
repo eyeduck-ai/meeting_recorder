@@ -24,6 +24,7 @@ from scheduling.job_runner import get_job_runner
 from scheduling.scheduler import get_scheduler
 from services.app_settings import get_all_settings
 from utils.cron_helper import cron_to_chinese
+from utils.timezone import utc_now
 
 router = APIRouter(tags=["ui"])
 settings = get_settings()
@@ -289,7 +290,7 @@ async def schedules_list(request: Request, db: Session = Depends(get_db)):
     cron_descriptions = {}
     # Track expired schedules (ONCE schedules with past start_time and no next_run)
     expired_ids = set()
-    now = datetime.utcnow()
+    now = utc_now()
 
     for schedule in schedules:
         if schedule.cron_expression:

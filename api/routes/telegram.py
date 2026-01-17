@@ -1,13 +1,12 @@
 """Telegram API routes."""
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from config.settings import get_settings
 from database.models import TelegramUser, get_db
+from utils.timezone import utc_now
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 settings = get_settings()
@@ -94,7 +93,7 @@ async def approve_user(
 
     user.approved = True
     user.approved_by = request.approved_by
-    user.approved_at = datetime.utcnow()
+    user.approved_at = utc_now()
     db.commit()
 
     # Send notification to user

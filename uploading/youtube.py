@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 
 from config.settings import get_settings
+from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class OAuthToken:
     @property
     def is_expired(self) -> bool:
         """Check if token is expired (with 5 minute buffer)."""
-        return datetime.utcnow() >= (self.expires_at - timedelta(minutes=5))
+        return utc_now() >= (self.expires_at - timedelta(minutes=5))
 
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
@@ -296,7 +297,7 @@ class YouTubeUploader:
                 token = OAuthToken(
                     access_token=data["access_token"],
                     refresh_token=data["refresh_token"],
-                    expires_at=datetime.utcnow() + timedelta(seconds=data["expires_in"]),
+                    expires_at=utc_now() + timedelta(seconds=data["expires_in"]),
                 )
                 self._token = token
                 self.token_storage.save(token)
@@ -347,7 +348,7 @@ class YouTubeUploader:
             token = OAuthToken(
                 access_token=data["access_token"],
                 refresh_token=data["refresh_token"],
-                expires_at=datetime.utcnow() + timedelta(seconds=data["expires_in"]),
+                expires_at=utc_now() + timedelta(seconds=data["expires_in"]),
             )
             self._token = token
             self.token_storage.save(token)
@@ -392,7 +393,7 @@ class YouTubeUploader:
         new_token = OAuthToken(
             access_token=data["access_token"],
             refresh_token=token.refresh_token,  # Keep existing refresh token
-            expires_at=datetime.utcnow() + timedelta(seconds=data["expires_in"]),
+            expires_at=utc_now() + timedelta(seconds=data["expires_in"]),
         )
         self._token = new_token
         self.token_storage.save(new_token)

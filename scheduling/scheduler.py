@@ -12,6 +12,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from config.settings import get_settings
 from database.models import Schedule, ScheduleType, get_session_local
+from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +149,10 @@ class SchedulerService:
             if schedule_type_value == ScheduleType.ONCE.value:
                 # One-time schedule - trigger early_join_sec before start_time
                 early_join = timedelta(seconds=schedule.early_join_sec)
-                trigger_time = schedule.start_time - early_join
+                # Ensure trigger_time is timezone-aware UTC (DB stores naive UTC)
+                trigger_time = ensure_utc(schedule.start_time) - early_join
 
-                if trigger_time <= datetime.utcnow():
+                if trigger_time <= utc_now():
                     logger.warning(f"Schedule {schedule.id} trigger_time is in the past, skipping")
                     return None
 
@@ -263,7 +265,7 @@ class SchedulerService:
         try:
             schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
             if schedule:
-                schedule.last_run_at = datetime.utcnow()
+                schedule.last_run_at = utc_now()
                 session.commit()
         finally:
             session.close()
