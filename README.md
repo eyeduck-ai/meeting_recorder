@@ -239,7 +239,24 @@ docker exec -it meeting-recorder bash
 
 ---
 
+---
+
+## 部署架構說明
+
+本專案採用 Docker Compose Override 模式：
+
+| 檔案 | 用途 | 說明 |
+|------|------|------|
+| `docker-compose.yml` | 基礎設定 | 定義 Volume, Network, Environment 等共用配置 |
+| `docker-compose.override.yml` | 開發設定 | **預設自動載入**。定義 `build` context，用於本地建構 |
+| `docker-compose.prod.yml` | 生產設定 | 定義 GHCR image 來源。需透過 `-f` 參數顯式指定 |
+
+這種架構讓開發與生產環境配置分離，但又能共享基礎設定。
+
+---
+
 ## 進階部署選項
+
 
 ### 從原始碼部署
 
