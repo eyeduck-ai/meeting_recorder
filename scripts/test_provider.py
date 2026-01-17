@@ -16,10 +16,11 @@ Usage:
 import argparse
 import asyncio
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import async_playwright
+
+from utils.timezone import utc_now
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
@@ -169,7 +170,7 @@ async def take_screenshot(page, output_dir: Path, name: str) -> Path | None:
 
 async def dump_debug_info(page, output_dir: Path, step_name: str, error_msg: str = None) -> None:
     """Dump debug info (screenshot + HTML + iframe HTML + summary) for debugging."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
     prefix = f"{timestamp}_{step_name}"
 
     print_info("Dumping debug info...")
@@ -241,7 +242,7 @@ async def dump_debug_info(page, output_dir: Path, step_name: str, error_msg: str
         debug_path = output_dir / f"{prefix}_debug.txt"
         debug_info = f"""=== Debug Info ===
 Step: {step_name}
-Time: {datetime.now().isoformat()}
+Time: {utc_now().isoformat()}
 URL: {page.url}
 Title: {page_title}
 Error: {error_msg or "User requested debug dump"}
@@ -442,7 +443,7 @@ async def main() -> int:
     # Setup output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
 
     # Print test configuration
     print("\n" + "=" * 60)

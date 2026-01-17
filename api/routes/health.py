@@ -1,6 +1,6 @@
-from datetime import datetime
-
 from fastapi import APIRouter
+
+from utils.timezone import utc_now
 
 router = APIRouter(tags=["Health"])
 
@@ -10,7 +10,7 @@ async def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now().isoformat(),
     }
 
 

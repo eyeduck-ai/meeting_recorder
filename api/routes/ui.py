@@ -60,7 +60,7 @@ def get_context(request: Request, **kwargs) -> dict:
     """Build template context with common data."""
     return {
         "request": request,
-        "now": datetime.now(),
+        "now": utc_now(),
         "auth_enabled": bool(settings.auth_password),
         **kwargs,
     }

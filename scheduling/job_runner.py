@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from database.models import (
@@ -21,7 +20,7 @@ from uploading.youtube import (
     VideoMetadata,
     get_youtube_uploader,
 )
-from utils.timezone import utc_now
+from utils.timezone import to_local, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -237,8 +236,10 @@ class JobRunner:
             # YouTube upload if enabled and recording succeeded
             if youtube_enabled and result.status == JobStatus.SUCCEEDED and output_path and output_path.exists():
                 # Build title with recording start time
-                recording_time = result.recording_started_at or result.start_time or datetime.now()
-                time_str = recording_time.strftime("%Y%m%d_%H%M")
+                recording_time = result.recording_started_at or result.start_time or utc_now()
+                # Convert to local time for user-friendly title
+                local_time = to_local(recording_time)
+                time_str = local_time.strftime("%Y%m%d_%H%M")
                 await self._upload_to_youtube(
                     job_id=job.job_id,
                     video_path=output_path,

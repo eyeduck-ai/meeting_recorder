@@ -7,6 +7,8 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
+from utils.timezone import utc_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,7 +191,7 @@ class BaseProvider(ABC):
         output_dir.mkdir(parents=True, exist_ok=True)
         data = DiagnosticData(
             output_dir=output_dir,
-            collected_at=datetime.now(),
+            collected_at=utc_now(),
         )
         errors = []
 
