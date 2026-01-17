@@ -277,7 +277,8 @@ class SchedulerService:
         try:
             schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
             if schedule:
-                schedule.next_run_at = next_run
+                # Ensure next_run is UTC-aware (scheduler provides local time)
+                schedule.next_run_at = ensure_utc(next_run)
                 session.commit()
         finally:
             session.close()

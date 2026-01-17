@@ -90,10 +90,7 @@ class FFmpegPipeline:
                 "-video_size",
                 f"{self.width}x{self.height}",
                 "-framerate",
-                "-framerate",
                 str(self.framerate),
-                "-g",
-                "60",  # Force keyframe every 2s for crash resilience
                 "-i",
                 self.display,
                 # Audio input (PulseAudio)
@@ -108,6 +105,8 @@ class FFmpegPipeline:
                 settings.ffmpeg_preset,
                 "-crf",
                 str(settings.ffmpeg_crf),
+                "-g",
+                "60",  # Force keyframe every 2s for crash resilience
                 "-pix_fmt",
                 "yuv420p",
                 # Audio encoding
@@ -133,8 +132,6 @@ class FFmpegPipeline:
                 f"{self.width}x{self.height}",
                 "-framerate",
                 str(self.framerate),
-                "-g",
-                "60",  # Force keyframe every 2s for crash resilience
                 "-i",
                 self.display,
                 # Silent audio source (fallback when PulseAudio unavailable)
@@ -149,6 +146,8 @@ class FFmpegPipeline:
                 settings.ffmpeg_preset,
                 "-crf",
                 str(settings.ffmpeg_crf),
+                "-g",
+                "60",  # Force keyframe every 2s for crash resilience
                 "-pix_fmt",
                 "yuv420p",
                 # Audio encoding

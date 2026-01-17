@@ -12,6 +12,7 @@ from recording.worker import RecordingJob, get_worker
 from telegram_bot.notifications import (
     notify_recording_completed,
     notify_recording_failed,
+    notify_recording_retry,
     notify_recording_started,
     notify_youtube_upload_completed,
 )
@@ -23,6 +24,19 @@ from uploading.youtube import (
 from utils.timezone import to_local, utc_now
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration for network errors
+INITIAL_RETRY_DELAY_SEC = 15  # Initial delay before first retry
+MAX_RETRY_DELAY_SEC = 300  # Maximum delay between retries (5 minutes)
+RETRYABLE_ERRORS = [
+    "ERR_NAME_NOT_RESOLVED",
+    "Name or service not known",
+    "No address associated with hostname",
+    "ConnectError",
+    "TimeoutError",
+    "net::ERR_",
+    "NetworkError",
+]
 
 
 class JobRunner:
@@ -92,7 +106,7 @@ class JobRunner:
                 self._current_schedule_id = None
 
     async def _execute_schedule(self, schedule_id: int) -> None:
-        """Execute a scheduled recording.
+        """Execute a scheduled recording with retry support for network errors.
 
         Args:
             schedule_id: Schedule ID to execute
@@ -118,6 +132,9 @@ class JobRunner:
             if not meeting:
                 logger.error(f"Meeting not found for schedule {schedule_id}")
                 return
+
+            # Calculate meeting end time for retry deadline
+            meeting_end_time = utc_now() + __import__("datetime").timedelta(seconds=schedule.duration_sec)
 
             # Create recording job
             job = RecordingJob.create(
@@ -150,6 +167,10 @@ class JobRunner:
 
             logger.info(f"Created job {job.job_id} for schedule {schedule_id}")
 
+            # Store schedule info for retry
+            youtube_enabled = schedule.youtube_enabled
+            youtube_privacy = schedule.youtube_privacy
+
         except Exception as e:
             logger.error(f"Failed to create job for schedule {schedule_id}: {e}")
             session.rollback()
@@ -157,8 +178,41 @@ class JobRunner:
         finally:
             session.close()
 
-        # Run the recording
+        # Run the recording with retry logic
+        await self._run_recording_with_retry(
+            job=job,
+            schedule_id=schedule_id,
+            meeting_end_time=meeting_end_time,
+            youtube_enabled=youtube_enabled,
+            youtube_privacy=youtube_privacy,
+        )
+
+    def _is_retryable_error(self, error_message: str) -> bool:
+        """Check if an error message indicates a retryable network error."""
+        error_str = str(error_message)
+        return any(pattern in error_str for pattern in RETRYABLE_ERRORS)
+
+    async def _run_recording_with_retry(
+        self,
+        job: RecordingJob,
+        schedule_id: int,
+        meeting_end_time,
+        youtube_enabled: bool,
+        youtube_privacy: str,
+    ) -> None:
+        """Run recording with exponential backoff retry for network errors.
+
+        Args:
+            job: Recording job to run
+            schedule_id: Schedule ID
+            meeting_end_time: Deadline for retries (meeting scheduled end time)
+            youtube_enabled: Whether YouTube upload is enabled
+            youtube_privacy: YouTube privacy setting
+        """
+        SessionLocal = get_session_local()
         worker = get_worker()
+        retry_delay = INITIAL_RETRY_DELAY_SEC
+        attempt = 0
 
         def on_status_change(job_id: str, status: JobStatus):
             """Update status in database and send notifications."""
@@ -195,60 +249,111 @@ class JobRunner:
 
         worker.set_status_callback(on_status_change)
 
-        try:
-            result = await worker.record(job)
-
-            # Update database with result
-            session = SessionLocal()
-            youtube_enabled = False
-            youtube_privacy = "unlisted"
-            output_path = None
-
+        while True:
+            attempt += 1
             try:
-                repo = JobRepository(session)
-                update_fields = build_result_update_fields(result)
+                result = await worker.record(job)
 
-                if result.recording_info:
-                    output_path = result.recording_info.output_path
+                # Update database with result
+                session = SessionLocal()
+                output_path = None
 
-                # Get YouTube settings from schedule
-                schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
-                if schedule:
-                    youtube_enabled = schedule.youtube_enabled
-                    youtube_privacy = schedule.youtube_privacy
+                try:
+                    repo = JobRepository(session)
+                    update_fields = build_result_update_fields(result)
+
+                    if result.recording_info:
+                        output_path = result.recording_info.output_path
+
                     update_fields["youtube_enabled"] = youtube_enabled
+                    repo.update_status(job.job_id, result.status.value, **update_fields)
+                    session.commit()
 
-                repo.update_status(job.job_id, result.status.value, **update_fields)
-                session.commit()
+                    # Send completion/failure notification
+                    db_job = repo.get_by_job_id(job.job_id)
+                    if db_job:
+                        if result.status == JobStatus.SUCCEEDED:
+                            await notify_recording_completed(db_job)
+                        elif result.status in (JobStatus.FAILED, JobStatus.CANCELED):
+                            # Check if this is a retryable error
+                            error_msg = result.error_message or ""
+                            if self._is_retryable_error(error_msg) and utc_now() < meeting_end_time:
+                                # Calculate time remaining until meeting end
+                                time_remaining = (meeting_end_time - utc_now()).total_seconds()
+                                if time_remaining > retry_delay:
+                                    logger.warning(
+                                        f"Retryable network error for job {job.job_id}: {error_msg}. "
+                                        f"Retrying in {retry_delay}s (attempt {attempt})"
+                                    )
+                                    # Send retry notification
+                                    await notify_recording_retry(db_job, attempt, retry_delay, error_msg)
 
-                # Send completion/failure notification
-                db_job = repo.get_by_job_id(job.job_id)
-                if db_job:
-                    if result.status == JobStatus.SUCCEEDED:
-                        await notify_recording_completed(db_job)
-                    elif result.status in (JobStatus.FAILED, JobStatus.CANCELED):
-                        await notify_recording_failed(db_job)
+                                    # Wait before retry
+                                    await asyncio.sleep(retry_delay)
 
-                logger.info(f"Job {job.job_id} completed with status: {result.status.value}")
-            finally:
-                session.close()
+                                    # Exponential backoff (double the delay, up to max)
+                                    retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY_SEC)
 
-            # YouTube upload if enabled and recording succeeded
-            if youtube_enabled and result.status == JobStatus.SUCCEEDED and output_path and output_path.exists():
-                # Build title with recording start time
-                recording_time = result.recording_started_at or result.start_time or utc_now()
-                # Convert to local time for user-friendly title
-                local_time = to_local(recording_time)
-                time_str = local_time.strftime("%Y%m%d_%H%M")
-                await self._upload_to_youtube(
-                    job_id=job.job_id,
-                    video_path=output_path,
-                    title=f"{time_str} - {job.meeting_code}",
-                    privacy=youtube_privacy,
-                )
+                                    # Recreate job for retry
+                                    job = RecordingJob.create(
+                                        provider=job.provider,
+                                        meeting_code=job.meeting_code,
+                                        display_name=job.display_name,
+                                        duration_sec=int(time_remaining),  # Remaining time
+                                        base_url=job.base_url,
+                                        lobby_wait_sec=job.lobby_wait_sec,
+                                        duration_mode=job.duration_mode,
+                                        dry_run=job.dry_run,
+                                        min_duration_sec=job.min_duration_sec,
+                                        stillness_timeout_sec=job.stillness_timeout_sec,
+                                    )
+                                    session.close()
+                                    continue  # Retry the recording
+                                else:
+                                    logger.warning(
+                                        f"Not enough time remaining for retry (need {retry_delay}s, have {time_remaining}s)"
+                                    )
+                            # Not retryable or no time left - send failure notification
+                            await notify_recording_failed(db_job)
 
-        except Exception as e:
-            logger.error(f"Error running job for schedule {schedule_id}: {e}")
+                    logger.info(f"Job {job.job_id} completed with status: {result.status.value}")
+                finally:
+                    session.close()
+
+                # YouTube upload if enabled and recording succeeded
+                if youtube_enabled and result.status == JobStatus.SUCCEEDED and output_path and output_path.exists():
+                    # Build title with recording start time
+                    recording_time = result.recording_started_at or result.start_time or utc_now()
+                    # Convert to local time for user-friendly title
+                    local_time = to_local(recording_time)
+                    time_str = local_time.strftime("%Y%m%d_%H%M")
+                    await self._upload_to_youtube(
+                        job_id=job.job_id,
+                        video_path=output_path,
+                        title=f"{time_str} - {job.meeting_code}",
+                        privacy=youtube_privacy,
+                    )
+
+                # Recording completed (success or non-retryable failure)
+                break
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Error running job for schedule {schedule_id}: {error_msg}")
+
+                # Check if this exception is retryable
+                if self._is_retryable_error(error_msg) and utc_now() < meeting_end_time:
+                    time_remaining = (meeting_end_time - utc_now()).total_seconds()
+                    if time_remaining > retry_delay:
+                        logger.warning(
+                            f"Retryable exception for schedule {schedule_id}: {error_msg}. "
+                            f"Retrying in {retry_delay}s (attempt {attempt})"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY_SEC)
+                        continue  # Retry
+                # Not retryable or no time left
+                break
 
     async def _upload_to_youtube(
         self,

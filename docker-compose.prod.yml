@@ -1,0 +1,13 @@
+# Docker Compose - Production Override
+# 用於生產部署：從 GitHub Container Registry 拉取映像
+#
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 或設定環境變數後直接使用：
+#   export COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
+#   docker compose up -d
+
+services:
+  app:
+    image: ${DOCKER_IMAGE:-ghcr.io/eyeduck-ai/meeting_recorder:latest}

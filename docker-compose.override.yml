@@ -1,0 +1,10 @@
+# Docker Compose - Development Override
+# 此檔案會自動被 `docker compose up` 載入
+# 用於本地開發：從 Dockerfile 建構映像
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: meeting-recorder:dev

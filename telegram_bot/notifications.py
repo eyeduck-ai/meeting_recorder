@@ -28,6 +28,7 @@ _ERROR_DESCRIPTIONS = {
     "DISK_FULL": "磁碟空間不足",
     "CANCELED": "已取消",
     "INTERNAL_ERROR": "內部錯誤",
+    "NETWORK_ERROR": "網路連線錯誤",
 }
 
 
@@ -209,6 +210,66 @@ async def notify_recording_failed(job: RecordingJob) -> None:
             logger.error(f"Failed to update failure notification to {chat_id}: {e}")
 
     logger.info(f"Updated recording failure notification for job {job.job_id}")
+
+
+async def notify_recording_retry(
+    job: RecordingJob,
+    attempt: int,
+    next_retry_sec: int,
+    error_message: str,
+) -> int | None:
+    """Send notification when recording retry is attempted.
+
+    Args:
+        job: The recording job
+        attempt: Current retry attempt number
+        next_retry_sec: Seconds until next retry
+        error_message: Error message that triggered the retry
+
+    Returns:
+        Message ID if sent successfully, None otherwise
+    """
+    bot = await get_bot()
+    if bot is None:
+        return None
+
+    # Build retry notification message
+    lines = [
+        f"🔄 錄製重試 | {job.meeting_code}",
+        "",
+        f"📋 狀態：第 {attempt} 次重試",
+        "━━━━━━━━━━━━━━━━━",
+        "⚠️ 錯誤：網路連線問題",
+        f"⏱ 將於 {next_retry_sec} 秒後重試",
+        "",
+        f"📝 詳細：{error_message[:100]}..." if len(error_message) > 100 else f"📝 詳細：{error_message}",
+    ]
+    message = "\n".join(lines)
+
+    chat_ids = await _get_approved_chat_ids("failure")  # Use failure notification preference
+
+    first_message_id = None
+    for chat_id in chat_ids:
+        try:
+            if job.telegram_message_id:
+                # Update existing message
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job.telegram_message_id,
+                    text=message,
+                )
+                if first_message_id is None:
+                    first_message_id = job.telegram_message_id
+            else:
+                # Send new message
+                sent = await bot.send_message(chat_id=chat_id, text=message)
+                if first_message_id is None:
+                    first_message_id = sent.message_id
+        except Exception as e:
+            logger.error(f"Failed to send retry notification to {chat_id}: {e}")
+
+    logger.info(f"Sent recording retry notification for job {job.job_id} (attempt {attempt})")
+    return first_message_id
 
 
 async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> None:

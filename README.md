@@ -14,7 +14,7 @@
 - **多平台支援**：Jitsi Meet、Cisco Webex (Guest Join)
 - **自動化錄製**：Playwright 自動加入會議、處理等候室
 - **智慧會議結束偵測**：多種偵測器（WebRTC、文字指示、影片元素、URL 變更、螢幕凍結、音訊靜音）
-- **錄影可靠性增強**：Fragmented MP4 抗損毀格式、FFmpeg 日誌、最少錄製時間保護、靜止偵測超時
+- **錄影可靠性增強**：Fragmented MP4 抗損毀格式、FFmpeg 日誌、最少錄製時間保護、靜止偵測超時、**網路錯誤自動重試**
 - **排程管理**：支援單次與週期性 (cron) 排程，自動偵測會議結束模式
 - **即時儀表板**：錄製進度、偵測器狀態、即時更新
 - **通知系統**：Email (SMTP)、Webhook、Telegram Bot 通知（單一訊息更新模式）
@@ -100,7 +100,8 @@ mkdir -p data recordings diagnostics
 
 ```bash
 # 下載 docker-compose 設定檔
-curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/docker-compose.hub.yml
+curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/docker-compose.prod.yml
 
 # 下載環境變數範本
 curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/.env.example
@@ -108,12 +109,11 @@ curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/.env.
 
 **方式 B：手動建立檔案**
 
-建立 `docker-compose.hub.yml`：
+建立 `docker-compose.yml`：
 
 ```yaml
 services:
-  meeting-recorder:
-    image: ghcr.io/eyeduck-ai/meeting_recorder:latest
+  app:
     container_name: meeting-recorder
     ports:
       - "8000:8000"
@@ -122,6 +122,7 @@ services:
       - ./recordings:/app/recordings
       - ./diagnostics:/app/diagnostics
       - ./data:/app/data
+      - ./logs:/app/logs
     env_file:
       - .env
     environment:
@@ -130,6 +131,18 @@ services:
     privileged: true
     shm_size: '2gb'
     restart: unless-stopped
+    dns:
+      - 8.8.8.8      # Google DNS
+      - 8.8.4.4      # Google DNS
+      - 1.1.1.1      # Cloudflare DNS
+```
+
+建立 `docker-compose.prod.yml`：
+
+```yaml
+services:
+  app:
+    image: ghcr.io/eyeduck-ai/meeting_recorder:latest
 ```
 
 ---
@@ -185,13 +198,13 @@ YOUTUBE_CLIENT_SECRET=your-client-secret
 docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
 
 # 啟動服務（背景執行）
-docker-compose -f docker-compose.hub.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 # 查看執行狀態
-docker-compose -f docker-compose.hub.yml ps
+docker compose ps
 
 # 查看即時日誌
-docker-compose -f docker-compose.hub.yml logs -f
+docker compose logs -f
 ```
 
 ---
@@ -208,17 +221,17 @@ docker-compose -f docker-compose.hub.yml logs -f
 
 ```bash
 # 停止服務
-docker-compose -f docker-compose.hub.yml down
+docker compose down
 
 # 重新啟動服務
-docker-compose -f docker-compose.hub.yml restart
+docker compose restart
 
 # 更新到最新版本
 docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
-docker-compose -f docker-compose.hub.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 # 查看容器日誌
-docker-compose -f docker-compose.hub.yml logs -f
+docker compose logs -f
 
 # 進入容器除錯
 docker exec -it meeting-recorder bash
@@ -241,9 +254,8 @@ cd meeting_recorder
 cp .env.example .env
 nano .env
 
-# 3. 建構並啟動
-cd docker
-docker-compose up -d --build
+# 3. 建構並啟動（自動讀取 docker-compose.override.yml）
+docker compose up --build -d
 ```
 
 ### 本地開發（僅限 Linux）
@@ -273,8 +285,8 @@ uv run uvicorn api.main:app --reload
 可透過 VNC 查看容器內的瀏覽器畫面：
 
 ```bash
-cd docker
-docker-compose --profile dev up
+# 開發模式（自動讀取 override，啟用 build）
+docker compose up --build
 
 # VNC 連線資訊
 # 地址: localhost:5900

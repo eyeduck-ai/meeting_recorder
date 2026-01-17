@@ -1,0 +1,27 @@
+# Docker Compose - Base Configuration
+# 共用設定，開發與生產皆使用此檔案
+
+services:
+  app:
+    container_name: meeting-recorder
+    ports:
+      - "8000:8000"
+      - "${VNC_PORT:-5900}:5900"
+    volumes:
+      - ./recordings:/app/recordings
+      - ./diagnostics:/app/diagnostics
+      - ./data:/app/data
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-Asia/Taipei}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}
+    privileged: true
+    shm_size: '2gb'
+    restart: unless-stopped
+    # DNS configuration for resilience against transient DNS failures
+    dns:
+      - 8.8.8.8 # Google Primary DNS
+      - 8.8.4.4 # Google Secondary DNS
+      - 1.1.1.1 # Cloudflare DNS
