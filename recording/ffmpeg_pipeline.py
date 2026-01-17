@@ -60,6 +60,7 @@ class FFmpegPipeline:
     width: int = 1280
     height: int = 720
     framerate: int = 30
+    log_path: Path | None = None
 
     _process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _start_time: datetime | None = field(default=None, init=False)

@@ -11,16 +11,14 @@ from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
 from api.routes import recording_management as recording_mgmt_routes
 from api.routes import telegram as telegram_routes
 from api.routes import test as test_routes
+from config.logging_config import setup_logging
 from config.settings import get_settings
 from database.models import init_db
 from scheduling.job_runner import get_job_runner
 from scheduling.scheduler import get_scheduler
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Configure logging with file handler
+setup_logging()
 
 settings_config = get_settings()
 

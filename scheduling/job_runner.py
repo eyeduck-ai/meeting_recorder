@@ -235,10 +235,13 @@ class JobRunner:
 
             # YouTube upload if enabled and recording succeeded
             if youtube_enabled and result.status == JobStatus.SUCCEEDED and output_path and output_path.exists():
+                # Build title with recording start time
+                recording_time = result.recording_started_at or result.start_time or datetime.now()
+                time_str = recording_time.strftime("%Y%m%d_%H%M")
                 await self._upload_to_youtube(
                     job_id=job.job_id,
                     video_path=output_path,
-                    title=f"Recording - {job.meeting_code}",
+                    title=f"{time_str} - {job.meeting_code}",
                     privacy=youtube_privacy,
                 )
 

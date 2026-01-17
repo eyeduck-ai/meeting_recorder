@@ -7,11 +7,12 @@ services:
     container_name: meeting-recorder
     ports:
       - "8000:8000"
-      - "${VNC_PORT:-5900}:5900"  # VNC for debugging (when DEBUG_VNC=1)
+      - "${VNC_PORT:-5900}:5900" # VNC for debugging (when DEBUG_VNC=1)
     volumes:
       - ../recordings:/app/recordings
       - ../diagnostics:/app/diagnostics
       - ../data:/app/data
+      - ../logs:/app/logs
     env_file:
       - ../.env
     environment:
@@ -31,16 +32,17 @@ services:
     container_name: meeting-recorder-dev
     ports:
       - "8000:8000"
-      - "5900:5900"  # VNC always exposed in dev mode
+      - "5900:5900" # VNC always exposed in dev mode
     volumes:
       - ..:/app
       - ../recordings:/app/recordings
       - ../diagnostics:/app/diagnostics
       - ../data:/app/data
+      - ../logs:/app/logs
     env_file:
       - ../.env
     environment:
-      - DEBUG_VNC=1  # VNC enabled by default in dev mode
+      - DEBUG_VNC=1 # VNC enabled by default in dev mode
     privileged: true
     shm_size: '2gb'
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload

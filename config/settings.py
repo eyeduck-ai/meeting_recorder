@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     recordings_dir: Path = Path("./recordings")
     diagnostics_dir: Path = Path("./diagnostics")
     data_dir: Path = Path("./data")
+    logs_dir: Path = Path("./logs")
 
     # API
     api_host: str = "0.0.0.0"

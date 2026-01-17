@@ -18,6 +18,7 @@ services:
       - ./recordings:/app/recordings
       - ./diagnostics:/app/diagnostics
       - ./data:/app/data
+      - ./logs:/app/logs
     env_file:
       - .env
     environment:
@@ -26,8 +27,3 @@ services:
     privileged: true
     shm_size: '2gb'
     restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
