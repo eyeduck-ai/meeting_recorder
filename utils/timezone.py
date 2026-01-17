@@ -69,3 +69,22 @@ def to_local(dt: datetime | None, tz_name: str = "Asia/Taipei") -> datetime | No
         return None
     dt_utc = ensure_utc(dt)
     return dt_utc.astimezone(ZoneInfo(tz_name))
+
+
+def from_local(dt: datetime | None, tz_name: str = "Asia/Taipei") -> datetime | None:
+    """Convert local datetime to UTC.
+
+    Args:
+        dt: Local datetime (naive assumes local timezone)
+        tz_name: Local timezone name (default: Asia/Taipei)
+
+    Returns:
+        Timezone-aware UTC datetime
+    """
+    if dt is None:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+
+    return dt.astimezone(UTC)

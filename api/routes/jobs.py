@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -23,6 +22,7 @@ from telegram_bot.notifications import (
     notify_recording_failed,
     notify_recording_started,
 )
+from utils.timezone import utc_now
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -123,9 +123,9 @@ async def _run_recording(job: RecordingJob, db_job_id: int) -> None:
 
             # Add timestamps for specific statuses
             if status == JobStatus.STARTING:
-                update_fields["started_at"] = datetime.now()
+                update_fields["started_at"] = utc_now()
             elif status == JobStatus.RECORDING:
-                update_fields["recording_started_at"] = datetime.now()
+                update_fields["recording_started_at"] = utc_now()
 
             repo.update_status(job_id, status.value, **{k: v for k, v in update_fields.items() if k != "status"})
             session.commit()

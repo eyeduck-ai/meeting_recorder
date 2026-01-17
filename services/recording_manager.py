@@ -3,8 +3,10 @@
 import asyncio
 import logging
 import shutil
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +121,7 @@ class RecordingManager:
         videos.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
         # Calculate cutoff date
-        cutoff_date = datetime.now() - timedelta(days=max_age_days)
+        cutoff_date = utc_now() - timedelta(days=max_age_days)
         cutoff_timestamp = cutoff_date.timestamp()
 
         to_delete = []
@@ -320,8 +322,8 @@ class RecordingManager:
                     "path": str(video),
                     "size_bytes": stat.st_size,
                     "size_mb": stat.st_size / (1024 * 1024),
-                    "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(),
-                    "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    "created_at": datetime.fromtimestamp(stat.st_ctime, tz=UTC).isoformat(),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
                     "has_thumbnail": thumbnail.exists(),
                     "thumbnail_path": str(thumbnail) if thumbnail.exists() else None,
                 }

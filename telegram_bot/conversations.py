@@ -23,6 +23,7 @@ from telegram_bot.keyboards import (
     get_meetings_inline_keyboard,
     get_time_inline_keyboard,
 )
+from utils.timezone import from_local
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,7 @@ async def confirm_schedule_callback(update: Update, context: ContextTypes.DEFAUL
         schedule = Schedule(
             meeting_id=context.user_data["meeting_id"],
             schedule_type=ScheduleType.ONCE.value,
-            start_time=start_time,
+            start_time=from_local(start_time),
             duration_sec=context.user_data["duration_min"] * 60,
             resolution_w=1920,
             resolution_h=1080,

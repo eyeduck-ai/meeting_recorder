@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from utils.timezone import ensure_utc, to_local, utc_now
+from utils.timezone import ensure_utc, from_local, to_local, utc_now
 
 
 class TestUtcNow:
@@ -94,3 +94,38 @@ class TestToLocal:
         result = to_local(utc)
 
         assert str(result.tzinfo) == "Asia/Taipei"
+
+
+class TestFromLocal:
+    """Tests for from_local function."""
+
+    def test_none_returns_none(self):
+        """Should return None for None input."""
+        assert from_local(None) is None
+
+    def test_converts_local_to_utc(self):
+        """Should convert local time (Asia/Taipei) to UTC."""
+        # 16:00 Taipei = 08:00 UTC
+        local_naive = datetime(2026, 1, 17, 16, 0, 0)
+        result = from_local(local_naive, "Asia/Taipei")
+
+        assert result.tzinfo == UTC
+        assert result.hour == 8
+
+    def test_default_timezone_is_taipei(self):
+        """Should default to Asia/Taipei."""
+        # 16:00 Taipei = 08:00 UTC
+        local_naive = datetime(2026, 1, 17, 16, 0, 0)
+        result = from_local(local_naive)
+
+        assert result.tzinfo == UTC
+        assert result.hour == 8
+
+    def test_handles_already_aware_local(self):
+        """Should handle already aware datetime."""
+        taipei = ZoneInfo("Asia/Taipei")
+        local_aware = datetime(2026, 1, 17, 16, 0, 0, tzinfo=taipei)
+        result = from_local(local_aware)
+
+        assert result.tzinfo == UTC
+        assert result.hour == 8
