@@ -1,0 +1,356 @@
+# 開發者指南
+
+本指南涵蓋環境變數設定、API 使用、開發環境設置、專案架構、除錯工具與貢獻指南。
+
+---
+
+## 部署架構說明
+
+本專案採用 Docker Compose Override 模式：
+
+| 檔案 | 用途 | 說明 |
+|------|------|------|
+| `docker-compose.yml` | 基礎設定 | 定義 Volume, Network, Environment 等共用配置 |
+| `docker-compose.override.yml` | 開發設定 | **預設自動載入**。定義 `build` context，用於本地建構 |
+| `docker-compose.prod.yml` | 生產設定 | 定義 GHCR image 來源。需透過 `-f` 參數顯式指定 |
+
+---
+
+## 環境變數
+
+| 變數 | 說明 | 預設值 |
+|------|------|--------|
+| `TZ` | 時區 | `UTC` |
+| `DATABASE_URL` | 資料庫連接字串 | `sqlite:///./data/app.db` |
+| `AUTH_PASSWORD` | 登入密碼（不設定則無需登入） | - |
+| `AUTH_SESSION_SECRET` | Session 加密金鑰 | `change-me` |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - |
+| `YOUTUBE_CLIENT_ID` | YouTube OAuth Client ID | - |
+| `YOUTUBE_CLIENT_SECRET` | YouTube OAuth Client Secret | - |
+| `RESOLUTION_W` | 錄製解析度寬度 | `1920` |
+| `RESOLUTION_H` | 錄製解析度高度 | `1080` |
+| `LOBBY_WAIT_SEC` | 等候室最長等待時間 | `900` |
+| `FFMPEG_PRESET` | FFmpeg 編碼預設 | `ultrafast` |
+| `DEBUG_VNC` | 啟用 VNC 遠端桌面 | `0` |
+| `SMTP_ENABLED` | 啟用 Email 通知 | `false` |
+| `SMTP_HOST` | SMTP 伺服器 | - |
+| `SMTP_PORT` | SMTP 端口 | `587` |
+| `SMTP_USER` | SMTP 用戶名 | - |
+| `SMTP_PASSWORD` | SMTP 密碼 | - |
+| `SMTP_FROM` | 發件人地址 | - |
+| `SMTP_TO` | 收件人 (逗號分隔) | - |
+| `WEBHOOK_ENABLED` | 啟用 Webhook 通知 | `false` |
+| `WEBHOOK_URL` | Webhook URL | - |
+| `WEBHOOK_SECRET` | Webhook 簽名密鑰 | - |
+| `EARLY_JOIN_SEC` | 提前加入時間 | `30` |
+| `MIN_DURATION_SEC` | 最少錄製時間（可在排程設定） | - |
+| `STILLNESS_TIMEOUT_SEC` | 靜止偵測超時 | `180` |
+
+完整設定請參考 `.env.example`。
+
+---
+
+## 使用方式
+
+### Web UI
+
+| 頁面 | 說明 |
+|------|------|
+| `/` | Dashboard 總覽（含即時錄製狀態） |
+| `/meetings` | 會議設定管理 |
+| `/schedules` | 排程管理（支援自動偵測會議結束） |
+| `/jobs` | 錄製工作記錄 |
+| `/recordings` | 錄製檔案下載 |
+| `/detection-logs` | 會議結束偵測日誌 |
+| `/settings` | 系統設定（偵測器、通知、錄製管理） |
+
+### Telegram Bot 指令
+
+| 指令 | 說明 |
+|------|------|
+| `/start` | 註冊帳號 |
+| `/help` | 顯示說明 |
+| `/list` | 查看排程（含錄製狀態） |
+| `/record` | 新增排程 / 立即錄製 |
+| `/meetings` | 會議列表 |
+| `/trigger <ID>` | 立即觸發排程 |
+| `/stop` | 停止錄製 |
+
+### API 端點
+
+```
+GET  /health                    # 健康檢查
+GET  /api                       # API 資訊
+
+# Jobs
+POST /api/v1/jobs/record        # 觸發錄製
+GET  /api/v1/jobs/{job_id}      # 查詢 Job
+POST /api/v1/jobs/{job_id}/stop # 停止錄製
+
+# Meetings
+GET  /api/v1/meetings           # 會議列表
+POST /api/v1/meetings           # 建立會議
+
+# Schedules
+GET  /api/v1/schedules          # 排程列表
+POST /api/v1/schedules          # 建立排程
+POST /api/v1/schedules/{id}/trigger  # 手動觸發
+
+# Detection (會議結束偵測)
+GET  /api/detection/config      # 偵測設定
+POST /api/detection/config      # 儲存偵測設定
+GET  /api/detection/logs        # 偵測日誌
+GET  /api/detection/logs/export # 匯出日誌 (JSON/CSV)
+
+# Recording Management (錄製管理)
+GET  /api/recordings/list       # 錄製列表
+GET  /api/recordings/disk-usage # 磁碟使用量
+POST /api/recordings/cleanup    # 清理舊錄製
+
+# YouTube
+GET  /api/v1/youtube/status     # 授權狀態
+POST /api/v1/youtube/auth/start # 開始授權
+```
+
+API 認證方式：
+- **Session Cookie**：透過 `/login` 頁面登入
+- **X-API-Key Header**：`curl -H "X-API-Key: your-password" ...`
+
+---
+
+## 新增會議錄製（API 範例）
+
+### Jitsi Meeting
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/meetings" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-password" \
+  -d '{
+    "name": "每週團隊會議",
+    "provider": "jitsi",
+    "meeting_code": "my-team-meeting",
+    "default_display_name": "Recorder Bot"
+  }'
+```
+
+### Webex Meeting (Guest Join)
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/meetings" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-password" \
+  -d '{
+    "name": "Webex 會議",
+    "provider": "webex",
+    "meeting_code": "https://company.webex.com/meet/username",
+    "default_display_name": "Recorder Bot"
+  }'
+```
+
+> **Webex 注意事項**：`meeting_code` 欄位請填入**完整會議連結**
+
+### 建立 Schedule
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/schedules" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-password" \
+  -d '{
+    "meeting_id": 1,
+    "schedule_type": "cron",
+    "cron_expression": "0 14 * * 1",
+    "duration_sec": 3600,
+    "start_time": "2024-01-01T14:00:00"
+  }'
+```
+
+---
+
+## 本地開發環境（僅限 Linux）
+
+> ⚠️ 本地開發需要 Linux 環境，Windows/macOS 請使用 Docker 進行開發。
+
+### 系統需求
+
+| 需求 | 說明 |
+|------|------|
+| Python 3.12+ | 主程式語言 |
+| FFmpeg | 影音編碼 |
+| Xvfb | 虛擬 X11 顯示器 |
+| PulseAudio | 虛擬音訊系統 |
+| Chromium | 瀏覽器自動化 |
+
+### 安裝步驟
+
+```bash
+# 安裝 uv（Python 套件管理器）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 安裝依賴
+uv sync
+
+# 安裝 Playwright 瀏覽器
+uv run playwright install chromium
+uv run playwright install-deps chromium
+
+# 啟動虛擬音訊（需要 PulseAudio）
+pulseaudio --start
+
+# 啟動開發伺服器
+uv run uvicorn api.main:app --reload
+```
+
+---
+
+## 從原始碼部署
+
+```bash
+# 1. Clone 專案
+git clone https://github.com/eyeduck-ai/meeting_recorder.git
+cd meeting_recorder
+
+# 2. 設定環境變數
+cp .env.example .env
+nano .env
+
+# 3. 建構並啟動（自動讀取 docker-compose.override.yml）
+docker compose up --build -d
+```
+
+---
+
+## 專案結構
+
+```
+.
+├── api/                # FastAPI 應用與路由
+├── config/             # 設定模組
+├── database/           # SQLAlchemy 模型
+├── docker/             # Docker 相關檔案
+├── providers/          # 會議平台 Provider (Jitsi, Webex)
+├── recording/          # FFmpeg 錄製管線 + 偵測框架
+├── scheduling/         # APScheduler 排程
+├── services/           # 通知 + 錄製管理服務
+├── telegram_bot/       # Telegram Bot
+├── uploading/          # YouTube 上傳
+├── web/                # Web UI 模板
+├── tests/              # 單元測試
+├── data/               # SQLite 資料庫
+├── recordings/         # 錄製檔案
+└── diagnostics/        # 診斷資料
+```
+
+---
+
+## 技術架構
+
+- **Backend**: FastAPI + SQLAlchemy + APScheduler
+- **Browser Automation**: Playwright (Chromium)
+- **Recording**: FFmpeg + Xvfb + PulseAudio
+- **Frontend**: Jinja2 + HTMX + Tailwind CSS (DaisyUI)
+- **Notifications**: python-telegram-bot
+- **Deployment**: Docker + docker-compose
+- **CI/CD**: GitHub Actions
+
+---
+
+## 除錯工具
+
+### VNC 遠端桌面
+
+```bash
+# 開發模式（自動讀取 override，啟用 build）
+docker compose up --build
+
+# VNC 連線：localhost:5900（無需密碼）
+```
+
+推薦 VNC 客戶端：
+- Windows: [TightVNC Viewer](https://www.tightvnc.com/)
+- macOS: 內建 Screen Sharing 或 [RealVNC](https://www.realvnc.com/)
+- Linux: `vncviewer` 或 Remmina
+
+### 診斷資料
+
+錄製失敗時會自動收集：
+- `diagnostics/{job_id}/screenshot.png` - 截圖
+- `diagnostics/{job_id}/page.html` - 頁面 HTML
+- `diagnostics/{job_id}/console.log` - 瀏覽器 console
+- `diagnostics/{job_id}/metadata.json` - 錯誤資訊
+
+### Provider 測試腳本
+
+```bash
+# Jitsi 測試
+python -m scripts.test_provider --url "https://meet.jit.si/test-room"
+
+# Webex 測試
+python -m scripts.test_provider --url "https://company.webex.com/meet/username" --provider webex
+
+# 互動模式（每步暫停）
+python -m scripts.test_provider --url "https://meet.jit.si/test-room" --interactive
+```
+
+完整參數：`--provider`, `--name`, `--password`, `--interactive`, `--slowmo`, `--timeout`, `--output-dir`
+
+---
+
+## 開發流程
+
+### 安裝開發依賴
+
+```bash
+uv sync --extra dev
+uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
+```
+
+### 執行測試
+
+```bash
+uv run pytest tests/ -v
+uv run pytest tests/ --cov=api --cov=providers --cov=database --cov=recording
+uv run ruff check .
+uv run ruff format .
+```
+
+### Pre-commit Hooks
+
+| 時機 | 自動執行 |
+|------|----------|
+| `git commit` | ruff check + ruff format |
+| `git push` | pytest 測試 |
+
+### CI/CD Pipeline
+
+| Job | 觸發條件 | 功能 |
+|-----|---------|------|
+| `test` | push / PR | 執行 pytest 測試 |
+| `lint` | push / PR | 執行 ruff 檢查 |
+| `docker` | push main | 建置並推送 Docker image 至 GHCR |
+
+---
+
+## 資料安全
+
+使用 GHCR image 部署時，以下敏感資料**不會**包含在 image 中：
+
+| 資料 | 儲存位置 | 說明 |
+|------|----------|------|
+| `.env` | 本地檔案 | 使用者自行建立 |
+| `youtube_token.json` | `data/` volume | Runtime 產生 |
+| `app.db` | `data/` volume | SQLite 資料庫 |
+| 錄製檔案 | `recordings/` volume | 存在本地 |
+
+---
+
+## 未來改進方向
+
+### 瀏覽器媒體控制
+- 探索更底層的 Chromium 參數（如 `--disable-media-stream`）
+- 研究 Playwright 的 `browserContext.grantPermissions` 進階用法
+
+### Provider 狀態偵測
+- 增加更多平台專屬的偵測選擇器
+- 考慮增加 Google Meet 等其他平台支援
