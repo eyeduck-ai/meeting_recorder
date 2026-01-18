@@ -119,7 +119,7 @@
                 <h2 class="card-title">Timeline</h2>
                 <ul class="steps steps-vertical w-full">
                     <!-- Created/Started -->
-                    <li class="step step-primary">
+                    <li class="step step-info">
                         <div class="text-left w-full">
                             <div class="font-medium">Job Created</div>
                             <div class="text-xs text-base-content/60 font-mono">
@@ -129,12 +129,12 @@
                     </li>
 
                     <!-- Joined/Running -->
-                    <li class="step {% if job.joined_at %}step-primary{% endif %}">
+                    <li class="step {% if job.joined_at %}step-info{% endif %}">
                         <div class="text-left w-full">
                             <div class="font-medium flex items-center gap-2">
                                 Joined Meeting
                                 {% if not job.joined_at and job.status.value in ['joining', 'waiting_lobby'] %}
-                                <span class="loading loading-spinner loading-xs text-primary"></span>
+                                <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
                             </div>
                             {% if job.joined_at %}
@@ -146,12 +146,12 @@
                     </li>
 
                     <!-- Recording -->
-                    <li class="step {% if job.recording_started_at %}step-primary{% endif %}">
+                    <li class="step {% if job.recording_started_at %}step-info{% endif %}">
                         <div class="text-left w-full">
                             <div class="font-medium flex items-center gap-2">
                                 Recording Started
                                 {% if not job.recording_started_at and job.status.value == 'recording' %}
-                                <span class="loading loading-spinner loading-xs text-primary"></span>
+                                <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
                             </div>
                             {% if job.recording_started_at %}
@@ -164,7 +164,7 @@
 
                     <!-- Final Status (Success/Failed/Canceled) -->
                     {% set status_val = job.status.value if job.status is not string else job.status %}
-                    <li class="step {% if status_val in ['succeeded', 'failed', 'canceled'] %}step-primary{% endif %}">
+                    <li class="step {% if status_val in ['succeeded', 'failed', 'canceled'] %}step-info{% endif %}">
                         <div class="text-left w-full">
                             {% if status_val == 'succeeded' %}
                             <div class="font-bold text-success flex items-center gap-2">
@@ -231,7 +231,8 @@
                 </div>
             </div>
             <div class="card-actions justify-end mt-4">
-                <a href="/recordings/{{ job.job_id }}/download" class="btn btn-primary">
+                <a href="/recordings/{{ job.job_id }}/download"
+                    class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
                         stroke="currentColor" class="w-5 h-5">
                         <path stroke-linecap="round" stroke-linejoin="round"

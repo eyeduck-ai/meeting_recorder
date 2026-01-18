@@ -7,7 +7,8 @@
     <!-- Header -->
     <div class="flex justify-between items-center">
         <h1 class="text-2xl md:text-3xl font-bold">Meetings</h1>
-        <a href="/meetings/new" class="btn btn-primary rounded-full px-6 font-bold text-white">
+        <a href="/meetings/new"
+            class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none rounded-full px-6 font-bold">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
                 stroke="currentColor" class="w-5 h-5 mr-1">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -19,7 +20,7 @@
     <!-- Meetings Lists -->
     <div class="bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
         {% if meetings %}
-        <!-- Mobile List -->
+        <!-- Mobile List (unchanged) -->
         <div class="md:hidden">
             {% for meeting in meetings %}
             <div class="p-4 border-b border-[#2f3336] last:border-0 hover:bg-[#1d1f23] transition-colors">
@@ -70,11 +71,14 @@
                         <td class="font-bold text-white pl-6">{{ meeting.name }}</td>
                         <td>
                             {% if meeting.provider == 'jitsi' %}
-                            <span class="text-blue-400 font-bold text-xs uppercase">Jitsi</span>
+                            <span
+                                class="badge badge-info badge-outline font-bold text-xs uppercase rounded">Jitsi</span>
                             {% elif meeting.provider == 'webex' %}
-                            <span class="text-yellow-500 font-bold text-xs uppercase">Webex</span>
+                            <span
+                                class="badge badge-warning badge-outline font-bold text-xs uppercase rounded">Webex</span>
                             {% else %}
-                            <span class="text-gray-500 font-bold text-xs uppercase">{{ meeting.provider }}</span>
+                            <span class="badge badge-ghost badge-outline font-bold text-xs uppercase rounded">{{
+                                meeting.provider }}</span>
                             {% endif %}
                         </td>
                         <td class="text-gray-400 font-mono text-sm">{{ meeting.meeting_code }}</td>
@@ -96,9 +100,11 @@
         {% else %}
         <div class="flex flex-col items-center justify-center py-20 text-gray-500">
             <p class="mb-4">No meetings configured</p>
-            <a href="/meetings/new" class="btn btn-primary btn-sm rounded-full">Create one</a>
+            <a href="/meetings/new"
+                class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full">Create one</a>
         </div>
         {% endif %}
+
     </div>
 </div>
 {% endblock %}

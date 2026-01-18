@@ -7,7 +7,8 @@
     <!-- Page header -->
     <div class="flex justify-between items-center">
         <h1 class="text-2xl md:text-3xl font-bold">Schedules</h1>
-        <a href="/schedules/new" class="btn btn-primary rounded-full px-6 font-bold text-white">
+        <a href="/schedules/new"
+            class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none rounded-full px-6 font-bold">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
                 stroke="currentColor" class="w-5 h-5 mr-1">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -64,7 +65,9 @@
         {% else %}
         <div class="text-center py-20 bg-[#16181c] rounded-xl border border-[#2f3336] border-dashed">
             <p class="text-gray-500 mb-4">No active schedules found.</p>
-            <a href="/schedules/new" class="btn btn-primary btn-sm rounded-full">Create Schedule</a>
+            <a href="/schedules/new"
+                class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full">Create
+                Schedule</a>
         </div>
         {% endif %}
     </div>

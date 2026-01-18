@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Log in / Meeting Recorder</title>
+    <title>MeetingRecorder</title>
 
     <!-- Google Fonts: Inter -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -35,16 +35,13 @@
 </head>
 
 <body class="bg-black text-white min-h-screen flex items-center justify-center p-4">
-    <div class="w-full max-w-sm flex flex-col items-center">
+    <div class="w-full max-w-[300px] flex flex-col items-center">
         <!-- Logo -->
-        <div class="mb-10">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="white" viewBox="0 0 24 24" class="w-12 h-12">
-                <path
-                    d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-            </svg>
+        <div class="mb-4">
+            <img src="/static/images/logo.png" alt="Logo" class="w-auto h-16 object-contain">
         </div>
 
-        <h1 class="text-2xl font-bold mb-8 w-full text-center">Sign in to Meeting Recorder</h1>
+        <h1 class="text-xl font-bold mb-6 w-full text-center">MeetingRecorder</h1>
 
         {% if error %}
         <div
@@ -63,7 +60,7 @@
             </div>
 
             <button type="submit"
-                class="btn btn-primary w-full rounded-full text-white font-bold h-11 text-base capitalize bg-white hover:bg-gray-200 text-black border-none normal-case">
+                class="btn w-full rounded-full !text-black font-bold h-11 text-base capitalize bg-white hover:bg-gray-200 border-none normal-case">
                 Next
             </button>
         </form>

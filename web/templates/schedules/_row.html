@@ -32,7 +32,12 @@
     </td>
     <td>
         {% if schedule.youtube_enabled %}
-        <span class="text-success font-bold text-lg">✓</span>
+        <div class="w-6 h-6 rounded-full bg-[#00ba7c] flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="4" stroke="black"
+                class="w-3.5 h-3.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9.135-12.75" />
+            </svg>
+        </div>
         {% else %}
         <span class="text-gray-600 text-xs">-</span>
         {% endif %}
@@ -40,7 +45,7 @@
     <td>
         {% if not is_expired %}
         <form hx-post="/schedules/{{ schedule.id }}/toggle" hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML">
-            <input type="checkbox" class="toggle toggle-sm toggle-primary" {% if schedule.enabled %}checked{% endif %}
+            <input type="checkbox" class="toggle toggle-sm toggle-info" {% if schedule.enabled %}checked{% endif %}
                 onchange="this.form.requestSubmit()">
         </form>
         {% else %}

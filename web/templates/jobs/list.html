@@ -133,7 +133,7 @@
                             {% else %}
                             <button hx-delete="/jobs/{{ job.job_id }}" hx-target="closest tr" hx-swap="outerHTML"
                                 hx-confirm="Delete this job?"
-                                class="text-gray-500 hover:text-red-500 text-sm hover:font-bold transition-all">Delete</button>
+                                class="text-error hover:text-red-400 btn btn-ghost btn-xs">Delete</button>
                             {% endif %}
                         </td>
                     </tr>

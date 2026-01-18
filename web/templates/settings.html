@@ -12,7 +12,7 @@
         <!-- Mobile Tabs (Horizontal Scroll) -->
         <div class="md:hidden flex overflow-x-auto border-b border-[#2f3336] no-scrollbar">
             <button onclick="switchTab('general')"
-                class="tab-btn active px-4 py-3 whitespace-nowrap font-bold border-b-2 border-primary">General</button>
+                class="tab-btn active px-4 py-3 whitespace-nowrap font-bold border-b-2 border-[#1d9bf0]">General</button>
             <button onclick="switchTab('recording')"
                 class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Recording</button>
             <button onclick="switchTab('integrations')"
@@ -26,7 +26,7 @@
         <!-- Desktop Sidebar Menu -->
         <div class="hidden md:flex flex-col py-2">
             <button onclick="switchTab('general')"
-                class="tab-btn active text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-primary transition-colors font-bold">General
+                class="tab-btn active text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-[#1d9bf0] transition-colors font-bold">General
                 & Storage</button>
             <button onclick="switchTab('recording')"
                 class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Recording
@@ -97,7 +97,8 @@
         <div id="section-recording" class="settings-section hidden p-4 md:p-8 max-w-2xl">
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-bold">Recording Configuration</h3>
-                <button onclick="saveSettings()" class="btn btn-primary btn-sm rounded-full px-6">Save</button>
+                <button onclick="saveSettings()"
+                    class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full px-6">Save</button>
             </div>
 
             <form id="settings-form" class="space-y-6">
@@ -105,7 +106,7 @@
                 <div class="form-group">
                     <label class="block text-sm font-bold mb-2">Resolution</label>
                     <select id="resolution-select"
-                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary"
+                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-[#1d9bf0]"
                         onchange="updateResolution()">
                         <option value="1920x1080" {% if app_settings.resolution_w=='1920' and
                             app_settings.resolution_h=='1080' %}selected{% endif %}>1080p (1920x1080)</option>
@@ -128,7 +129,7 @@
                     <label class="block text-sm font-bold mb-2">FFmpeg Preset <span
                             class="text-gray-500 font-normal">(Speed vs Quality)</span></label>
                     <select id="ffmpeg_preset"
-                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary">
+                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-[#1d9bf0]">
                         <option value="ultrafast" {% if app_settings.ffmpeg_preset=='ultrafast' %}selected{% endif %}>
                             ultrafast (fastest, larger files)</option>
                         <option value="superfast" {% if app_settings.ffmpeg_preset=='superfast' %}selected{% endif %}>
@@ -202,11 +203,12 @@
                     {% else %}
                     <p class="mb-4 text-gray-500">Connect to enable auto-upload.</p>
                     <div id="auth-container">
-                        <button id="start-auth-btn" class="btn btn-primary rounded-full w-full"
+                        <button id="start-auth-btn"
+                            class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none rounded-full w-full"
                             onclick="startYouTubeAuth()">Connect Account</button>
                     </div>
                     <div id="auth-instructions" class="hidden mt-4 bg-base-300 p-4 rounded-lg">
-                        <p>1. Visit <a id="auth-url" href="#" target="_blank" class="link text-primary">this link</a>
+                        <p>1. Visit <a id="auth-url" href="#" target="_blank" class="link text-[#1d9bf0]">this link</a>
                         </p>
                         <p>2. Enter code: <strong id="auth-code" class="text-lg text-white"></strong></p>
                         <div class="mt-2 text-sm text-gray-500" id="poll-status">Waiting...</div>
@@ -247,7 +249,8 @@
         <div id="section-detection" class="settings-section hidden p-4 md:p-8 max-w-2xl">
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-bold">End Detection Config</h3>
-                <button onclick="saveDetectionConfig()" class="btn btn-primary btn-sm rounded-full px-6"
+                <button onclick="saveDetectionConfig()"
+                    class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full px-6"
                     id="btn-save-detection">Save</button>
             </div>
 
@@ -259,35 +262,35 @@
                         <div class="font-bold">WebRTC Connection</div>
                         <div class="text-xs text-gray-500">Browser connection state</div>
                     </div>
-                    <input type="checkbox" id="det_webrtc" class="toggle toggle-primary">
+                    <input type="checkbox" id="det_webrtc" class="toggle toggle-info">
                 </div>
                 <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
                     <div>
                         <div class="font-bold">Text Indicators</div>
                         <div class="text-xs text-gray-500">"Meeting ended"</div>
                     </div>
-                    <input type="checkbox" id="det_text" class="toggle toggle-primary">
+                    <input type="checkbox" id="det_text" class="toggle toggle-info">
                 </div>
                 <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
                     <div>
                         <div class="font-bold">Video Element</div>
                         <div class="text-xs text-gray-500">Video tag removal</div>
                     </div>
-                    <input type="checkbox" id="det_video" class="toggle toggle-primary">
+                    <input type="checkbox" id="det_video" class="toggle toggle-info">
                 </div>
                 <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
                     <div>
                         <div class="font-bold">URL Change</div>
                         <div class="text-xs text-gray-500">Navigation away</div>
                     </div>
-                    <input type="checkbox" id="det_url" class="toggle toggle-primary">
+                    <input type="checkbox" id="det_url" class="toggle toggle-info">
                 </div>
                 <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
                     <div>
                         <div class="font-bold">Screen Freeze</div>
                         <div class="text-xs text-gray-500">Pixels unchanged</div>
                     </div>
-                    <input type="checkbox" id="det_freeze" class="toggle toggle-secondary">
+                    <input type="checkbox" id="det_freeze" class="toggle toggle-info">
                 </div>
             </div>
 
@@ -313,7 +316,7 @@
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-bold">Notifications</h3>
                 <button onclick="saveNotificationConfig()"
-                    class="btn btn-primary btn-sm rounded-full px-6">Save</button>
+                    class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full px-6">Save</button>
             </div>
 
             <div class="space-y-8">
@@ -369,12 +372,12 @@
         // Update styling
         document.querySelectorAll('.tab-btn').forEach(btn => {
             // Basic logic to reset classes (simplistic for now)
-            btn.classList.remove('active', 'border-primary', 'font-bold', 'text-white');
+            btn.classList.remove('active', 'border-[#1d9bf0]', 'font-bold', 'text-white');
             btn.classList.add('text-gray-500', 'border-transparent');
 
             // If it matches the tabId name in text or onclick (bit hacky but effective for simple tabs)
             if (btn.getAttribute('onclick').includes(tabId)) {
-                btn.classList.add('active', 'border-primary', 'font-bold', 'text-white');
+                btn.classList.add('active', 'border-[#1d9bf0]', 'font-bold', 'text-white');
                 btn.classList.remove('text-gray-500', 'border-transparent');
             }
         });
@@ -545,7 +548,7 @@
         document.getElementById('disk-free').textContent = d.free_gb.toFixed(1);
         document.getElementById('rec-size').textContent = d.recordings_gb.toFixed(1);
         document.getElementById('rec-count').textContent = d.recordings_count;
-        document.getElementById('disk-usage').textContent = d.usage_percent + '%';
+        document.getElementById('disk-usage').textContent = d.usage_percent.toFixed(1) + '%';
     }
 
     async function cleanupRecordings(dry) {

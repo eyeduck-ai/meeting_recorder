@@ -18,7 +18,7 @@
         </div>
         <div class="bg-[#16181c] p-4 rounded-xl border border-[#2f3336]">
             <div class="text-gray-500 text-xs uppercase font-bold tracking-wider mb-1">Active Schedules</div>
-            <div class="text-2xl font-bold text-primary">{{ stats.active_schedules }}</div>
+            <div class="text-2xl font-bold text-[#1d9bf0]">{{ stats.active_schedules }}</div>
         </div>
         <div class="bg-[#16181c] p-4 rounded-xl border border-[#2f3336]">
             <div class="text-gray-500 text-xs uppercase font-bold tracking-wider mb-1">Total Jobs</div>
@@ -78,7 +78,9 @@
         <div>
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-xl font-bold">Recent Jobs</h2>
-                <a href="/jobs" class="text-primary text-sm hover:underline">View All</a>
+                <a href="/jobs"
+                    class="badge bg-white text-black border-none font-bold hover:bg-gray-200 text-xs no-underline">View
+                    All</a>
             </div>
 
             {% if recent_jobs %}
@@ -175,7 +177,9 @@
         <div>
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-xl font-bold">Upcoming</h2>
-                <a href="/schedules" class="text-primary text-sm hover:underline">View All</a>
+                <a href="/schedules"
+                    class="badge bg-white text-black border-none font-bold hover:bg-gray-200 text-xs no-underline">View
+                    All</a>
             </div>
 
             {% if upcoming_schedules %}
@@ -186,11 +190,17 @@
                     <div class="p-4 border-b border-[#2f3336] last:border-0 flex justify-between items-center">
                         <div>
                             <div class="font-bold text-white mb-1">{{ schedule.meeting.name }}</div>
-                            <div class="text-xs text-primary">{{ schedule.next_run_at | localtime('%m/%d %H:%M') }}
+                            <div class="text-xs text-white">{{ schedule.next_run_at | localtime('%m/%d %H:%M') }}
                             </div>
                         </div>
                         <form method="POST" action="/schedules/{{ schedule.id }}/trigger">
-                            <button type="submit" class="btn btn-xs btn-outline rounded-full">Run Now</button>
+                            <button type="submit" class="btn btn-ghost btn-xs text-white" title="Trigger now">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                    stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                                </svg>
+                            </button>
                         </form>
                     </div>
                     {% endfor %}
@@ -210,12 +220,18 @@
                             {% for schedule in upcoming_schedules %}
                             <tr class="hover:bg-[#1d1f23] border-b border-[#2f3336] last:border-0 transition-colors">
                                 <td class="pl-6 font-medium text-white">{{ schedule.meeting.name }}</td>
-                                <td class="text-primary text-sm">{{ schedule.next_run_at | localtime('%m/%d %H:%M') }}
+                                <td class="text-white text-sm">{{ schedule.next_run_at | localtime('%m/%d %H:%M') }}
                                 </td>
                                 <td class="text-right pr-6">
                                     <form method="POST" action="/schedules/{{ schedule.id }}/trigger">
-                                        <button type="submit"
-                                            class="btn btn-xs btn-ghost text-gray-500 hover:text-white">Run Now</button>
+                                        <button type="submit" class="btn btn-ghost btn-xs text-white"
+                                            title="Trigger now">
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
+                                                stroke-width="1.5" stroke="currentColor" class="w-4 h-4">
+                                                <path stroke-linecap="round" stroke-linejoin="round"
+                                                    d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                                            </svg>
+                                        </button>
                                     </form>
                                 </td>
                             </tr>
@@ -230,14 +246,7 @@
         </div>
     </div>
 
-    <!-- Quick Actions (Mobile Only mostly, or bottom) -->
-    <div class="pt-6 border-t border-[#2f3336]">
-        <h3 class="text-sm font-bold text-gray-500 mb-4 uppercase tracking-wider">Quick Actions</h3>
-        <div class="flex gap-4">
-            <a href="/meetings/new" class="btn btn-primary rounded-full px-6 flex-1 md:flex-none">New Meeting</a>
-            <a href="/schedules/new" class="btn btn-outline rounded-full px-6 flex-1 md:flex-none">New Schedule</a>
-        </div>
-    </div>
+
 
 </div>
 
