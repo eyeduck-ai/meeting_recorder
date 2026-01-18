@@ -9,6 +9,7 @@ from database.models import (
 )
 from database.session import JobRepository, build_result_update_fields
 from recording.worker import RecordingJob, get_worker
+from services.app_settings import get_setting_int
 from telegram_bot.notifications import (
     notify_recording_completed,
     notify_recording_failed,
@@ -143,7 +144,7 @@ class JobRunner:
                 display_name=schedule.get_effective_display_name(),
                 duration_sec=schedule.duration_sec,
                 base_url=meeting.site_base_url,
-                lobby_wait_sec=schedule.lobby_wait_sec,
+                lobby_wait_sec=get_setting_int(session, "lobby_wait_sec"),
                 duration_mode=schedule.duration_mode,
                 dry_run=schedule.dry_run,
                 min_duration_sec=schedule.min_duration_sec,
@@ -160,7 +161,7 @@ class JobRunner:
                 display_name=schedule.get_effective_display_name(),
                 base_url=meeting.site_base_url,
                 duration_sec=schedule.duration_sec,
-                lobby_wait_sec=schedule.lobby_wait_sec,
+                lobby_wait_sec=get_setting_int(session, "lobby_wait_sec"),
                 status=JobStatus.QUEUED.value,
             )
             session.commit()

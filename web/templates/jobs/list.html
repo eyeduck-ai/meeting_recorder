@@ -1,102 +1,156 @@
 {% extends "base.html" %}
 
-{% block title %}Jobs - Meeting Recorder{% endblock %}
+
 
 {% block content %}
-<div class="space-y-6">
-    <!-- Page header -->
+<div class="max-w-7xl mx-auto p-4 md:p-8 space-y-6">
+    <!-- Header -->
     <div class="flex justify-between items-center">
-        <h1 class="text-3xl font-bold">Recording Jobs</h1>
+        <h1 class="text-2xl md:text-3xl font-bold">Jobs</h1>
     </div>
 
-    <!-- Simplified Filters: All | Active | Succeeded | Failed -->
-    <div class="flex gap-2 flex-wrap">
-        <a href="/jobs" class="btn btn-sm {% if not selected_status %}btn-primary{% else %}btn-ghost{% endif %}">
+    <!-- Filters -->
+    <div class="flex gap-2 overflow-x-auto no-scrollbar pb-2 md:pb-0">
+        <a href="/jobs"
+            class="btn btn-sm rounded-full px-4 font-bold border-none {% if not selected_status %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
             All
         </a>
         <a href="/jobs?status=active"
-            class="btn btn-sm {% if selected_status == 'active' %}btn-primary{% else %}btn-ghost{% endif %}">
-            <span class="loading loading-spinner loading-xs mr-1"></span>
+            class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'active' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
             Active
         </a>
         <a href="/jobs?status=succeeded"
-            class="btn btn-sm {% if selected_status == 'succeeded' %}btn-success{% else %}btn-ghost{% endif %}">
-            Succeeded
+            class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'succeeded' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
+            Success
         </a>
         <a href="/jobs?status=failed"
-            class="btn btn-sm {% if selected_status == 'failed' %}btn-error{% else %}btn-ghost{% endif %}">
+            class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'failed' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
             Failed
         </a>
     </div>
 
-    <!-- Jobs list -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            {% if jobs %}
-            <div class="overflow-x-auto">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Job ID</th>
-                            <th>Meeting</th>
-                            <th>Created</th>
-                            <th>Duration</th>
-                            <th>Result</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for job in jobs %}
-                        <tr class="hover cursor-pointer" onclick="location.href='/jobs/{{ job.job_id }}'">
-                            <td class="font-mono text-xs">{{ job.job_id[:8] }}...</td>
-                            <td>{{ job.meeting_code }}</td>
-                            <td class="text-sm">{{ job.created_at | localtime('%Y-%m-%d %H:%M') }}</td>
-                            <td>
-                                {% if job.duration_actual_sec %}
-                                {{ (job.duration_actual_sec / 60) | int }} min
-                                {% else %}
-                                -
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% set status_val = job.status.value if job.status is not string else job.status %}
-                                {% if status_val == 'succeeded' %}
-                                <span class="badge badge-success">Success</span>
-                                {% elif status_val == 'failed' %}
-                                <span class="badge badge-error">Failed</span>
-                                {% elif status_val == 'canceled' %}
-                                <span class="badge badge-warning">Canceled</span>
-                                {% elif status_val in ['recording', 'joining', 'waiting_lobby', 'starting',
-                                'finalizing', 'uploading', 'queued'] %}
-                                <span class="badge badge-info gap-1">
-                                    <span class="loading loading-spinner loading-xs"></span>
-                                    Running
-                                </span>
-                                {% else %}
-                                <span class="badge badge-ghost">{{ status_val }}</span>
-                                {% endif %}
-                            </td>
-                            <td onclick="event.stopPropagation()">
-                                <div class="flex gap-2">
-                                    <a href="/jobs/{{ job.job_id }}" class="btn btn-ghost btn-sm">Details</a>
-                                    {% if job.job_id == current_job_id %}
-                                    <form method="POST" action="/jobs/{{ job.job_id }}/stop">
-                                        <button type="submit" class="btn btn-error btn-sm">Stop</button>
-                                    </form>
-                                    {% endif %}
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+    <!-- Jobs List -->
+    <div class="bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
+        {% if jobs %}
+        <!-- Mobile List -->
+        <div class="md:hidden">
+            {% for job in jobs %}
+            <div class="p-4 border-b border-[#2f3336] last:border-0 hover:bg-[#1d1f23] transition-colors"
+                onclick="location.href='/jobs/{{ job.job_id }}'">
+                <div class="flex justify-between items-start mb-2">
+                    <div>
+                        <div class="font-bold text-white truncate max-w-[200px]">{{ job.meeting_code }}</div>
+                        <div class="text-xs text-gray-500 font-mono mt-0.5">#{{ job.job_id[:8] }}</div>
+                    </div>
+                    <div class="text-xs text-gray-500">{{ job.created_at | localtime('%m/%d %H:%M') }}</div>
+                </div>
+
+                <div class="flex justify-between items-center">
+                    <div>
+                        {% set status_val = job.status.value if job.status is not string else job.status %}
+                        {% if status_val == 'succeeded' %}
+                        <span class="badge badge-sm badge-success badge-outline">Success</span>
+                        {% elif status_val == 'failed' %}
+                        <span class="badge badge-sm badge-error badge-outline">Failed</span>
+                        {% elif status_val == 'canceled' %}
+                        <span class="badge badge-sm badge-warning badge-outline">Canceled</span>
+                        {% else %}
+                        <span class="badge badge-sm badge-info badge-outline gap-1">
+                            <span class="loading loading-spinner loading-xs"></span> {{ status_val }}
+                        </span>
+                        {% endif %}
+                    </div>
+
+                    {% if job.job_id == current_job_id %}
+                    <form method="POST" action="/jobs/{{ job.job_id }}/stop" onclick="event.stopPropagation()">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Stop</button>
+                    </form>
+                    {% else %}
+                    <button hx-delete="/jobs/{{ job.job_id }}" hx-target="closest div.p-4" hx-swap="outerHTML"
+                        hx-confirm="Delete?" onclick="event.stopPropagation()"
+                        class="btn btn-xs btn-ghost text-gray-500 hover:text-error">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                            stroke="currentColor" class="w-4 h-4">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                    </button>
+                    {% endif %}
+                </div>
             </div>
-            {% else %}
-            <div class="text-center py-10">
-                <p class="text-base-content/60">No jobs found</p>
-            </div>
-            {% endif %}
+            {% endfor %}
         </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden md:block">
+            <table class="table w-full">
+                <thead class="text-gray-500 border-b border-[#2f3336]">
+                    <tr>
+                        <th class="font-normal pl-6">Job ID</th>
+                        <th class="font-normal">Meeting</th>
+                        <th class="font-normal whitespace-nowrap">Time</th>
+                        <th class="font-normal">Duration</th>
+                        <th class="font-normal">Status</th>
+                        <th class="font-normal text-right pr-6">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in jobs %}
+                    <tr class="hover:bg-[#1d1f23] cursor-pointer border-b border-[#2f3336] last:border-0 transition-colors"
+                        onclick="location.href='/jobs/{{ job.job_id }}'">
+                        <td class="font-mono text-xs text-gray-500 pl-6">{{ job.job_id[:8] }}</td>
+                        <td class="font-bold text-white">{{ job.meeting_code }}</td>
+                        <td class="text-sm text-gray-400 whitespace-nowrap">{{ job.created_at | localtime('%Y-%m-%d
+                            %H:%M') }}</td>
+                        <td class="text-sm text-gray-400">
+                            {% if job.duration_actual_sec %}
+                            {{ (job.duration_actual_sec / 60) | int }}m
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% set status_val = job.status.value if job.status is not string else job.status %}
+                            {% if status_val == 'succeeded' %}
+                            <span class="text-green-500 text-sm flex items-center gap-1">Success</span>
+                            {% elif status_val == 'failed' %}
+                            <span class="text-red-500 text-sm flex items-center gap-1">Failed</span>
+                            {% elif status_val == 'canceled' %}
+                            <span class="text-yellow-500 text-sm">Canceled</span>
+                            {% else %}
+                            <span class="text-blue-400 text-sm flex items-center gap-2">
+                                <span class="loading loading-spinner loading-xs"></span>
+                                Running
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td class="text-right pr-6" onclick="event.stopPropagation()">
+                            {% if job.job_id == current_job_id %}
+                            <form method="POST" action="/jobs/{{ job.job_id }}/stop" class="inline">
+                                <button type="submit"
+                                    class="text-red-500 hover:text-red-400 text-sm font-bold">Stop</button>
+                            </form>
+                            {% else %}
+                            <button hx-delete="/jobs/{{ job.job_id }}" hx-target="closest tr" hx-swap="outerHTML"
+                                hx-confirm="Delete this job?"
+                                class="text-gray-500 hover:text-red-500 text-sm hover:font-bold transition-all">Delete</button>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="flex flex-col items-center justify-center py-20 text-gray-500">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-12 h-12 mb-4 opacity-20">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+            </svg>
+            <p>No jobs found</p>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

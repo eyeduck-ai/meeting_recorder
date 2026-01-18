@@ -1,10 +1,15 @@
 <!DOCTYPE html>
-<html lang="zh-TW" data-theme="business">
+<html lang="en" data-theme="minimal-tech">
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Meeting Recorder{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Meeting Recorder</title>
+
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- Tailwind CSS + DaisyUI CDN -->
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.min.css" rel="stylesheet" type="text/css" />
@@ -13,155 +18,305 @@
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
 
-    <!-- Theme Consistency Script (Prevent FOUC) -->
+    <!-- Configure Tailwind Theme -->
     <script>
-        (function () {
-            try {
-                var localTheme = localStorage.getItem('theme');
-                var theme = localTheme || 'business';
-                document.documentElement.setAttribute('data-theme', theme);
-            } catch (e) { }
-        })();
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        // Custom palette to match X.com dark mode
+                        xblack: '#000000',
+                        xdark: '#16181c',
+                        xlight: '#202327',
+                        xblue: '#1d9bf0',
+                        xgrey: '#71767b',
+                        xtborder: '#2f3336',
+                    }
+                }
+            },
+            daisyui: {
+                themes: [
+                    {
+                        "minimal-tech": {
+                            "primary": "#1d9bf0",     // X Blue
+                            "secondary": "#eff3f4",   // White text equivalent
+                            "accent": "#71767b",      // Grey text
+                            "neutral": "#000000",     // Pure black
+                            "base-100": "#000000",    // Page bg
+                            "base-200": "#16181c",    // Card bg
+                            "base-300": "#202327",    // Hover bg
+                            "info": "#1d9bf0",
+                            "success": "#00ba7c",     // X Green
+                            "warning": "#ffd400",     // X Yellow
+                            "error": "#f91880",       // X Pink/Red
+                            "--rounded-btn": "9999px",
+                            "--rounded-box": "16px",
+                            "--tab-radius": "9999px",
+                        }
+                    }
+                ]
+            }
+        }
     </script>
 
-
-    <!-- Custom styles -->
     <style>
-        /* Apple/Glassmorphism Styles */
-        html {
-            font-size: 16px;
-        }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            letter-spacing: -0.01em;
+            font-family: 'Inter', sans-serif;
+            background-color: #000000;
+            color: #eff3f4;
+            overflow-x: hidden;
         }
 
-        .glass-panel {
-            background-color: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 24px;
+        /* Minimalist Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
         }
 
-        [data-theme='corporate'] .glass-panel {
-            background-color: rgba(255, 255, 255, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+        ::-webkit-scrollbar-track {
+            background: #000000;
         }
 
-        .rounded-apple {
-            border-radius: 24px;
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
         }
 
-        .btn {
-            border-radius: 9999px;
-            /* Pill shape */
-            text-transform: none;
-            font-weight: 500;
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
         }
 
-        .table {
-            border-radius: 20px;
-            overflow: hidden;
+        /* X style border separations */
+        .hairline-b {
+            border-bottom: 1px solid #2f3336;
         }
 
-        .card {
-            border-radius: 24px;
+        .hairline-r {
+            border-right: 1px solid #2f3336;
         }
 
-        .navbar {
-            backdrop-filter: blur(12px);
-            /* Remove explicit background color to let bg-base-100/80 work */
+        /* Mobile Nav active state */
+        .mobile-nav-item.active svg {
+            stroke-width: 2.5px;
+        }
+
+        /* Desktop Nav Item */
+        .nav-item {
+            transition: background-color 0.2s;
+        }
+
+        .nav-item:hover {
+            background-color: rgba(239, 243, 244, 0.1);
+        }
+
+        .nav-item.active {
+            font-weight: 700;
+        }
+
+        .nav-item.active svg {
+            stroke-width: 2.5px;
         }
     </style>
 </head>
 
-<body class="min-h-screen bg-base-200 text-base">
-    <!-- Navbar -->
-    <div class="navbar bg-base-100/80 sticky top-0 z-50 shadow-sm border-b border-base-content/5">
-        <div class="flex-1">
-            <a href="/" class="btn btn-ghost text-xl font-bold tracking-tight">Meeting Recorder</a>
-        </div>
-        <div class="flex-none gap-2">
-            <ul class="menu menu-horizontal px-1 font-medium">
-                <li><a href="/"
-                        class="rounded-lg {% if request.url.path == '/' %}active !bg-primary/20 !text-primary{% endif %}">Dashboard</a>
-                </li>
-                <li><a href="/meetings"
-                        class="rounded-lg {% if '/meetings' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Meetings</a>
-                </li>
-                <li><a href="/schedules"
-                        class="rounded-lg {% if '/schedules' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Schedules</a>
-                </li>
-                <li><a href="/jobs"
-                        class="rounded-lg {% if '/jobs' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Jobs</a>
-                </li>
-                <li><a href="/recordings"
-                        class="rounded-lg {% if '/recordings' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Recordings</a>
-                </li>
-                <li><a href="/detection-logs"
-                        class="rounded-lg {% if '/detection-logs' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Detection</a>
-                </li>
-                <li><a href="/test"
-                        class="rounded-lg {% if '/test' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Test</a>
-                </li>
-                <li><a href="/settings"
-                        class="rounded-lg {% if '/settings' in request.url.path %}active !bg-primary/20 !text-primary{% endif %}">Settings</a>
-                </li>
-                {% if auth_enabled %}
-                <li><a href="/logout" class="text-error rounded-lg">Logout</a></li>
-                {% endif %}
-            </ul>
+<body class="min-h-screen flex flex-col md:flex-row">
 
-            <!-- Theme Controller (Rightmost) -->
-            <label class="swap swap-rotate btn btn-ghost btn-circle ml-2">
-                <!-- this hidden checkbox controls the state -->
-                <input type="checkbox" class="theme-controller" value="corporate" />
-
-                <!-- sun icon -->
-                <svg class="swap-on fill-current w-6 h-6" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                    <path
-                        d="M5.64,17l-.71.71a1,1,0,0,0,0,1.41,1,1,0,0,0,1.41,0l.71-.71A1,1,0,0,0,5.64,17ZM5,12a1,1,0,0,0-1-1H3a1,1,0,0,0,0,2H4A1,1,0,0,0,5,12Zm7-7a1,1,0,0,0,1-1V3a1,1,0,0,0-2,0V4A1,1,0,0,0,12,5ZM5.64,7.05a1,1,0,0,0,.7.29,1,1,0,0,0,.71-.29,1,1,0,0,0,0-1.41l-.71-.71A1,1,0,0,0,4.93,6.34Zm12,.29a1,1,0,0,0,.7-.29l.71-.71a1,1,0,1,0-1.41-1.41L17,5.64a1,1,0,0,0,0,1.41A1,1,0,0,0,17.66,7.34ZM21,11H20a1,1,0,0,0,0,2h1a1,1,0,0,0,0-2Zm-9,8a1,1,0,0,0-1,1v1a1,1,0,0,0,2,0V20A1,1,0,0,0,12,19ZM18.36,17A1,1,0,0,0,17,18.36l.71.71a1,1,0,0,0,1.41,0,1,1,0,0,0,0-1.41ZM12,6.5A5.5,5.5,0,1,0,17.5,12,5.51,5.51,0,0,0,12,6.5Zm0,9A3.5,3.5,0,1,1,15.5,12,3.5,3.5,0,0,1,12,15.5Z" />
+    <!-- Mobile Header (Visible only on mobile) -->
+    <header
+        class="md:hidden sticky top-0 z-50 bg-base-100/80 backdrop-blur-md px-4 h-14 border-b border-[#2f3336] flex items-center justify-between">
+        <div class="avatar placeholder">
+            <div class="bg-neutral text-neutral-content rounded-full w-8">
+                <!-- User Icon Placeholder -->
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                    stroke="currentColor" class="w-5 h-5">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
                 </svg>
-
-                <!-- moon icon -->
-                <svg class="swap-off fill-current w-6 h-6" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                    <path
-                        d="M21.64,13a1,1,0,0,0-1.05-.14,8.05,8.05,0,0,1-3.37.73A8.15,8.15,0,0,1,9.08,5.49a8.59,8.59,0,0,1,.25-2A1,1,0,0,0,8,2.36,10.14,10.14,0,1,0,22,14.05,1,1,0,0,0,21.64,13Zm-9.5,6.69A8.14,8.14,0,0,1,7.08,5.22v.27A10.15,10.15,0,0,0,17.22,15.63a9.79,9.79,0,0,0,2.1-.22A8.11,8.11,0,0,1,12.14,19.73Z" />
-                </svg>
-            </label>
+            </div>
         </div>
-    </div>
+        <h1 class="text-lg font-bold">Meeting Recorder</h1>
+        <button class="btn btn-ghost btn-circle btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-6 h-6">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+        </button>
+    </header>
 
-    <!-- Main content -->
-    <main class="container mx-auto px-4 py-6">
+    <!-- Desktop Sidebar (Hidden on mobile) -->
+    <aside
+        class="hidden md:flex flex-col w-[275px] h-screen sticky top-0 border-r border-[#2f3336] px-4 py-4 justify-between">
+        <div>
+            <!-- Logo -->
+            <a href="/" class="btn btn-ghost btn-circle text-3xl mb-4 hover:bg-base-300">
+                <!-- Simple X-style Logo or Icon -->
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                    stroke="currentColor" class="w-8 h-8">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                </svg>
+            </a>
+
+            <!-- Navigation Menu -->
+            <nav class="flex flex-col gap-2 text-xl">
+                <a href="/"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if request.url.path == '/' %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+                    </svg>
+                    <span>Dashboard</span>
+                </a>
+
+                <a href="/meetings"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/meetings' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+                    </svg>
+                    <span>Meetings</span>
+                </a>
+
+                <a href="/schedules"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/schedules' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5m-9-6h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 2.25h.008v.008H12v-.008zM9.75 15h.008v.008H9.75V15zm0 2.25h.008v.008H9.75v-.008zM7.5 15h.008v.008H7.5V15zm0 2.25h.008v.008H7.5v-.008zm6.75-4.5h.008v.008h-.008v-.008zm0 2.25h.008v.008h-.008V15zm0 2.25h.008v.008h-.008v-.008zm2.25-4.5h.008v.008H16.5v-.008zm0 2.25h.008v.008H16.5V15z" />
+                    </svg>
+                    <span>Schedules</span>
+                </a>
+
+                <a href="/jobs"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/jobs' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+                    </svg>
+                    <span>Jobs</span>
+                </a>
+
+                <a href="/recordings"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/recordings' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                    </svg>
+                    <span>Recordings</span>
+                </a>
+
+                <a href="/detection-logs"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/detection-logs' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
+                    </svg>
+                    <span>Detection</span>
+                </a>
+
+                <a href="/settings"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/settings' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    <span>Settings</span>
+                </a>
+
+                <a href="/test"
+                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/test' in request.url.path %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                        stroke="currentColor" class="w-7 h-7">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+                    </svg>
+                    <span>Testing</span>
+                </a>
+            </nav>
+
+            <!-- New Recording Button (Desktop) -->
+            <a href="/schedules"
+                class="btn btn-primary rounded-full w-full text-lg text-white font-bold mt-4 border-none shadow-none hover:bg-[#1a8cd8]">
+                New Recording
+            </a>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 overflow-y-auto h-screen md:border-r border-[#2f3336]">
         {% block content %}{% endblock %}
     </main>
 
     <!-- Toast notifications -->
-    <div id="toast-container" class="toast toast-end">
+    <div id="toast-container" class="toast toast-end z-[100]">
         {% block toasts %}{% endblock %}
     </div>
 
-    {% block scripts %}{% endblock %}
-    <script>
-        // Sync theme controller with current theme
-        document.addEventListener('DOMContentLoaded', function () {
-            var theme = document.documentElement.getAttribute('data-theme');
-            var themeController = document.querySelector('.theme-controller');
-            if (themeController) {
-                themeController.checked = (theme === 'corporate');
+    <!-- Mobile Bottom Navigation (Optional: if user prefers bottom tabs on mobile over hamburger) -->
+    <!-- For now, sticking to standard mobile patterns, maybe hamburger for simplicity or bottom bar like Twitter -->
+    <div
+        class="md:hidden fixed bottom-0 w-full bg-black/90 backdrop-blur-md border-t border-[#2f3336] h-14 flex items-center justify-around z-50">
+        <a href="/" class="mobile-nav-item p-2 {% if request.url.path == '/' %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-7 h-7">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+            </svg>
+        </a>
+        <a href="/meetings" class="mobile-nav-item p-2 {% if '/meetings' in request.url.path %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-7 h-7">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+            </svg>
+        </a>
+        <a href="/schedules" class="mobile-nav-item p-2 {% if '/schedules' in request.url.path %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-7 h-7">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5m-9-6h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 2.25h.008v.008H12v-.008zM9.75 15h.008v.008H9.75V15zm0 2.25h.008v.008H9.75v-.008zM7.5 15h.008v.008H7.5V15zm0 2.25h.008v.008H7.5v-.008zm6.75-4.5h.008v.008h-.008v-.008zm0 2.25h.008v.008h-.008V15zm0 2.25h.008v.008h-.008v-.008zm2.25-4.5h.008v.008H16.5v-.008zm0 2.25h.008v.008H16.5V15z" />
+            </svg>
+        </a>
+        <a href="/jobs" class="mobile-nav-item p-2 {% if '/jobs' in request.url.path %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-7 h-7">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+            </svg>
+        </a>
+        <a href="/settings" class="mobile-nav-item p-2 {% if '/settings' in request.url.path %}active{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-7 h-7">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107-1.204l-.527-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+        </a>
+    </div>
 
-                themeController.addEventListener('change', function (e) {
-                    var newTheme = e.target.checked ? 'corporate' : 'business';
-                    document.documentElement.setAttribute('data-theme', newTheme);
-                    localStorage.setItem('theme', newTheme);
-                });
-            }
-        });
-    </script>
+    <!-- Floating Action Button for Mobile -->
+    <div class="md:hidden fixed bottom-20 right-4 z-50">
+        <a href="/schedules" class="btn btn-primary btn-circle btn-lg text-white shadow-lg border-none">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                stroke="currentColor" class="w-8 h-8">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+        </a>
+    </div>
+
+    {% block scripts %}{% endblock %}
 </body>
 
 </html>

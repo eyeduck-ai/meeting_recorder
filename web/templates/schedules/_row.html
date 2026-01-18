@@ -1,26 +1,29 @@
 <tr id="schedule-{{ schedule.id }}" {% if is_expired %}data-expired="true" {% endif %}
     class="{% if is_expired %}opacity-50{% endif %}">
-    <td class="font-medium">{{ schedule.meeting.name }}</td>
-    <td>
+    <td class="font-bold truncate max-w-[150px]">{{ schedule.meeting.name }}</td>
+    <td class="whitespace-nowrap">
         {% set st_val = schedule.schedule_type.value if schedule.schedule_type is not string else schedule.schedule_type
         %}
         {% if st_val == 'cron' %}
-        <span class="badge badge-warning badge-sm font-bold mr-2 rounded">CRON</span>
-        <span class="text-sm">{{ cron_description or schedule.cron_expression or '-' }}</span>
+        <div class="flex items-center gap-2">
+            <span class="badge badge-warning badge-sm font-bold rounded">CRON</span>
+            <span class="text-sm truncate max-w-[200px]" title="{{ cron_description or schedule.cron_expression }}">{{
+                cron_description or schedule.cron_expression or '-' }}</span>
+        </div>
         {% else %}
         <span class="badge badge-info badge-sm font-bold mr-2 rounded">ONCE</span>
         <span class="text-sm">{{ schedule.start_time | localtime('%Y-%m-%d %H:%M') if schedule.start_time else '-'
             }}</span>
         {% endif %}
     </td>
-    <td>
+    <td class="whitespace-nowrap">
         {% if schedule.duration_mode == 'auto' %}
         <span class="badge badge-primary badge-sm rounded">AUTO</span>
         {% else %}
         {{ (schedule.duration_sec / 60) | int }} min
         {% endif %}
     </td>
-    <td class="text-sm">
+    <td class="text-sm whitespace-nowrap">
         {% if schedule.next_run_at %}
         {{ schedule.next_run_at | localtime('%m/%d %H:%M') }}
         {% else %}
@@ -29,19 +32,23 @@
     </td>
     <td>
         {% if schedule.youtube_enabled %}
-        <span class="badge badge-success badge-sm rounded">{{ schedule.youtube_privacy|upper }}</span>
+        <span class="text-success font-bold text-lg">✓</span>
         {% else %}
-        <span class="badge badge-neutral badge-sm rounded">OFF</span>
+        <span class="text-gray-600 text-xs">-</span>
         {% endif %}
     </td>
     <td>
+        {% if not is_expired %}
         <form hx-post="/schedules/{{ schedule.id }}/toggle" hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML">
             <input type="checkbox" class="toggle toggle-sm toggle-primary" {% if schedule.enabled %}checked{% endif %}
                 onchange="this.form.requestSubmit()">
         </form>
+        {% else %}
+        <span class="text-gray-600 text-xs">-</span>
+        {% endif %}
     </td>
     <td>
-        <div class="flex gap-1">
+        <div class="flex gap-1 justify-end">
             <form method="POST" action="/schedules/{{ schedule.id }}/trigger" class="inline">
                 <button type="submit" class="btn btn-ghost btn-xs {% if is_expired %}btn-disabled opacity-50{% endif %}"
                     title="Trigger now" {% if is_expired %}disabled{% endif %}>
@@ -52,12 +59,14 @@
                     </svg>
                 </button>
             </form>
-            <a href="/schedules/{{ schedule.id }}/edit"
-                class="btn btn-ghost btn-xs {% if is_expired %}btn-disabled opacity-50{% endif %}" {% if is_expired
-                %}aria-disabled="true" tabindex="-1" {% endif %}>Edit</a>
+            <a href="/schedules/new?copy_from_id={{ schedule.id }}" class="btn btn-ghost btn-xs" title="Copy">Copy</a>
+            {% if not is_expired %}
+            <a href="/schedules/{{ schedule.id }}/edit" class="btn btn-ghost btn-xs">Edit</a>
+            {% endif %}
             <button class="btn btn-ghost btn-xs text-error" hx-delete="/schedules/{{ schedule.id }}"
-                hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML" hx-confirm="Delete this schedule?">
-                Delete
+                hx-target="#schedule-{{ schedule.id }}" hx-swap="outerHTML" {% if not is_expired
+                %}hx-confirm="Delete this schedule?" {% endif %}>
+                Del
             </button>
         </div>
     </td>

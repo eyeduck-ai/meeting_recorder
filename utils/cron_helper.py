@@ -17,8 +17,23 @@ def cron_to_chinese(expression: str) -> str:
 
     try:
         options = Options()
-        options.locale_code = "zh_TW"
-        return get_description(expression, options)
+        options.locale_code = "en_US"
+        desc = get_description(expression, options)
+        # Manual shortener for days
+        replacements = {
+            "Monday": "Mon",
+            "Tuesday": "Tue",
+            "Wednesday": "Wed",
+            "Thursday": "Thu",
+            "Friday": "Fri",
+            "Saturday": "Sat",
+            "Sunday": "Sun",
+            "At": "@",
+            "only on": "",
+        }
+        for k, v in replacements.items():
+            desc = desc.replace(k, v)
+        return desc
     except Exception:
         # Fallback to original expression if parsing fails
         return expression

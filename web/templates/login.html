@@ -1,50 +1,73 @@
 <!DOCTYPE html>
-<html lang="zh-TW" data-theme="dark">
+<html lang="en" data-theme="minimal-tech">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Meeting Recorder</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Log in / Meeting Recorder</title>
 
-    <!-- Tailwind CSS + DaisyUI CDN -->
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS + DaisyUI -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.min.css" rel="stylesheet" />
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: { xblue: '#1d9bf0' }
+                }
+            },
+            daisyui: {
+                themes: [{
+                    "minimal-tech": {
+                        "primary": "#1d9bf0",
+                        "base-100": "#000000",
+                        "base-200": "#000000",
+                        "neutral": "#000000",
+                        "error": "#f91880",
+                    }
+                }]
+            }
+        }
+    </script>
 </head>
-<body class="min-h-screen bg-base-200 flex items-center justify-center">
-    <div class="card w-96 bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title justify-center text-2xl mb-4">Meeting Recorder</h2>
 
-            {% if error %}
-            <div class="alert alert-error mb-4">
-                <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span>{{ error }}</span>
-            </div>
-            {% endif %}
-
-            <form method="POST" action="/login">
-                <input type="hidden" name="next" value="{{ next_url }}">
-
-                <div class="form-control">
-                    <label class="label">
-                        <span class="label-text">Password</span>
-                    </label>
-                    <input
-                        type="password"
-                        name="password"
-                        placeholder="Enter password"
-                        class="input input-bordered w-full"
-                        autofocus
-                        required
-                    >
-                </div>
-
-                <div class="form-control mt-6">
-                    <button type="submit" class="btn btn-primary">Login</button>
-                </div>
-            </form>
+<body class="bg-black text-white min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-sm flex flex-col items-center">
+        <!-- Logo -->
+        <div class="mb-10">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="white" viewBox="0 0 24 24" class="w-12 h-12">
+                <path
+                    d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+            </svg>
         </div>
+
+        <h1 class="text-2xl font-bold mb-8 w-full text-center">Sign in to Meeting Recorder</h1>
+
+        {% if error %}
+        <div
+            class="alert alert-error mb-6 rounded-none border border-red-500 bg-transparent text-red-500 font-bold p-3 text-sm">
+            <span>{{ error }}</span>
+        </div>
+        {% endif %}
+
+        <form method="POST" action="/login" class="w-full space-y-4">
+            <input type="hidden" name="next" value="{{ next_url }}">
+
+            <div class="form-control w-full">
+                <input type="password" name="password" placeholder="Password"
+                    class="input input-bordered w-full bg-black border-[#333] focus:border-primary focus:outline-none rounded-md placeholder-gray-500 h-12 text-lg"
+                    autofocus required />
+            </div>
+
+            <button type="submit"
+                class="btn btn-primary w-full rounded-full text-white font-bold h-11 text-base capitalize bg-white hover:bg-gray-200 text-black border-none normal-case">
+                Next
+            </button>
+        </form>
     </div>
 </body>
+
 </html>

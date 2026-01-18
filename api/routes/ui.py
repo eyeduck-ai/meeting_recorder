@@ -135,7 +135,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
     # Get upcoming schedules
     upcoming_schedules = (
         db.query(Schedule)
-        .filter(Schedule.enabled == True, Schedule.next_run_at != None)
+        .filter(Schedule.enabled == True, Schedule.next_run_at > utc_now())
         .order_by(Schedule.next_run_at)
         .limit(5)
         .all()
@@ -319,14 +319,46 @@ async def schedules_list(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/schedules/new", response_class=HTMLResponse)
-async def schedules_new(request: Request, db: Session = Depends(get_db)):
-    """New schedule form."""
+async def schedules_new(
+    request: Request,
+    copy_from_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """New schedule form, optionally copying from an existing schedule."""
+    schedule = None
+    if copy_from_id:
+        source_schedule = db.query(Schedule).filter(Schedule.id == copy_from_id).first()
+        if source_schedule:
+            # Create a shallow copy for the form context, but behave as new (no ID)
+            # We construct a new Schedule object with copied fields
+            schedule = Schedule(
+                meeting_id=source_schedule.meeting_id,
+                schedule_type=source_schedule.schedule_type,
+                duration_sec=source_schedule.duration_sec,
+                duration_mode=source_schedule.duration_mode,
+                lobby_wait_sec=source_schedule.lobby_wait_sec,
+                resolution_w=source_schedule.resolution_w,
+                resolution_h=source_schedule.resolution_h,
+                dry_run=source_schedule.dry_run,
+                youtube_enabled=source_schedule.youtube_enabled,
+                youtube_privacy=source_schedule.youtube_privacy,
+                override_display_name=source_schedule.override_display_name,
+                early_join_sec=source_schedule.early_join_sec,
+                min_duration_sec=source_schedule.min_duration_sec,
+                stillness_timeout_sec=source_schedule.stillness_timeout_sec,
+                # For cron, we copy the expression
+                cron_expression=source_schedule.cron_expression,
+                # For ONCE, we do NOT copy the start time (default to now/empty)
+                # to avoid accidental past scheduling
+                start_time=None,
+            )
+
     meetings = db.query(Meeting).order_by(Meeting.name).all()
     return templates.TemplateResponse(
         "schedules/form.html",
         get_context(
             request,
-            schedule=None,
+            schedule=schedule,
             meetings=meetings,
             schedule_types=list(ScheduleType),
         ),
@@ -440,7 +472,12 @@ async def schedules_save(
 
 
 @router.post("/schedules/{schedule_id}/toggle", response_class=HTMLResponse)
-async def schedules_toggle(request: Request, schedule_id: int, db: Session = Depends(get_db)):
+async def schedules_toggle(
+    request: Request,
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    variant: str = Query("row"),
+):
     """Toggle schedule enabled state."""
     schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
     if not schedule:
@@ -457,8 +494,9 @@ async def schedules_toggle(request: Request, schedule_id: int, db: Session = Dep
 
     # Return updated row for HTMX
     cron_description = cron_to_chinese(schedule.cron_expression) if schedule.cron_expression else None
+    template_name = "schedules/_card.html" if variant == "card" else "schedules/_row.html"
     return templates.TemplateResponse(
-        "schedules/_row.html",
+        template_name,
         get_context(request, schedule=schedule, cron_description=cron_description),
     )
 
@@ -575,6 +613,16 @@ async def jobs_stop(request: Request, job_id: str, db: Session = Depends(get_db)
             job.status = JobStatus.CANCELED.value
             db.commit()
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@router.delete("/jobs/{job_id}", response_class=HTMLResponse)
+async def jobs_delete(job_id: str, db: Session = Depends(get_db)):
+    """Delete job."""
+    job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
+    if job:
+        db.delete(job)
+        db.commit()
+    return HTMLResponse("")
 
 
 @router.get("/jobs/{job_id}/diagnostics/screenshot", response_class=FileResponse)

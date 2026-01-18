@@ -1,964 +1,580 @@
 {% extends "base.html" %}
 
-{% block title %}Settings - Meeting Recorder{% endblock %}
+
 
 {% block content %}
-<div class="space-y-6">
-    <!-- Page header -->
-    <div class="flex justify-between items-center">
-        <h1 class="text-3xl font-bold">Settings</h1>
+<div class="h-full flex flex-col md:flex-row max-w-7xl mx-auto">
+
+    <!-- Settings Sidebar (Desktop) / Tabs (Mobile) -->
+    <div class="w-full md:w-64 md:border-r border-[#2f3336] flex-shrink-0">
+        <h2 class="text-2xl md:text-3xl font-bold px-4 pt-4 md:pt-8 pb-4 hidden md:block">Settings</h2>
+
+        <!-- Mobile Tabs (Horizontal Scroll) -->
+        <div class="md:hidden flex overflow-x-auto border-b border-[#2f3336] no-scrollbar">
+            <button onclick="switchTab('general')"
+                class="tab-btn active px-4 py-3 whitespace-nowrap font-bold border-b-2 border-primary">General</button>
+            <button onclick="switchTab('recording')"
+                class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Recording</button>
+            <button onclick="switchTab('integrations')"
+                class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Integrations</button>
+            <button onclick="switchTab('detection')"
+                class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Detection</button>
+            <button onclick="switchTab('notifications')"
+                class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Notifications</button>
+        </div>
+
+        <!-- Desktop Sidebar Menu -->
+        <div class="hidden md:flex flex-col py-2">
+            <button onclick="switchTab('general')"
+                class="tab-btn active text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-primary transition-colors font-bold">General
+                & Storage</button>
+            <button onclick="switchTab('recording')"
+                class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Recording
+                Config</button>
+            <button onclick="switchTab('integrations')"
+                class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Integrations</button>
+            <button onclick="switchTab('detection')"
+                class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Meeting
+                Detection</button>
+            <button onclick="switchTab('notifications')"
+                class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Notifications</button>
+        </div>
     </div>
 
-    <!-- YouTube Settings -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-6 h-6 text-red-500">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M15.91 11.672a.375.375 0 010 .656l-5.603 3.113a.375.375 0 01-.557-.328V8.887c0-.286.307-.466.557-.327l5.603 3.112z" />
-                </svg>
-                YouTube Integration
-                {% if youtube_status.configured %}
-                {% if youtube_status.authorized %}
-                <span class="badge badge-success rounded ml-2">Authorized</span>
-                {% else %}
-                <span class="badge badge-warning rounded ml-2">Not Authorized</span>
-                {% endif %}
-                {% endif %}
-            </h2>
+    <!-- Content Area -->
+    <div class="flex-1 overflow-y-auto">
 
-            {% if not youtube_status.configured %}
-            <div class="alert alert-warning mt-4">
-                <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none"
-                    viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <div>
-                    <h3 class="font-bold">YouTube API not configured</h3>
-                    <div class="text-sm">Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET environment variables.</div>
+        <!-- General Section -->
+        <div id="section-general" class="settings-section p-4 md:p-8 max-w-2xl">
+            <h3 class="text-xl font-bold mb-6">System Information</h3>
+
+            <div class="mb-8">
+                <div class="flex justify-between py-3 border-b border-[#2f3336]">
+                    <span class="text-gray-500">Max Duration</span>
+                    <span>{{ settings.max_recording_sec }} sec</span>
+                </div>
+                <div class="flex justify-between py-3 border-b border-[#2f3336]">
+                    <span class="text-gray-500">Save Path</span>
+                    <span class="font-mono text-sm">{{ settings.recordings_dir }}</span>
+                </div>
+                <div class="flex justify-between py-3 border-b border-[#2f3336]">
+                    <span class="text-gray-500">Database</span>
+                    <span class="font-mono text-sm">{{ settings.database_url }}</span>
                 </div>
             </div>
-            {% else %}
 
-            {% if youtube_status.authorized %}
-            <div class="flex items-center justify-between p-4 bg-success/10 border border-success/20 rounded-2xl mt-4">
-                <div class="flex items-center gap-3">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="stroke-success shrink-0 h-6 w-6" fill="none"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span class="font-medium text-success">YouTube connected. Auto-upload ready.</span>
-                </div>
-                <button id="revoke-btn" class="btn btn-sm btn-outline btn-error rounded-full"
-                    hx-post="/api/v1/youtube/auth/revoke" hx-swap="none" hx-on::after-request="location.reload()">
-                    Disconnect Account
-                </button>
-            </div>
-            {% else %}
-            <p class="text-base-content/60 mb-4 mt-4">
-                Connect your YouTube account to enable automatic upload of recordings.
-            </p>
-
-            <div id="auth-container">
-                <button id="start-auth-btn" class="btn btn-primary" onclick="startYouTubeAuth()">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                        stroke="currentColor" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                            d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-                    </svg>
-                    Connect YouTube Account
-                </button>
-            </div>
-
-            <div id="auth-instructions" class="hidden mt-4">
-                <div class="alert">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                        class="stroke-info shrink-0 w-6 h-6">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
+            <h3 class="text-xl font-bold mb-4">Storage Management</h3>
+            <div class="bg-[#16181c] rounded-xl p-4 border border-[#2f3336]">
+                <div class="grid grid-cols-3 gap-4 mb-4 text-center">
                     <div>
-                        <h3 class="font-bold">Authorization Required</h3>
-                        <div class="text-sm mt-2">
-                            <p>1. Visit: <a id="auth-url" href="#" target="_blank" class="link font-mono break-all"></a>
-                            </p>
-                            <p>2. Enter code: <code id="auth-code" class="font-bold text-lg"></code></p>
-                            <p>3. Complete authorization on Google's website</p>
-                        </div>
+                        <div class="text-sm text-gray-500">Free Space</div>
+                        <div class="text-xl font-bold text-success" id="disk-free">-</div>
+                        <div class="text-xs text-gray-500">GB</div>
+                    </div>
+                    <div>
+                        <div class="text-sm text-gray-500">Recordings</div>
+                        <div class="text-xl font-bold text-white" id="rec-size">-</div>
+                        <div class="text-xs text-gray-500"><span id="rec-count">0</span> files</div>
+                    </div>
+                    <div>
+                        <div class="text-sm text-gray-500">Usage</div>
+                        <div class="text-xl font-bold text-white" id="disk-usage">-</div>
+                        <div class="text-xs text-gray-500">%</div>
                     </div>
                 </div>
-                <div class="mt-4 flex items-center gap-2">
-                    <span class="loading loading-spinner"></span>
-                    <span id="poll-status">Waiting for authorization...</span>
+
+                <div class="flex flex-wrap gap-3 justify-end">
+                    <button onclick="refreshDiskUsage()" class="btn btn-sm btn-ghost rounded-full">Refresh</button>
+                    <button onclick="cleanupRecordings(true)" class="btn btn-sm btn-outline rounded-full">Preview
+                        Cleanup</button>
+                    <button onclick="cleanupRecordings(false)"
+                        class="btn btn-sm btn-error btn-outline rounded-full">Clean Old (>30d)</button>
                 </div>
             </div>
-            {% endif %}
-            {% endif %}
         </div>
-    </div>
 
-    <!-- Telegram Settings -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-6 h-6 text-blue-500">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-                </svg>
-                Telegram Bot
-                {% if telegram_status.configured %}
-                <span class="badge badge-success rounded ml-2">Running</span>
-                {% endif %}
-            </h2>
+        <!-- Recording Section -->
+        <div id="section-recording" class="settings-section hidden p-4 md:p-8 max-w-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-bold">Recording Configuration</h3>
+                <button onclick="saveSettings()" class="btn btn-primary btn-sm rounded-full px-6">Save</button>
+            </div>
 
-            <!-- Divider removed -->
+            <form id="settings-form" class="space-y-6">
+                <!-- Resolution -->
+                <div class="form-group">
+                    <label class="block text-sm font-bold mb-2">Resolution</label>
+                    <select id="resolution-select"
+                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary"
+                        onchange="updateResolution()">
+                        <option value="1920x1080" {% if app_settings.resolution_w=='1920' and
+                            app_settings.resolution_h=='1080' %}selected{% endif %}>1080p (1920x1080)</option>
+                        <option value="1280x720" {% if app_settings.resolution_w=='1280' and
+                            app_settings.resolution_h=='720' %}selected{% endif %}>720p (1280x720)</option>
+                        <option value="custom" {% if app_settings.resolution_w not in ['1920', '1280' ] %}selected{%
+                            endif %}>Custom</option>
+                    </select>
+                    <div id="custom-resolution"
+                        class="grid grid-cols-2 gap-4 mt-2 {% if app_settings.resolution_w in ['1920', '1280'] %}hidden{% endif %}">
+                        <input type="number" id="resolution_w" value="{{ app_settings.resolution_w }}"
+                            class="input input-bordered bg-black border-[#2f3336]" placeholder="Width">
+                        <input type="number" id="resolution_h" value="{{ app_settings.resolution_h }}"
+                            class="input input-bordered bg-black border-[#2f3336]" placeholder="Height">
+                    </div>
+                </div>
 
-            {% if not telegram_status.configured %}
-            <div class="alert alert-warning">
-                <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none"
-                    viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
+                <!-- FFmpeg Preset -->
+                <div class="form-group">
+                    <label class="block text-sm font-bold mb-2">FFmpeg Preset <span
+                            class="text-gray-500 font-normal">(Speed vs Quality)</span></label>
+                    <select id="ffmpeg_preset"
+                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary">
+                        <option value="ultrafast" {% if app_settings.ffmpeg_preset=='ultrafast' %}selected{% endif %}>
+                            ultrafast (fastest, larger files)</option>
+                        <option value="superfast" {% if app_settings.ffmpeg_preset=='superfast' %}selected{% endif %}>
+                            superfast</option>
+                        <option value="veryfast" {% if app_settings.ffmpeg_preset=='veryfast' %}selected{% endif %}>
+                            veryfast (default)</option>
+                        <option value="faster" {% if app_settings.ffmpeg_preset=='faster' %}selected{% endif %}>faster
+                        </option>
+                        <option value="fast" {% if app_settings.ffmpeg_preset=='fast' %}selected{% endif %}>fast
+                        </option>
+                        <option value="medium" {% if app_settings.ffmpeg_preset=='medium' %}selected{% endif %}>medium
+                        </option>
+                    </select>
+                </div>
+
+                <!-- Timings -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label class="block text-sm font-bold mb-2">Lobby Timeout (sec)</label>
+                        <input type="number" id="lobby_wait_sec" value="{{ app_settings.lobby_wait_sec }}"
+                            class="input input-bordered w-full bg-black border-[#2f3336]">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">Pre-join Offset (sec)</label>
+                        <input type="number" id="pre_join_seconds" value="{{ app_settings.pre_join_seconds }}"
+                            class="input input-bordered w-full bg-black border-[#2f3336]">
+                    </div>
+                </div>
+
+                <!-- URL & TZ -->
                 <div>
-                    <h3 class="font-bold">Telegram Bot not configured</h3>
-                    <div class="text-sm">Set TELEGRAM_BOT_TOKEN environment variable to enable the bot.</div>
+                    <label class="block text-sm font-bold mb-2">Jitsi Base URL</label>
+                    <input type="url" id="jitsi_base_url" value="{{ app_settings.jitsi_base_url }}"
+                        class="input input-bordered w-full bg-black border-[#2f3336]"
+                        placeholder="https://meet.jit.si/">
                 </div>
-            </div>
-            {% else %}
-            <!-- Status moved to title -->
-
-            <!-- User Management -->
-            <h3 class="font-semibold text-lg mt-4 mb-2">User Management</h3>
-
-            <div id="telegram-users-container">
-                <div class="flex items-center gap-2 mb-4">
-                    <span class="loading loading-spinner"></span>
-                    <span>Loading users...</span>
-                </div>
-            </div>
-
-            {% endif %}
-        </div>
-    </div>
-
-    <!-- Recording Settings (Editable) -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-6 h-6 text-primary">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" />
-                </svg>
-                Recording Settings
-            </h2>
-            <p class="text-sm text-base-content/60 mb-4">These settings can be modified and will be saved to the
-                database.</p>
-
-            <form id="settings-form" class="space-y-4">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <!-- Resolution -->
-                    <div class="form-control">
-                        <label class="label">
-                            <span class="label-text">Resolution</span>
-                        </label>
-                        <select id="resolution-select" class="select select-bordered w-full"
-                            onchange="updateResolution()">
-                            <option value="1920x1080" {% if app_settings.resolution_w=='1920' and
-                                app_settings.resolution_h=='1080' %}selected{% endif %}>1080p (1920x1080)</option>
-                            <option value="1280x720" {% if app_settings.resolution_w=='1280' and
-                                app_settings.resolution_h=='720' %}selected{% endif %}>720p (1280x720)</option>
-                            <option value="custom" {% if app_settings.resolution_w not in ['1920', '1280' ] %}selected{%
-                                endif %}>Custom</option>
-                        </select>
-                        <div id="custom-resolution"
-                            class="grid grid-cols-2 gap-2 mt-2 {% if app_settings.resolution_w in ['1920', '1280'] %}hidden{% endif %}">
-                            <input type="number" id="resolution_w" name="resolution_w"
-                                value="{{ app_settings.resolution_w }}" class="input input-bordered input-sm"
-                                placeholder="Width">
-                            <input type="number" id="resolution_h" name="resolution_h"
-                                value="{{ app_settings.resolution_h }}" class="input input-bordered input-sm"
-                                placeholder="Height">
-                        </div>
-                    </div>
-
-                    <!-- FFmpeg Preset -->
-                    <div class="form-control">
-                        <label class="label">
-                            <span class="label-text">FFmpeg Preset</span>
-                            <span class="label-text-alt text-base-content/50">Speed vs Quality</span>
-                        </label>
-                        <select id="ffmpeg_preset" name="ffmpeg_preset" class="select select-bordered w-full">
-                            <option value="ultrafast" {% if app_settings.ffmpeg_preset=='ultrafast' %}selected{% endif
-                                %}>ultrafast (fastest, larger files)</option>
-                            <option value="superfast" {% if app_settings.ffmpeg_preset=='superfast' %}selected{% endif
-                                %}>superfast</option>
-                            <option value="veryfast" {% if app_settings.ffmpeg_preset=='veryfast' %}selected{% endif %}>
-                                veryfast</option>
-                            <option value="faster" {% if app_settings.ffmpeg_preset=='faster' %}selected{% endif %}>
-                                faster</option>
-                            <option value="fast" {% if app_settings.ffmpeg_preset=='fast' %}selected{% endif %}>fast
-                            </option>
-                            <option value="medium" {% if app_settings.ffmpeg_preset=='medium' %}selected{% endif %}>
-                                medium (balanced)</option>
-                        </select>
-                    </div>
-
-                    <!-- Lobby Wait -->
-                    <div class="form-control">
-                        <label class="label">
-                            <span class="label-text">Lobby Wait Timeout</span>
-                            <span class="label-text-alt">seconds</span>
-                        </label>
-                        <input type="number" id="lobby_wait_sec" name="lobby_wait_sec"
-                            value="{{ app_settings.lobby_wait_sec }}" class="input input-bordered w-full" min="0"
-                            step="60">
-                        <label class="label">
-                            <span class="label-text-alt text-base-content/50">Max time to wait in lobby (default: 900 =
-                                15 min)</span>
-                        </label>
-                    </div>
-
-                    <!-- Pre-join Time -->
-                    <div class="form-control">
-                        <label class="label">
-                            <span class="label-text">提前登入時間</span>
-                            <span class="label-text-alt">seconds</span>
-                        </label>
-                        <input type="number" id="pre_join_seconds" name="pre_join_seconds"
-                            value="{{ app_settings.pre_join_seconds }}" class="input input-bordered w-full" min="0"
-                            step="10">
-                        <label class="label">
-                            <span class="label-text-alt text-base-content/50">How early to start joining before
-                                scheduled time</span>
-                        </label>
-                    </div>
-
-                    <!-- Jitsi Base URL -->
-                    <div class="form-control md:col-span-2">
-                        <label class="label">
-                            <span class="label-text">Jitsi Base URL</span>
-                        </label>
-                        <input type="url" id="jitsi_base_url" name="jitsi_base_url"
-                            value="{{ app_settings.jitsi_base_url }}" class="input input-bordered w-full"
-                            placeholder="https://meet.jit.si/">
-                    </div>
-
-                    <!-- Timezone -->
-                    <div class="form-control md:col-span-2">
-                        <label class="label">
-                            <span class="label-text">Timezone</span>
-                        </label>
-                        <input type="text" id="tz" name="tz" value="{{ app_settings.tz }}"
-                            class="input input-bordered w-full" placeholder="Asia/Taipei">
-                    </div>
-                </div>
-
-                <div class="card-actions justify-end mt-4">
-                    <button type="button" onclick="saveSettings()" class="btn btn-primary">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                            stroke="currentColor" class="w-5 h-5">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-                        </svg>
-                        Save Settings
-                    </button>
+                <div>
+                    <label class="block text-sm font-bold mb-2">Timezone</label>
+                    <input type="text" id="tz" value="{{ app_settings.tz }}"
+                        class="input input-bordered w-full bg-black border-[#2f3336]" placeholder="Asia/Taipei">
                 </div>
             </form>
         </div>
-    </div>
 
-    <!-- Detection Settings -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-6 h-6 text-secondary">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M9.348 14.651a3.75 3.75 0 010-5.303m5.304 0a3.75 3.75 0 010 5.303m-7.425 2.122a6.75 6.75 0 010-9.546m9.546 0a6.75 6.75 0 010 9.546M5.106 18.894c-3.808-3.808-3.808-9.981 0-13.789m13.788 0c3.808 3.808 3.808 9.981 0 13.789M12 12h.008v.008H12V12z" />
-                </svg>
-                Meeting End Detection
-            </h2>
-            <p class="text-sm text-base-content/60 mb-4">Configure how the system detects when a meeting has ended (for
-                Auto mode).</p>
+        <!-- Integrations Section -->
+        <div id="section-integrations" class="settings-section hidden p-4 md:p-8 max-w-2xl">
+
+            <!-- YouTube -->
+            <div class="mb-10">
+                <h3 class="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span class="text-red-500">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                            <path
+                                d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z" />
+                        </svg>
+                    </span>
+                    YouTube Integration
+                </h3>
+
+                <div class="bg-[#16181c] rounded-xl p-6 border border-[#2f3336]">
+                    {% if not youtube_status.configured %}
+                    <div class="text-warning mb-4">API not configured. Set ENV variables.</div>
+                    {% else %}
+                    {% if youtube_status.authorized %}
+                    <div class="flex items-center justify-between">
+                        <span class="text-green-500 font-bold">✓ Connected</span>
+                        <button class="btn btn-sm btn-outline btn-error rounded-full"
+                            hx-post="/api/v1/youtube/auth/revoke"
+                            hx-on::after-request="location.reload()">Disconnect</button>
+                    </div>
+                    {% else %}
+                    <p class="mb-4 text-gray-500">Connect to enable auto-upload.</p>
+                    <div id="auth-container">
+                        <button id="start-auth-btn" class="btn btn-primary rounded-full w-full"
+                            onclick="startYouTubeAuth()">Connect Account</button>
+                    </div>
+                    <div id="auth-instructions" class="hidden mt-4 bg-base-300 p-4 rounded-lg">
+                        <p>1. Visit <a id="auth-url" href="#" target="_blank" class="link text-primary">this link</a>
+                        </p>
+                        <p>2. Enter code: <strong id="auth-code" class="text-lg text-white"></strong></p>
+                        <div class="mt-2 text-sm text-gray-500" id="poll-status">Waiting...</div>
+                    </div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Telegram -->
+            <div>
+                <h3 class="text-xl font-bold mb-4 flex items-center gap-2">
+                    <span class="text-blue-400">
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                            <path
+                                d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.08.1.05.19.12.24.2.04.1.06.2.06.31z" />
+                        </svg>
+                    </span>
+                    Telegram Bot
+                </h3>
+
+                {% if not telegram_status.configured %}
+                <div class="text-warning">Bot token not configured.</div>
+                {% else %}
+                <div class="bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
+                    <div class="p-4 border-b border-[#2f3336]">
+                        <h4 class="font-bold">Authorized Users</h4>
+                    </div>
+                    <div id="telegram-users-container" class="p-4">
+                        <span class="loading loading-spinner"></span> Loading...
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Detection Section -->
+        <div id="section-detection" class="settings-section hidden p-4 md:p-8 max-w-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-bold">End Detection Config</h3>
+                <button onclick="saveDetectionConfig()" class="btn btn-primary btn-sm rounded-full px-6"
+                    id="btn-save-detection">Save</button>
+            </div>
+
+            <p class="text-gray-500 mb-6">Conditions to trigger automatic stop.</p>
 
             <div class="space-y-4">
-                <!-- Detector Toggles -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-4">
-                            <input type="checkbox" id="det_webrtc" class="toggle toggle-primary" checked>
-                            <div>
-                                <span class="label-text font-medium">WebRTC Connection</span>
-                                <p class="text-xs text-base-content/50">Most reliable - monitors connection state</p>
-                            </div>
-                        </label>
+                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
+                    <div>
+                        <div class="font-bold">WebRTC Connection</div>
+                        <div class="text-xs text-gray-500">Browser connection state</div>
                     </div>
-
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-4">
-                            <input type="checkbox" id="det_text" class="toggle toggle-primary" checked>
-                            <div>
-                                <span class="label-text font-medium">Text Indicators</span>
-                                <p class="text-xs text-base-content/50">Detects "Meeting ended" messages</p>
-                            </div>
-                        </label>
-                    </div>
-
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-4">
-                            <input type="checkbox" id="det_video" class="toggle toggle-primary" checked>
-                            <div>
-                                <span class="label-text font-medium">Video Element</span>
-                                <p class="text-xs text-base-content/50">Detects when video disappears</p>
-                            </div>
-                        </label>
-                    </div>
-
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-4">
-                            <input type="checkbox" id="det_url" class="toggle toggle-primary" checked>
-                            <div>
-                                <span class="label-text font-medium">URL Change</span>
-                                <p class="text-xs text-base-content/50">Detects navigation away from meeting</p>
-                            </div>
-                        </label>
-                    </div>
-
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-4">
-                            <input type="checkbox" id="det_freeze" class="toggle toggle-secondary">
-                            <div>
-                                <span class="label-text font-medium">Screen Freeze</span>
-                                <p class="text-xs text-base-content/50">Detects frozen screen (experimental)</p>
-                            </div>
-                        </label>
-                    </div>
-
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-4">
-                            <input type="checkbox" id="det_audio" class="toggle toggle-secondary">
-                            <div>
-                                <span class="label-text font-medium">Audio Silence</span>
-                                <p class="text-xs text-base-content/50">Detects prolonged silence (Linux only)</p>
-                            </div>
-                        </label>
-                    </div>
+                    <input type="checkbox" id="det_webrtc" class="toggle toggle-primary">
                 </div>
-
-                <div class="divider"></div>
-
-                <!-- Thresholds -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label">
-                            <span class="label-text">Screen Freeze Timeout</span>
-                            <span class="label-text-alt">seconds</span>
-                        </label>
-                        <input type="number" id="freeze_timeout" value="60" min="30" max="300" step="10"
-                            class="input input-bordered w-full">
-                        <label class="label">
-                            <span class="label-text-alt text-base-content/50">How long screen must be frozen to
-                                trigger</span>
-                        </label>
+                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
+                    <div>
+                        <div class="font-bold">Text Indicators</div>
+                        <div class="text-xs text-gray-500">"Meeting ended"</div>
                     </div>
-
-                    <div class="form-control">
-                        <label class="label">
-                            <span class="label-text">Min Detectors to Agree</span>
-                        </label>
-                        <select id="min_detectors" class="select select-bordered w-full">
-                            <option value="1" selected>1 (fastest)</option>
-                            <option value="2">2 (balanced)</option>
-                            <option value="3">3 (safest)</option>
-                        </select>
-                        <label class="label">
-                            <span class="label-text-alt text-base-content/50">More = less false positives</span>
-                        </label>
+                    <input type="checkbox" id="det_text" class="toggle toggle-primary">
+                </div>
+                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
+                    <div>
+                        <div class="font-bold">Video Element</div>
+                        <div class="text-xs text-gray-500">Video tag removal</div>
                     </div>
+                    <input type="checkbox" id="det_video" class="toggle toggle-primary">
                 </div>
-
-                <div class="alert alert-info">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
-                        class="stroke-current shrink-0 w-6 h-6">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    <span>These settings apply when using "Auto-detect Meeting End" duration mode in schedules.</span>
+                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
+                    <div>
+                        <div class="font-bold">URL Change</div>
+                        <div class="text-xs text-gray-500">Navigation away</div>
+                    </div>
+                    <input type="checkbox" id="det_url" class="toggle toggle-primary">
                 </div>
+                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
+                    <div>
+                        <div class="font-bold">Screen Freeze</div>
+                        <div class="text-xs text-gray-500">Pixels unchanged</div>
+                    </div>
+                    <input type="checkbox" id="det_freeze" class="toggle toggle-secondary">
+                </div>
+            </div>
 
-                <div class="card-actions justify-end mt-4">
-                    <button type="button" id="btn-save-detection" onclick="saveDetectionConfig()"
-                        class="btn btn-primary btn-sm">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                            stroke="currentColor" class="w-4 h-4">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-                        </svg>
-                        Save Detection Settings
-                    </button>
+            <div class="mt-8 grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-bold mb-2">Freeze Timeout (s)</label>
+                    <input type="number" id="freeze_timeout"
+                        class="input input-bordered w-full bg-black border-[#2f3336]">
+                </div>
+                <div>
+                    <label class="block text-sm font-bold mb-2">Min Detectors</label>
+                    <select id="min_detectors" class="select select-bordered w-full bg-black border-[#2f3336]">
+                        <option value="1">1 (Fastest)</option>
+                        <option value="2">2 (Balanced)</option>
+                        <option value="3">3 (Strict)</option>
+                    </select>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Notification Settings -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-6 h-6 text-info">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-                </svg>
-                Notifications
-            </h2>
-            <p class="text-sm text-base-content/60 mb-4">Configure email and webhook notifications for recording events.
-            </p>
-
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <!-- Email Settings -->
-                <div class="space-y-3">
-                    <h3 class="font-medium flex items-center gap-2">
-                        <input type="checkbox" id="smtp_enabled" class="toggle toggle-sm toggle-info">
-                        Email Notifications
-                    </h3>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">SMTP Host</span></label>
-                        <input type="text" id="smtp_host" class="input input-bordered input-sm"
-                            placeholder="smtp.gmail.com">
-                    </div>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">SMTP Port</span></label>
-                        <input type="number" id="smtp_port" class="input input-bordered input-sm" value="587">
-                    </div>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">Username</span></label>
-                        <input type="text" id="smtp_user" class="input input-bordered input-sm">
-                    </div>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">Password</span></label>
-                        <input type="password" id="smtp_password" class="input input-bordered input-sm">
-                    </div>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">From Address</span></label>
-                        <input type="email" id="smtp_from" class="input input-bordered input-sm">
-                    </div>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">To (comma separated)</span></label>
-                        <input type="text" id="smtp_to" class="input input-bordered input-sm"
-                            placeholder="admin@example.com">
-                    </div>
-                    <button onclick="testEmail()" class="btn btn-ghost btn-sm">Test Email</button>
-                </div>
-
-                <!-- Webhook Settings -->
-                <div class="space-y-3">
-                    <h3 class="font-medium flex items-center gap-2">
-                        <input type="checkbox" id="webhook_enabled" class="toggle toggle-sm toggle-info">
-                        Webhook Notifications
-                    </h3>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">Webhook URL</span></label>
-                        <input type="url" id="webhook_url" class="input input-bordered input-sm"
-                            placeholder="https://...">
-                    </div>
-                    <div class="form-control">
-                        <label class="label py-1"><span class="label-text">Secret (optional)</span></label>
-                        <input type="password" id="webhook_secret" class="input input-bordered input-sm">
-                    </div>
-                    <button onclick="testWebhook()" class="btn btn-ghost btn-sm">Test Webhook</button>
-                </div>
+        <!-- Notifications Section -->
+        <div id="section-notifications" class="settings-section hidden p-4 md:p-8 max-w-2xl">
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-bold">Notifications</h3>
+                <button onclick="saveNotificationConfig()"
+                    class="btn btn-primary btn-sm rounded-full px-6">Save</button>
             </div>
 
-            <div class="card-actions justify-end mt-4">
-                <button type="button" onclick="saveNotificationConfig()" class="btn btn-primary btn-sm">
-                    Save Notification Settings
-                </button>
+            <div class="space-y-8">
+                <!-- Email -->
+                <div>
+                    <h4 class="font-bold mb-4 flex items-center gap-2">
+                        <input type="checkbox" id="smtp_enabled" class="toggle toggle-sm toggle-info"> Email
+                    </h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pl-8">
+                        <input type="text" id="smtp_host" placeholder="Host"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                        <input type="number" id="smtp_port" placeholder="Port"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                        <input type="text" id="smtp_user" placeholder="User"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                        <input type="password" id="smtp_password" placeholder="Pass"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                        <input type="email" id="smtp_from" placeholder="From Addr"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                        <input type="text" id="smtp_to" placeholder="To Addr (comma sep)"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                    </div>
+                    <button onclick="testEmail()" class="btn btn-xs btn-ghost mt-2 ml-8">Send Test</button>
+                </div>
+
+                <!-- Webhook -->
+                <div>
+                    <h4 class="font-bold mb-4 flex items-center gap-2">
+                        <input type="checkbox" id="webhook_enabled" class="toggle toggle-sm toggle-info"> Webhook
+                    </h4>
+                    <div class="grid grid-cols-1 gap-4 pl-8">
+                        <input type="url" id="webhook_url" placeholder="Webhook URL"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                        <input type="password" id="webhook_secret" placeholder="Secret (Optional)"
+                            class="input input-bordered input-sm w-full bg-black border-[#2f3336]">
+                    </div>
+                    <button onclick="testWebhook()" class="btn btn-xs btn-ghost mt-2 ml-8">Send Test</button>
+                </div>
             </div>
         </div>
-    </div>
 
-    <!-- Recording Management -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-6 h-6 text-accent">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
-                </svg>
-                Recording Management
-            </h2>
-
-            <!-- Disk Usage -->
-            <div class="stats shadow my-4">
-                <div class="stat">
-                    <div class="stat-title">Free Space</div>
-                    <div class="stat-value text-success" id="disk-free">-</div>
-                    <div class="stat-desc">GB available</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-title">Recordings</div>
-                    <div class="stat-value" id="rec-size">-</div>
-                    <div class="stat-desc"><span id="rec-count">0</span> files</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-title">Usage</div>
-                    <div class="stat-value" id="disk-usage">-</div>
-                    <div class="stat-desc">percent used</div>
-                </div>
-            </div>
-
-            <div class="flex gap-2 flex-wrap">
-                <button onclick="refreshDiskUsage()" class="btn btn-ghost btn-sm">Refresh</button>
-                <button onclick="cleanupRecordings(true)" class="btn btn-outline btn-sm">Preview Cleanup</button>
-                <button onclick="cleanupRecordings(false)" class="btn btn-warning btn-sm">Clean Up Old (30d+)</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- System Info (Read-only) -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title text-base-content/70">System Information</h2>
-            <p class="text-sm text-base-content/50 mb-2">Read-only values from environment configuration</p>
-            <div class="overflow-x-auto">
-                <table class="table table-sm">
-                    <tbody>
-                        <tr>
-                            <th class="w-48">Max Recording Duration</th>
-                            <td>{{ settings.max_recording_sec }} seconds</td>
-                        </tr>
-                        <tr>
-                            <th>Recordings Directory</th>
-                            <td class="font-mono text-sm">{{ settings.recordings_dir }}</td>
-                        </tr>
-                        <tr>
-                            <th>Database URL</th>
-                            <td class="font-mono text-sm">{{ settings.database_url }}</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
     </div>
 </div>
 
 <script>
+    // Tab Switching Logic
+    function switchTab(tabId) {
+        // Hide all sections
+        document.querySelectorAll('.settings-section').forEach(el => el.classList.add('hidden'));
+        // Show target section
+        document.getElementById('section-' + tabId).classList.remove('hidden');
+
+        // Update styling
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            // Basic logic to reset classes (simplistic for now)
+            btn.classList.remove('active', 'border-primary', 'font-bold', 'text-white');
+            btn.classList.add('text-gray-500', 'border-transparent');
+
+            // If it matches the tabId name in text or onclick (bit hacky but effective for simple tabs)
+            if (btn.getAttribute('onclick').includes(tabId)) {
+                btn.classList.add('active', 'border-primary', 'font-bold', 'text-white');
+                btn.classList.remove('text-gray-500', 'border-transparent');
+            }
+        });
+    }
+
+    // Reuse existing functional logic (YouTube, Telegram, etc.)
+    // ... Copying the essential JS functions ...
     let pollInterval = null;
     let currentDeviceCode = null;
 
-    // YouTube Auth functions
     async function startYouTubeAuth() {
         const btn = document.getElementById('start-auth-btn');
         btn.disabled = true;
-        btn.innerHTML = '<span class="loading loading-spinner"></span> Starting...';
-
+        btn.innerHTML = '<span class="loading loading-spinner"></span>';
         try {
             const response = await fetch('/api/v1/youtube/auth/start', { method: 'POST' });
             const data = await response.json();
-
-            if (data.verification_url && data.user_code && data.device_code) {
-                // Store device_code for polling
+            if (data.verification_url) {
                 currentDeviceCode = data.device_code;
-
                 document.getElementById('auth-url').href = data.verification_url;
-                document.getElementById('auth-url').textContent = data.verification_url;
                 document.getElementById('auth-code').textContent = data.user_code;
                 document.getElementById('auth-container').classList.add('hidden');
                 document.getElementById('auth-instructions').classList.remove('hidden');
-
-                // Start polling
                 pollInterval = setInterval(pollForToken, data.interval * 1000 || 5000);
             }
-        } catch (error) {
-            console.error('Failed to start auth:', error);
-            btn.disabled = false;
-            btn.innerHTML = 'Connect YouTube Account';
-        }
+        } catch (e) { console.error(e); btn.disabled = false; btn.textContent = 'Retry'; }
     }
 
     async function pollForToken() {
-        if (!currentDeviceCode) {
-            clearInterval(pollInterval);
-            return;
-        }
-
+        if (!currentDeviceCode) return clearInterval(pollInterval);
         try {
-            const response = await fetch('/api/v1/youtube/auth/poll', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+            const res = await fetch('/api/v1/youtube/auth/poll', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ device_code: currentDeviceCode })
             });
-            const data = await response.json();
-
-            if (data.success) {
-                clearInterval(pollInterval);
-                currentDeviceCode = null;
-                document.getElementById('poll-status').textContent = 'Authorization successful! Reloading...';
-                setTimeout(() => location.reload(), 1000);
-            } else if (data.error === 'expired' || data.message?.includes('expired')) {
-                clearInterval(pollInterval);
-                currentDeviceCode = null;
-                document.getElementById('poll-status').textContent = 'Authorization expired. Please try again.';
-            }
-        } catch (error) {
-            console.error('Poll error:', error);
-        }
+            const data = await res.json();
+            if (data.success) location.reload();
+        } catch (e) { }
     }
 
-    // Telegram User Management
+    // Telegram Logic
     async function loadTelegramUsers() {
         const container = document.getElementById('telegram-users-container');
-        if (!container) return;
-
         try {
-            const response = await fetch('/api/v1/telegram/users');
-            const users = await response.json();
-
+            const res = await fetch('/api/v1/telegram/users');
+            const users = await res.json();
             if (users.length === 0) {
-                container.innerHTML = '<p class="text-base-content/60">No users registered yet. Users can register by messaging your bot with /start.</p>';
+                container.innerHTML = '<div class="text-gray-500">No users yet.</div>';
                 return;
             }
-
-            let html = `
-            <div class="overflow-x-auto">
-                <table class="table table-sm">
-                    <thead>
-                        <tr>
-                            <th>User</th>
-                            <th>Chat ID</th>
-                            <th>Status</th>
-                            <th>Registered</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        `;
-
-            for (const user of users) {
-                const displayName = user.username ? `@${user.username}` : (user.first_name || `User ${user.chat_id}`);
-                const registeredDate = user.created_at ? new Date(user.created_at).toLocaleDateString() : 'N/A';
-
-                html += `
-                <tr id="tg-user-${user.id}">
-                    <td class="font-medium">${displayName}</td>
-                    <td class="font-mono text-sm">${user.chat_id}</td>
-                    <td>
-                        ${user.approved
-                        ? '<span class="badge badge-success badge-sm">Approved</span>'
-                        : '<span class="badge badge-warning badge-sm">Pending</span>'
-                    }
-                    </td>
-                    <td class="text-sm">${registeredDate}</td>
-                    <td>
-                        <div class="flex gap-1">
-                            ${!user.approved
-                        ? `<button class="btn btn-success btn-xs" onclick="approveUser(${user.id})">Approve</button>`
-                        : `<button class="btn btn-warning btn-xs" onclick="revokeUser(${user.id})">Revoke</button>`
-                    }
-                            <button class="btn btn-error btn-xs" onclick="deleteUser(${user.id})">Delete</button>
-                        </div>
-                    </td>
-                </tr>
-            `;
+            let html = '';
+            for (const u of users) {
+                html += `<div class="flex justify-between items-center py-2 border-b border-[#2f3336] last:border-0">
+                    <div>
+                        <div class="font-bold text-sm">${u.username || u.first_name || u.chat_id}</div>
+                        <div class="text-xs text-gray-500">${u.chat_id}</div>
+                    </div>
+                    <div class="flex gap-2">
+                        ${!u.approved ? `<button onclick="approveUser(${u.id})" class="btn btn-xs btn-success">Approve</button>` : `<button onclick="revokeUser(${u.id})" class="btn btn-xs btn-warning">Revoke</button>`}
+                        <button onclick="deleteUser(${u.id})" class="btn btn-xs btn-error btn-outline">Del</button>
+                    </div>
+                 </div>`;
             }
-
-            html += `
-                    </tbody>
-                </table>
-            </div>
-        `;
-
             container.innerHTML = html;
-        } catch (error) {
-            console.error('Failed to load users:', error);
-            container.innerHTML = '<p class="text-error">Failed to load users</p>';
-        }
+        } catch (e) { container.innerHTML = 'Error loading users'; }
     }
 
-    async function approveUser(userId) {
-        try {
-            const response = await fetch(`/api/v1/telegram/users/${userId}/approve`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ approved_by: 'admin' })
-            });
-            if (response.ok) {
-                loadTelegramUsers();
-            }
-        } catch (error) {
-            console.error('Failed to approve user:', error);
-        }
-    }
+    // Stub functions for actions
+    async function approveUser(id) { await fetch(`/api/v1/telegram/users/${id}/approve`, { method: 'POST', body: JSON.stringify({ approved_by: 'admin' }), headers: { 'Content-Type': 'application/json' } }); loadTelegramUsers(); }
+    async function revokeUser(id) { await fetch(`/api/v1/telegram/users/${id}/revoke`, { method: 'POST' }); loadTelegramUsers(); }
+    async function deleteUser(id) { if (confirm('Del?')) { await fetch(`/api/v1/telegram/users/${id}`, { method: 'DELETE' }); loadTelegramUsers(); } }
 
-    async function revokeUser(userId) {
-        try {
-            const response = await fetch(`/api/v1/telegram/users/${userId}/revoke`, { method: 'POST' });
-            if (response.ok) {
-                loadTelegramUsers();
-            }
-        } catch (error) {
-            console.error('Failed to revoke user:', error);
-        }
-    }
-
-    async function deleteUser(userId) {
-        if (!confirm('Are you sure you want to delete this user?')) return;
-
-        try {
-            const response = await fetch(`/api/v1/telegram/users/${userId}`, { method: 'DELETE' });
-            if (response.ok) {
-                loadTelegramUsers();
-            }
-        } catch (error) {
-            console.error('Failed to delete user:', error);
-        }
-    }
-
-    // Load Telegram users on page load
-    document.addEventListener('DOMContentLoaded', loadTelegramUsers);
-
-    // Recording Settings functions
     function updateResolution() {
-        const select = document.getElementById('resolution-select');
-        const customDiv = document.getElementById('custom-resolution');
-        const widthInput = document.getElementById('resolution_w');
-        const heightInput = document.getElementById('resolution_h');
-
-        if (select.value === 'custom') {
-            customDiv.classList.remove('hidden');
-        } else {
-            customDiv.classList.add('hidden');
-            const [w, h] = select.value.split('x');
-            widthInput.value = w;
-            heightInput.value = h;
+        const val = document.getElementById('resolution-select').value;
+        const custom = document.getElementById('custom-resolution');
+        if (val === 'custom') custom.classList.remove('hidden');
+        else {
+            custom.classList.add('hidden');
+            const [w, h] = val.split('x');
+            document.getElementById('resolution_w').value = w;
+            document.getElementById('resolution_h').value = h;
         }
     }
 
     async function saveSettings() {
-        const settings = {
+        const data = {
             resolution_w: parseInt(document.getElementById('resolution_w').value),
             resolution_h: parseInt(document.getElementById('resolution_h').value),
-            lobby_wait_sec: parseInt(document.getElementById('lobby_wait_sec').value),
             ffmpeg_preset: document.getElementById('ffmpeg_preset').value,
+            lobby_wait_sec: parseInt(document.getElementById('lobby_wait_sec').value),
             pre_join_seconds: parseInt(document.getElementById('pre_join_seconds').value),
             jitsi_base_url: document.getElementById('jitsi_base_url').value,
-            tz: document.getElementById('tz').value,
+            tz: document.getElementById('tz').value
         };
-
         try {
-            const response = await fetch('/api/v1/settings', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            });
-
-            if (response.ok) {
-                // Show success message
-                const btn = document.querySelector('#settings-form button');
-                const originalText = btn.innerHTML;
-                btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg> Saved!';
-                btn.classList.add('btn-success');
-                btn.classList.remove('btn-primary');
-                setTimeout(() => {
-                    btn.innerHTML = originalText;
-                    btn.classList.remove('btn-success');
-                    btn.classList.add('btn-primary');
-                }, 2000);
-            } else {
-                alert('Failed to save settings');
-            }
-        } catch (error) {
-            console.error('Failed to save settings:', error);
-            alert('Failed to save settings: ' + error.message);
-        }
+            const res = await fetch('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            if (res.ok) alert('Saved'); else alert('Error saving');
+        } catch (e) { alert(e); }
     }
 
-    // Detection Settings
+    // Existing load functions
     async function loadDetectionConfig() {
-        try {
-            const response = await fetch('/api/detection/config');
-            const config = await response.json();
-
-            document.getElementById('det_webrtc').checked = config.webrtc_connection_enabled ?? true;
-            document.getElementById('det_text').checked = config.text_indicator_enabled ?? true;
-            document.getElementById('det_video').checked = config.video_element_enabled ?? true;
-            document.getElementById('det_url').checked = config.url_change_enabled ?? true;
-            document.getElementById('det_freeze').checked = config.screen_freeze_enabled ?? false;
-            document.getElementById('det_audio').checked = config.audio_silence_enabled ?? false;
-            document.getElementById('freeze_timeout').value = config.screen_freeze_timeout_sec ?? 60;
-            document.getElementById('min_detectors').value = config.min_detectors_agree ?? 1;
-        } catch (error) {
-            console.error('Failed to load detection config:', error);
-        }
+        const res = await fetch('/api/detection/config');
+        const c = await res.json();
+        document.getElementById('det_webrtc').checked = c.webrtc_connection_enabled;
+        document.getElementById('det_text').checked = c.text_indicator_enabled;
+        document.getElementById('det_video').checked = c.video_element_enabled;
+        document.getElementById('det_url').checked = c.url_change_enabled;
+        document.getElementById('det_freeze').checked = c.screen_freeze_enabled;
+        document.getElementById('freeze_timeout').value = c.screen_freeze_timeout_sec;
+        document.getElementById('min_detectors').value = c.min_detectors_agree;
     }
-
     async function saveDetectionConfig() {
-        const config = {
+        const c = {
             webrtc_connection_enabled: document.getElementById('det_webrtc').checked,
             text_indicator_enabled: document.getElementById('det_text').checked,
             video_element_enabled: document.getElementById('det_video').checked,
             url_change_enabled: document.getElementById('det_url').checked,
             screen_freeze_enabled: document.getElementById('det_freeze').checked,
-            audio_silence_enabled: document.getElementById('det_audio').checked,
-            screen_freeze_timeout_sec: parseInt(document.getElementById('freeze_timeout').value) || 60,
-            min_detectors_agree: parseInt(document.getElementById('min_detectors').value) || 1
+            screen_freeze_timeout_sec: parseInt(document.getElementById('freeze_timeout').value),
+            min_detectors_agree: parseInt(document.getElementById('min_detectors').value)
         };
-
-        try {
-            const response = await fetch('/api/detection/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config)
-            });
-
-            if (response.ok) {
-                showSaveSuccess('btn-save-detection');
-            } else {
-                alert('Failed to save detection settings');
-            }
-        } catch (error) {
-            console.error('Failed to save detection config:', error);
-            alert('Failed to save detection settings: ' + error.message);
-        }
+        await fetch('/api/detection/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+        alert('Detection Saved');
     }
 
-    function showSaveSuccess(btnId) {
-        const btn = document.getElementById(btnId);
-        if (!btn) return;
-        const originalText = btn.innerHTML;
-        btn.innerHTML = '✓ Saved!';
-        btn.classList.add('btn-success');
-        btn.classList.remove('btn-primary');
-        setTimeout(() => {
-            btn.innerHTML = originalText;
-            btn.classList.remove('btn-success');
-            btn.classList.add('btn-primary');
-        }, 2000);
-    }
-
-    // Load detection config on page load
-    document.addEventListener('DOMContentLoaded', () => {
-        loadDetectionConfig();
-        loadNotificationConfig();
-        refreshDiskUsage();
-    });
-
-    // Notification Settings
+    // Notification Logic (Restored)
     async function loadNotificationConfig() {
         try {
-            const response = await fetch('/api/recordings/notification-config');
-            const config = await response.json();
-
-            document.getElementById('smtp_enabled').checked = config.smtp_enabled ?? false;
-            document.getElementById('smtp_host').value = config.smtp_host ?? '';
-            document.getElementById('smtp_port').value = config.smtp_port ?? 587;
-            document.getElementById('smtp_user').value = config.smtp_user ?? '';
-            document.getElementById('smtp_password').value = config.smtp_password ?? '';
-            document.getElementById('smtp_from').value = config.smtp_from ?? '';
-            document.getElementById('smtp_to').value = (config.smtp_to || []).join(', ');
-            document.getElementById('webhook_enabled').checked = config.webhook_enabled ?? false;
-            document.getElementById('webhook_url').value = config.webhook_url ?? '';
-            document.getElementById('webhook_secret').value = config.webhook_secret ?? '';
-        } catch (error) {
-            console.error('Failed to load notification config:', error);
-        }
+            const res = await fetch('/api/recordings/notification-config');
+            const c = await res.json();
+            document.getElementById('smtp_enabled').checked = c.smtp_enabled;
+            document.getElementById('smtp_host').value = c.smtp_host || '';
+            document.getElementById('smtp_port').value = c.smtp_port || 587;
+            document.getElementById('smtp_user').value = c.smtp_user || '';
+            document.getElementById('smtp_password').value = c.smtp_password || '';
+            document.getElementById('smtp_from').value = c.smtp_from || '';
+            document.getElementById('smtp_to').value = (c.smtp_to || []).join(',');
+            document.getElementById('webhook_enabled').checked = c.webhook_enabled;
+            document.getElementById('webhook_url').value = c.webhook_url || '';
+            document.getElementById('webhook_secret').value = c.webhook_secret || '';
+        } catch (e) { }
     }
 
     async function saveNotificationConfig() {
-        const config = {
+        const c = {
             smtp_enabled: document.getElementById('smtp_enabled').checked,
             smtp_host: document.getElementById('smtp_host').value,
-            smtp_port: parseInt(document.getElementById('smtp_port').value) || 587,
+            smtp_port: parseInt(document.getElementById('smtp_port').value),
             smtp_user: document.getElementById('smtp_user').value,
             smtp_password: document.getElementById('smtp_password').value,
             smtp_from: document.getElementById('smtp_from').value,
-            smtp_to: document.getElementById('smtp_to').value.split(',').map(e => e.trim()).filter(e => e),
-            smtp_use_tls: true,
+            smtp_to: document.getElementById('smtp_to').value.split(','),
             webhook_enabled: document.getElementById('webhook_enabled').checked,
             webhook_url: document.getElementById('webhook_url').value,
             webhook_secret: document.getElementById('webhook_secret').value
         };
-
-        try {
-            const response = await fetch('/api/recordings/notification-config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config)
-            });
-
-            if (response.ok) {
-                alert('Notification settings saved!');
-            } else {
-                alert('Failed to save notification settings');
-            }
-        } catch (error) {
-            console.error('Failed to save notification config:', error);
-            alert('Failed to save: ' + error.message);
-        }
+        await fetch('/api/recordings/notification-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+        alert('Notifications Saved');
     }
 
-    async function testEmail() {
-        try {
-            const response = await fetch('/api/recordings/test-email', { method: 'POST' });
-            const data = await response.json();
-            alert(response.ok ? 'Test email sent!' : data.error || 'Failed');
-        } catch (error) {
-            alert('Error: ' + error.message);
-        }
-    }
+    async function testEmail() { await fetch('/api/recordings/test-email', { method: 'POST' }); alert('Test Sent'); }
+    async function testWebhook() { await fetch('/api/recordings/test-webhook', { method: 'POST' }); alert('Test Sent'); }
 
-    async function testWebhook() {
-        try {
-            const response = await fetch('/api/recordings/test-webhook', { method: 'POST' });
-            const data = await response.json();
-            alert(response.ok ? 'Test webhook sent!' : data.error || 'Failed');
-        } catch (error) {
-            alert('Error: ' + error.message);
-        }
-    }
-
-    // Recording Management
     async function refreshDiskUsage() {
-        try {
-            const response = await fetch('/api/recordings/disk-usage');
-            const data = await response.json();
-
-            document.getElementById('disk-free').textContent = data.free_gb?.toFixed(1) || '-';
-            document.getElementById('rec-size').textContent = data.recordings_gb?.toFixed(1) || '-';
-            document.getElementById('rec-count').textContent = data.recordings_count || 0;
-            document.getElementById('disk-usage').textContent = data.usage_percent?.toFixed(0) + '%' || '-';
-        } catch (error) {
-            console.error('Failed to get disk usage:', error);
-        }
+        const res = await fetch('/api/recordings/disk-usage');
+        const d = await res.json();
+        document.getElementById('disk-free').textContent = d.free_gb.toFixed(1);
+        document.getElementById('rec-size').textContent = d.recordings_gb.toFixed(1);
+        document.getElementById('rec-count').textContent = d.recordings_count;
+        document.getElementById('disk-usage').textContent = d.usage_percent + '%';
     }
 
-    async function cleanupRecordings(dryRun) {
-        if (!dryRun && !confirm('Delete recordings older than 30 days?')) return;
-
-        try {
-            const response = await fetch(`/api/recordings/cleanup?max_age_days=30&dry_run=${dryRun}`, {
-                method: 'POST'
-            });
-            const data = await response.json();
-
-            const msg = dryRun
-                ? `Would delete ${data.deleted_count} files (${(data.freed_bytes / 1024 / 1024).toFixed(1)} MB)`
-                : `Deleted ${data.deleted_count} files, freed ${(data.freed_bytes / 1024 / 1024).toFixed(1)} MB`;
-
-            alert(msg);
-            if (!dryRun) refreshDiskUsage();
-        } catch (error) {
-            alert('Cleanup failed: ' + error.message);
-        }
+    async function cleanupRecordings(dry) {
+        if (!dry && !confirm('Sure?')) return;
+        const res = await fetch(`/api/recordings/cleanup?max_age_days=30&dry_run=${dry}`, { method: 'POST' });
+        const d = await res.json();
+        alert(`Deleted: ${d.deleted_count}`);
+        refreshDiskUsage();
     }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadTelegramUsers();
+        loadDetectionConfig();
+        loadNotificationConfig();
+        refreshDiskUsage();
+    });
 </script>
+
+<!-- Add horizontal scroll hide style -->
+<style>
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        /* IE and Edge */
+        scrollbar-width: none;
+        /* Firefox */
+    }
+</style>
 {% endblock %}

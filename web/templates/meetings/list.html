@@ -1,79 +1,104 @@
 {% extends "base.html" %}
 
-{% block title %}Meetings - Meeting Recorder{% endblock %}
+
 
 {% block content %}
-<div class="space-y-6">
-    <!-- Page header -->
+<div class="max-w-7xl mx-auto p-4 md:p-8 space-y-6">
+    <!-- Header -->
     <div class="flex justify-between items-center">
-        <h1 class="text-3xl font-bold">Meetings</h1>
-        <a href="/meetings/new" class="btn btn-primary">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                stroke="currentColor" class="w-5 h-5">
+        <h1 class="text-2xl md:text-3xl font-bold">Meetings</h1>
+        <a href="/meetings/new" class="btn btn-primary rounded-full px-6 font-bold text-white">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                stroke="currentColor" class="w-5 h-5 mr-1">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
-            New Meeting
+            New
         </a>
     </div>
 
-    <!-- Meetings list -->
-    <div class="card glass-panel shadow-sm">
-        <div class="card-body p-0 sm:p-6">
-            {% if meetings %}
-            <div class="overflow-x-auto">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th class="bg-base-200/50">Name</th>
-                            <th class="bg-base-200/50">Provider</th>
-                            <th class="bg-base-200/50">Meeting Code</th>
-                            <th class="bg-base-200/50">Display Name</th>
-                            <th class="bg-base-200/50">Schedules</th>
-                            <th class="bg-base-200/50 text-right">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for meeting in meetings %}
-                        <tr id="meeting-{{ meeting.id }}"
-                            class="hover:bg-base-content/5 transition-colors border-b border-base-content/5 last:border-0">
-                            <td class="font-medium">{{ meeting.name }}</td>
-                            <td>
-                                {% if meeting.provider == 'jitsi' %}
-                                <span class="badge badge-info gap-2 rounded-lg font-mono">JITSI</span>
-                                {% elif meeting.provider == 'webex' %}
-                                <span class="badge badge-warning gap-2 rounded-lg font-mono">WEBEX</span>
-                                {% else %}
-                                <span class="badge badge-ghost rounded-lg font-mono">{{ meeting.provider | upper
-                                    }}</span>
-                                {% endif %}
-                            </td>
-                            <td class="font-mono text-sm opacity-70">{{ meeting.meeting_code }}</td>
-                            <td>{{ meeting.default_display_name or '-' }}</td>
-                            <td>{{ meeting.schedules | length }}</td>
-                            <td class="text-right">
-                                <div class="flex gap-2 justify-end">
-                                    <a href="/meetings/{{ meeting.id }}/edit"
-                                        class="btn btn-ghost btn-sm rounded-full">Edit</a>
-                                    <button class="btn btn-ghost btn-sm text-error rounded-full"
-                                        hx-delete="/meetings/{{ meeting.id }}" hx-target="#meeting-{{ meeting.id }}"
-                                        hx-swap="outerHTML"
-                                        hx-confirm="Delete meeting '{{ meeting.name }}'? This will also delete all associated schedules.">
-                                        Delete
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+    <!-- Meetings Lists -->
+    <div class="bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
+        {% if meetings %}
+        <!-- Mobile List -->
+        <div class="md:hidden">
+            {% for meeting in meetings %}
+            <div class="p-4 border-b border-[#2f3336] last:border-0 hover:bg-[#1d1f23] transition-colors">
+                <div class="flex justify-between items-center mb-2">
+                    <div class="font-bold text-white text-lg">{{ meeting.name }}</div>
+                    {% if meeting.provider == 'jitsi' %}
+                    <span
+                        class="badge badge-sm badge-info badge-outline rounded uppercase font-bold text-[10px]">Jitsi</span>
+                    {% elif meeting.provider == 'webex' %}
+                    <span
+                        class="badge badge-sm badge-warning badge-outline rounded uppercase font-bold text-[10px]">Webex</span>
+                    {% else %}
+                    <span class="badge badge-sm badge-ghost badge-outline rounded uppercase font-bold text-[10px]">{{
+                        meeting.provider }}</span>
+                    {% endif %}
+                </div>
+
+                <div class="text-sm text-gray-500 font-mono mb-3 truncate">{{ meeting.meeting_code }}</div>
+
+                <div class="flex justify-between items-center">
+                    <div class="text-xs text-gray-600">{{ meeting.schedules | length }} schedules</div>
+
+                    <div class="flex gap-2">
+                        <a href="/meetings/{{ meeting.id }}/edit" class="btn btn-xs btn-outline rounded-full">Edit</a>
+                        <button hx-delete="/meetings/{{ meeting.id }}" hx-target="closest div.mb-4" hx-swap="outerHTML"
+                            hx-confirm="Delete?" class="btn btn-xs btn-outline btn-error rounded-full">Del</button>
+                    </div>
+                </div>
             </div>
-            {% else %}
-            <div class="text-center py-10">
-                <p class="text-base-content/60 mb-4">No meetings configured yet</p>
-                <a href="/meetings/new" class="btn btn-primary rounded-full">Create your first meeting</a>
-            </div>
-            {% endif %}
+            {% endfor %}
         </div>
+
+        <!-- Desktop Table -->
+        <div class="hidden md:block">
+            <table class="table w-full">
+                <thead class="text-gray-500 border-b border-[#2f3336]">
+                    <tr>
+                        <th class="font-normal pl-6">Name</th>
+                        <th class="font-normal">Provider</th>
+                        <th class="font-normal">Code</th>
+                        <th class="font-normal">Display Name</th>
+                        <th class="font-normal text-right pr-6">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for meeting in meetings %}
+                    <tr class="hover:bg-[#1d1f23] border-b border-[#2f3336] last:border-0 transition-colors">
+                        <td class="font-bold text-white pl-6">{{ meeting.name }}</td>
+                        <td>
+                            {% if meeting.provider == 'jitsi' %}
+                            <span class="text-blue-400 font-bold text-xs uppercase">Jitsi</span>
+                            {% elif meeting.provider == 'webex' %}
+                            <span class="text-yellow-500 font-bold text-xs uppercase">Webex</span>
+                            {% else %}
+                            <span class="text-gray-500 font-bold text-xs uppercase">{{ meeting.provider }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-gray-400 font-mono text-sm">{{ meeting.meeting_code }}</td>
+                        <td class="text-gray-400 text-sm">{{ meeting.default_display_name or '-' }}</td>
+                        <td class="text-right pr-6">
+                            <div class="flex items-center justify-end gap-3">
+                                <a href="/meetings/{{ meeting.id }}/edit"
+                                    class="text-gray-500 hover:text-white btn btn-ghost btn-xs">Edit</a>
+                                <button hx-delete="/meetings/{{ meeting.id }}" hx-target="closest tr"
+                                    hx-swap="outerHTML" hx-confirm="Delete?"
+                                    class="text-error hover:text-red-400 btn btn-ghost btn-xs">Delete</button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="flex flex-col items-center justify-center py-20 text-gray-500">
+            <p class="mb-4">No meetings configured</p>
+            <a href="/meetings/new" class="btn btn-primary btn-sm rounded-full">Create one</a>
+        </div>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

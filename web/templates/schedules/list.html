@@ -1,110 +1,122 @@
 {% extends "base.html" %}
 
-{% block title %}Schedules - Meeting Recorder{% endblock %}
+
 
 {% block content %}
-<div class="space-y-6">
+<div class="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
     <!-- Page header -->
     <div class="flex justify-between items-center">
-        <h1 class="text-3xl font-bold">Schedules</h1>
-        <a href="/schedules/new" class="btn btn-primary rounded-full">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                stroke="currentColor" class="w-5 h-5">
+        <h1 class="text-2xl md:text-3xl font-bold">Schedules</h1>
+        <a href="/schedules/new" class="btn btn-primary rounded-full px-6 font-bold text-white">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
+                stroke="currentColor" class="w-5 h-5 mr-1">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
-            New Schedule
+            New
         </a>
     </div>
 
-    <!-- Future Schedules section -->
-    <div class="flex items-center gap-2 text-base-content/70 font-medium mb-2">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"
-            class="w-5 h-5">
-            <path stroke-linecap="round" stroke-linejoin="round"
-                d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5" />
-        </svg>
-        Future Schedules ({{ (schedules | rejectattr('id', 'in', expired_ids) | list) | length }})
+    <!-- Active Schedules -->
+    <div>
+        <div class="flex items-center gap-2 text-gray-500 font-bold mb-4 uppercase text-xs tracking-wider">
+            Future Schedules
+        </div>
+
+        {% set active_schedules = schedules | rejectattr('id', 'in', expired_ids) | list %}
+
+        {% if active_schedules %}
+        <!-- Mobile Card View -->
+        <div class="md:hidden border-t border-[#2f3336]">
+            {% for schedule in schedules %}
+            {% if schedule.id not in expired_ids %}
+            {% set cron_description = cron_descriptions.get(schedule.id, '') %}
+            {% set is_expired = false %}
+            {% include "schedules/_card.html" %}
+            {% endif %}
+            {% endfor %}
+        </div>
+
+        <!-- Desktop Table View -->
+        <div class="hidden md:block bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
+            <table class="table w-full">
+                <thead>
+                    <tr class="border-b border-[#2f3336] text-gray-500 text-sm">
+                        <th class="bg-transparent font-normal w-[20%] pl-6">Meeting</th>
+                        <th class="bg-transparent font-normal w-[25%]">Schedule</th>
+                        <th class="bg-transparent font-normal w-[10%]">Duration</th>
+                        <th class="bg-transparent font-normal w-[15%]">Next Run</th>
+                        <th class="bg-transparent font-normal w-[10%]">YouTube</th>
+                        <th class="bg-transparent font-normal w-[10%]">Status</th>
+                        <th class="bg-transparent font-normal w-[10%] text-right pr-6">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for schedule in schedules %}
+                    {% if schedule.id not in expired_ids %}
+                    {% set cron_description = cron_descriptions.get(schedule.id, '') %}
+                    {% set is_expired = false %}
+                    {% include "schedules/_row.html" %}
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-20 bg-[#16181c] rounded-xl border border-[#2f3336] border-dashed">
+            <p class="text-gray-500 mb-4">No active schedules found.</p>
+            <a href="/schedules/new" class="btn btn-primary btn-sm rounded-full">Create Schedule</a>
+        </div>
+        {% endif %}
     </div>
-    <div class="card glass-panel shadow-sm">
-        <div class="card-body p-0 sm:p-6">
-            {% set active_schedules = schedules | rejectattr('id', 'in', expired_ids) | list %}
-            {% if active_schedules %}
-            <div class="overflow-x-auto">
-                <table class="table">
+
+    <!-- Expired Schedules -->
+    {% if has_expired %}
+    <div class="collapse collapse-arrow bg-transparent border border-[#2f3336] rounded-xl">
+        <input type="checkbox" />
+        <div class="collapse-title font-medium text-gray-500 flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                stroke="currentColor" class="w-5 h-5">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                    d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+            </svg>
+            Expired Schedules ({{ expired_ids | length }})
+        </div>
+        <div class="collapse-content !p-0 border-t border-[#2f3336]">
+            <!-- Mobile View -->
+            <div class="md:hidden">
+                {% for schedule in schedules %}
+                {% if schedule.id in expired_ids %}
+                {% set cron_description = cron_descriptions.get(schedule.id, '') %}
+                {% set is_expired = true %}
+                {% include "schedules/_card.html" %}
+                {% endif %}
+                {% endfor %}
+            </div>
+
+            <!-- Desktop View -->
+            <div class="hidden md:block overflow-x-auto">
+                <table class="table w-full">
                     <thead>
-                        <tr>
-                            <th class="bg-base-200/50 w-[15%]">Meeting</th>
-                            <th class="bg-base-200/50 w-[35%]">Type</th>
-                            <th class="bg-base-200/50 w-[10%]">Duration</th>
-                            <th class="bg-base-200/50 w-[15%]">Next Run</th>
-                            <th class="bg-base-200/50 w-[10%]">YouTube</th>
-                            <th class="bg-base-200/50 w-[5%]">Status</th>
-                            <th class="bg-base-200/50 w-[10%] text-right">Actions</th>
+                        <tr class="border-b border-[#2f3336] text-gray-500 text-xs">
+                            <th class="bg-transparent font-normal w-[20%] pl-6">Meeting</th>
+                            <th class="bg-transparent font-normal w-[25%]">Type</th>
+                            <th class="bg-transparent font-normal w-[10%]">Duration</th>
+                            <th class="bg-transparent font-normal w-[15%]">Original Time</th>
+                            <th class="bg-transparent font-normal w-[10%]">YouTube</th>
+                            <th class="bg-transparent font-normal w-[5%]">Status</th>
+                            <th class="bg-transparent font-normal w-[15%] text-right pr-6">Actions</th>
                         </tr>
                     </thead>
-                    <tbody id="schedules-tbody">
+                    <tbody>
                         {% for schedule in schedules %}
-                        {% if schedule.id not in expired_ids %}
+                        {% if schedule.id in expired_ids %}
                         {% set cron_description = cron_descriptions.get(schedule.id, '') %}
-                        {% set is_expired = false %}
+                        {% set is_expired = true %}
                         {% include "schedules/_row.html" %}
                         {% endif %}
                         {% endfor %}
                     </tbody>
                 </table>
-            </div>
-            {% else %}
-            <div class="text-center py-10">
-                <p class="text-base-content/60 mb-4">No active schedules</p>
-                <a href="/schedules/new" class="btn btn-primary rounded-full">Create your first schedule</a>
-            </div>
-            {% endif %}
-        </div>
-    </div>
-
-    <!-- Expired Schedules (collapsible) -->
-    {% if has_expired %}
-    <div class="collapse collapse-arrow bg-base-200/30 rounded-lg">
-        <input type="checkbox" />
-        <div class="collapse-title font-medium text-base-content/70 pl-0">
-            <span class="flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                    stroke="currentColor" class="w-5 h-5">
-                    <path stroke-linecap="round" stroke-linejoin="round"
-                        d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                </svg>
-                Expired Schedules ({{ expired_ids | length }})
-            </span>
-        </div>
-        <div class="collapse-content !p-0">
-            <!-- Card wrapper matching active schedules style -->
-            <div class="card glass-panel shadow-sm mt-2">
-                <div class="card-body p-0 sm:p-6">
-                    <div class="overflow-x-auto">
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th class="bg-base-200/50 w-[15%]">Meeting</th>
-                                    <th class="bg-base-200/50 w-[35%]">Type</th>
-                                    <th class="bg-base-200/50 w-[10%]">Duration</th>
-                                    <th class="bg-base-200/50 w-[15%]">Original Time</th>
-                                    <th class="bg-base-200/50 w-[10%]">YouTube</th>
-                                    <th class="bg-base-200/50 w-[5%]">Status</th>
-                                    <th class="bg-base-200/50 w-[10%] text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for schedule in schedules %}
-                                {% if schedule.id in expired_ids %}
-                                {% set cron_description = cron_descriptions.get(schedule.id, '') %}
-                                {% set is_expired = true %}
-                                {% include "schedules/_row.html" %}
-                                {% endif %}
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
             </div>
         </div>
     </div>

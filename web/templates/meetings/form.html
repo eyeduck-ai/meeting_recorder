@@ -1,105 +1,105 @@
 {% extends "base.html" %}
 
-{% block title %}{% if meeting %}Edit{% else %}New{% endif %} Meeting - Meeting Recorder{% endblock %}
+{% block title %}{% if meeting %}Edit{% else %}New{% endif %} Meeting / Meeting Recorder{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
-    <!-- Page header -->
+<div class="max-w-2xl mx-auto p-4 md:p-8 space-y-8">
+
+    <!-- Header -->
     <div class="flex items-center gap-4">
-        <a href="/meetings" class="btn btn-ghost btn-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+        <button onclick="history.back()" class="btn btn-circle btn-ghost btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2"
                 stroke="currentColor" class="w-5 h-5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
             </svg>
-            Back
-        </a>
-        <h1 class="text-3xl font-bold">{% if meeting %}Edit Meeting{% else %}New Meeting{% endif %}</h1>
+        </button>
+        <h1 class="text-2xl font-bold">{% if meeting %}Edit{% else %}New{% endif %} Meeting</h1>
     </div>
 
     <!-- Form -->
-    <div class="card bg-base-100 shadow-xl max-w-2xl">
-        <div class="card-body">
-            <form method="POST" action="/meetings/save">
-                {% if meeting %}
-                <input type="hidden" name="meeting_id" value="{{ meeting.id }}">
-                {% endif %}
+    <div class="bg-[#16181c] rounded-xl border border-[#2f3336] p-6">
+        <form method="POST" action="/meetings/save" class="space-y-6">
+            {% if meeting %}
+            <input type="hidden" name="meeting_id" value="{{ meeting.id }}">
+            {% endif %}
 
-                <div class="form-control w-full mb-4">
-                    <label class="label">
-                        <span class="label-text">Name *</span>
-                    </label>
-                    <input type="text" name="name" value="{{ meeting.name if meeting else '' }}"
-                        class="input input-bordered w-full" required placeholder="Weekly Team Standup">
-                </div>
+            <div class="form-control w-full">
+                <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Name</label>
+                <input type="text" name="name" value="{{ meeting.name if meeting else '' }}"
+                    class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
+                    required placeholder="Project Sync">
+            </div>
 
-                <div class="form-control w-full mb-4">
-                    <label class="label">
-                        <span class="label-text">Provider *</span>
-                    </label>
-                    <select name="provider" class="select select-bordered w-full" required>
-                        {% for provider in providers %}
-                        <option value="{{ provider.value }}" {% if meeting and meeting.provider==provider %}selected{%
-                            endif %}>
-                            {{ provider.value | upper }}
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
+            <div class="form-control w-full">
+                <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Provider</label>
+                <select name="provider"
+                    class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
+                    required>
+                    {% for provider in providers %}
+                    <option value="{{ provider.value }}" {% if meeting and meeting.provider==provider %}selected{% endif
+                        %}>
+                        {{ provider.value | upper }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
 
-                <div class="form-control w-full mb-4">
-                    <label class="label">
-                        <span class="label-text" id="meeting-code-label">Meeting Code *</span>
-                    </label>
+            <div class="form-control w-full">
+                <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider"
+                    id="meeting-code-label">Meeting Code</label>
+                <div class="relative">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                        </svg>
+                    </span>
                     <input type="text" name="meeting_code" id="meeting-code-input"
-                        value="{{ meeting.meeting_code if meeting else '' }}" class="input input-bordered w-full"
-                        required placeholder="my-meeting-room">
-                    <label class="label">
-                        <span class="label-text-alt" id="meeting-code-hint">For Jitsi: the room name (e.g.,
-                            my-meeting-room)</span>
-                    </label>
+                        value="{{ meeting.meeting_code if meeting else '' }}"
+                        class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg pl-10"
+                        required placeholder="my-room">
                 </div>
+                <label class="label">
+                    <span class="label-text-alt text-gray-600" id="meeting-code-hint">Jitsi room name</span>
+                </label>
+            </div>
 
-                <div class="form-control w-full mb-4" id="base-url-group">
-                    <label class="label">
-                        <span class="label-text">Base URL</span>
-                    </label>
-                    <input type="url" name="site_base_url" id="base-url-input"
-                        value="{{ meeting.site_base_url or '' if meeting else '' }}" class="input input-bordered w-full"
-                        placeholder="https://meet.jit.si">
-                    <label class="label">
-                        <span class="label-text-alt">Leave empty to use default (Jitsi: meet.jit.si)</span>
-                    </label>
-                </div>
+            <div class="form-control w-full" id="base-url-group">
+                <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Base URL <span
+                        class="text-gray-600 font-normal normal-case">(Optional)</span></label>
+                <input type="url" name="site_base_url" id="base-url-input"
+                    value="{{ meeting.site_base_url or '' if meeting else '' }}"
+                    class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
+                    placeholder="https://meet.jit.si">
+            </div>
 
-                <div class="divider">Identity Settings</div>
+            <div class="border-t border-[#2f3336] my-6"></div>
 
-                <div class="form-control w-full mb-4">
-                    <label class="label">
-                        <span class="label-text">Display Name</span>
-                    </label>
+            <h3 class="text-lg font-bold">Identity</h3>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="form-control w-full">
+                    <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Display Name</label>
                     <input type="text" name="default_display_name"
                         value="{{ meeting.default_display_name if meeting else '' }}"
-                        class="input input-bordered w-full" placeholder="Meeting Recorder">
+                        class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
+                        placeholder="Recorder Bot">
                 </div>
 
-                <div class="form-control w-full mb-4">
-                    <label class="label">
-                        <span class="label-text">Guest Email</span>
-                    </label>
+                <div class="form-control w-full">
+                    <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Guest Email</label>
                     <input type="email" name="default_guest_email"
                         value="{{ meeting.default_guest_email or '' if meeting else '' }}"
-                        class="input input-bordered w-full" placeholder="recorder@example.com">
-                    <label class="label">
-                        <span class="label-text-alt">Required for some platforms (Webex)</span>
-                    </label>
+                        class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
+                        placeholder="bot@example.com">
                 </div>
+            </div>
 
-                <div class="card-actions justify-end mt-6">
-                    <a href="/meetings" class="btn btn-ghost">Cancel</a>
-                    <button type="submit" class="btn btn-primary">Save Meeting</button>
-                </div>
-            </form>
-        </div>
+            <div class="flex justify-end gap-3 mt-8 pt-4 border-t border-[#2f3336]">
+                <button type="button" onclick="history.back()" class="btn btn-ghost rounded-full">Cancel</button>
+                <button type="submit" class="btn btn-primary rounded-full px-8">Save Meeting</button>
+            </div>
+        </form>
     </div>
 </div>
 
@@ -112,45 +112,29 @@
         const baseUrlGroup = document.getElementById('base-url-group');
         const baseUrlInput = document.getElementById('base-url-input');
 
-        const providerConfigs = {
-            'jitsi': {
-                codeLabel: 'Meeting Code *',
-                codePlaceholder: 'my-meeting-room',
-                codeHint: 'Enter the Jitsi room name (e.g., my-meeting-room)',
-                showBaseUrl: true
-            },
-            'webex': {
-                codeLabel: 'Meeting URL *',
-                codePlaceholder: 'https://company.webex.com/meet/username',
-                codeHint: 'Enter the full Webex meeting link (Personal Room URL or meeting link)',
-                showBaseUrl: false
-            }
+        const configs = {
+            'jitsi': { label: 'Meeting Code', ph: 'my-meeting-room', hint: 'Jitsi room name', showUrl: true },
+            'webex': { label: 'Meeting URL', ph: 'https://company.webex.com/meet/user', hint: 'Full Webex link', showUrl: false }
         };
 
-        function updateFormForProvider(provider) {
-            const config = providerConfigs[provider] || providerConfigs['jitsi'];
+        function updateForm(provider) {
+            const conf = configs[provider] || configs['jitsi'];
+            meetingCodeLabel.textContent = conf.label;
+            meetingCodeInput.placeholder = conf.ph;
+            meetingCodeHint.textContent = conf.hint;
 
-            meetingCodeLabel.textContent = config.codeLabel;
-            meetingCodeInput.placeholder = config.codePlaceholder;
-            meetingCodeHint.textContent = config.codeHint;
-
-            if (config.showBaseUrl) {
-                baseUrlGroup.style.display = '';
+            if (conf.showUrl) {
+                baseUrlGroup.classList.remove('hidden');
                 baseUrlInput.disabled = false;
             } else {
-                baseUrlGroup.style.display = 'none';
+                baseUrlGroup.classList.add('hidden');
                 baseUrlInput.disabled = true;
                 baseUrlInput.value = '';
             }
         }
 
-        // Initialize on page load
-        updateFormForProvider(providerSelect.value);
-
-        // Update on provider change
-        providerSelect.addEventListener('change', function () {
-            updateFormForProvider(this.value);
-        });
+        updateForm(providerSelect.value);
+        providerSelect.addEventListener('change', function () { updateForm(this.value); });
     })();
 </script>
 {% endblock %}

@@ -230,6 +230,9 @@ class RecordingJob(Base):
     job_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     schedule_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("schedules.id"), nullable=True)
 
+    # Relationships
+    schedule: Mapped["Schedule"] = relationship("Schedule")
+
     # Job configuration
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     meeting_code: Mapped[str] = mapped_column(String(255), nullable=False)
