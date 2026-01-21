@@ -15,6 +15,18 @@
         </a>
         <h1 class="text-2xl md:text-3xl font-bold">Job Details</h1>
         <div class="flex-1"></div>
+        {% set status_val = job.status.value if job.status is not string else job.status %}
+        {% set running_statuses = ['starting', 'joining', 'waiting_lobby', 'recording', 'finalizing', 'uploading'] %}
+        {% if status_val in running_statuses %}
+        <div class="flex items-center gap-2">
+            <form method="POST" action="/jobs/{{ job.job_id }}/finish">
+                <button type="submit" class="btn btn-warning btn-outline btn-sm">Finish</button>
+            </form>
+            <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+                <button type="submit" class="btn btn-error btn-outline btn-sm">Stop</button>
+            </form>
+        </div>
+        {% endif %}
         <button hx-delete="/jobs/{{ job.job_id }}" hx-confirm="Delete this job? This cannot be undone." hx-target="body"
             hx-swap="outerHTML" onclick="setTimeout(()=>window.location.href='/jobs', 500)"
             class="btn btn-error btn-outline btn-sm gap-2">
@@ -54,6 +66,19 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+
+        <div id="job-progress-panel" class="card bg-base-100 shadow-xl hidden">
+            <div class="card-body">
+                <h2 class="card-title">Progress</h2>
+                <div class="text-sm text-base-content/60" id="job-progress-phase">Uploading</div>
+                <div class="flex items-center gap-3 mt-2">
+                    <progress id="job-progress-bar" class="progress progress-warning w-full bg-[#2f3336]" value="0"
+                        max="100"></progress>
+                    <div id="job-progress-text" class="text-sm font-mono text-base-content/70">0%</div>
+                </div>
+                <div id="job-progress-detail" class="text-xs text-base-content/50 mt-2"></div>
             </div>
         </div>
 
@@ -331,4 +356,68 @@
     {% endif %}
     {% endif %}
 </div>
+
+<script>
+    const progressJobId = "{{ job.job_id }}";
+
+    function formatBytes(bytes) {
+        if (!bytes && bytes !== 0) return '';
+        const mb = bytes / (1024 * 1024);
+        if (mb < 1024) return `${mb.toFixed(1)} MB`;
+        return `${(mb / 1024).toFixed(2)} GB`;
+    }
+
+    function formatMs(ms) {
+        if (!ms && ms !== 0) return '';
+        const totalSec = Math.floor(ms / 1000);
+        const h = String(Math.floor(totalSec / 3600)).padStart(2, '0');
+        const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
+        const s = String(totalSec % 60).padStart(2, '0');
+        return `${h}:${m}:${s}`;
+    }
+
+    async function pollJobProgress() {
+        try {
+            const res = await fetch(`/api/v1/jobs/${progressJobId}/progress`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const panel = document.getElementById('job-progress-panel');
+            if (!data.active || !data.progress) {
+                panel.classList.add('hidden');
+                return;
+            }
+            panel.classList.remove('hidden');
+
+            const phase = data.progress.phase === 'compressing' ? 'Compressing' : 'Uploading';
+            const percent = data.progress.percent;
+            const bar = document.getElementById('job-progress-bar');
+            const text = document.getElementById('job-progress-text');
+            const detail = document.getElementById('job-progress-detail');
+
+            document.getElementById('job-progress-phase').textContent = phase;
+            if (percent !== null && percent !== undefined) {
+                bar.value = percent;
+                text.textContent = `${percent.toFixed(1)}%`;
+            } else {
+                bar.value = 0;
+                text.textContent = '...';
+            }
+
+            if (data.progress.unit === 'bytes') {
+                detail.textContent = `${formatBytes(data.progress.current)} / ${formatBytes(data.progress.total)}`;
+            } else if (data.progress.unit === 'ms') {
+                detail.textContent = `${formatMs(data.progress.current)} / ${formatMs(data.progress.total)}`;
+            } else {
+                detail.textContent = '';
+            }
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        pollJobProgress();
+        setInterval(pollJobProgress, 3000);
+    });
+</script>
 {% endblock %}

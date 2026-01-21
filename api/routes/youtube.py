@@ -5,6 +5,8 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from config.settings import get_settings
+from recording.remux import ensure_mp4
 from uploading.youtube import (
     AuthorizationError,
     get_youtube_uploader,
@@ -177,6 +179,23 @@ async def upload_video(request: UploadRequest):
         video_path = Path(job.output_path)
         if not video_path.exists():
             raise HTTPException(status_code=400, detail="Recording file not found")
+
+        remux_log = None
+        transcode_log = None
+        if video_path.suffix.lower() == ".mkv":
+            settings = get_settings()
+            remux_log = settings.diagnostics_dir / job.job_id / "remux.log"
+            transcode_log = settings.diagnostics_dir / job.job_id / "transcode.log"
+
+        mp4_path = await ensure_mp4(
+            video_path,
+            remux_log_path=remux_log,
+            transcode_log_path=transcode_log,
+        )
+        if not mp4_path or not mp4_path.exists():
+            raise HTTPException(status_code=500, detail="MP4 remux failed")
+
+        video_path = mp4_path
 
         # Prepare metadata
         title = request.title or f"Recording - {job.meeting_code}"

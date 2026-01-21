@@ -145,16 +145,32 @@ class SchedulerService:
             schedule_type_value = (
                 schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
             )
+            cron_trigger: CronTrigger | None = None
 
             if schedule_type_value == ScheduleType.ONCE.value:
                 # One-time schedule - trigger early_join_sec before start_time
                 early_join = timedelta(seconds=schedule.early_join_sec)
                 # Ensure trigger_time is timezone-aware UTC (DB stores naive UTC)
-                trigger_time = ensure_utc(schedule.start_time) - early_join
-
-                if trigger_time <= utc_now():
-                    logger.warning(f"Schedule {schedule.id} trigger_time is in the past, skipping")
+                start_time = ensure_utc(schedule.start_time)
+                if not start_time:
+                    logger.error(f"Schedule {schedule.id} has no start_time")
                     return None
+
+                trigger_time = start_time - early_join
+                end_time = start_time + timedelta(seconds=schedule.duration_sec)
+                now = utc_now()
+
+                if trigger_time <= now:
+                    if now < end_time:
+                        trigger_time = now + timedelta(seconds=1)
+                        logger.info(
+                            f"Schedule {schedule.id} trigger_time is in the past but within window; triggering immediately"
+                        )
+                    else:
+                        logger.warning(
+                            f"Schedule {schedule.id} trigger_time is in the past and beyond end_time, skipping"
+                        )
+                        return None
 
                 trigger = DateTrigger(run_date=trigger_time)
                 logger.info(f"Schedule {schedule.id} will trigger {schedule.early_join_sec}s early at {trigger_time}")
@@ -167,7 +183,8 @@ class SchedulerService:
 
                 # Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon)
                 converted_cron = convert_cron_weekday(schedule.cron_expression)
-                trigger = CronTrigger.from_crontab(converted_cron)
+                trigger = CronTrigger.from_crontab(converted_cron, timezone=self._scheduler.timezone)
+                cron_trigger = trigger
 
             else:
                 logger.error(f"Unknown schedule type: {schedule.schedule_type}")
@@ -193,6 +210,20 @@ class SchedulerService:
                 self._update_next_run(schedule.id, job.next_run_time)
 
             logger.info(f"Added schedule {schedule.id} ({schedule.schedule_type})")
+
+            if cron_trigger and self._job_callback:
+                now_local = datetime.now(self._scheduler.timezone)
+                last_fire = cron_trigger.get_prev_fire_time(None, now_local)
+                if last_fire:
+                    last_fire_utc = ensure_utc(last_fire)
+                    end_utc = ensure_utc(last_fire + timedelta(seconds=schedule.duration_sec))
+                    last_run_at = ensure_utc(schedule.last_run_at) if schedule.last_run_at else None
+
+                    if last_run_at and last_fire_utc and last_run_at >= last_fire_utc:
+                        logger.info(f"Schedule {schedule.id} already ran for latest window; skip catch-up")
+                    elif end_utc and utc_now() < end_utc:
+                        logger.info(f"Schedule {schedule.id} within window; triggering catch-up run")
+                        self._job_callback(schedule.id)
             return job_id
 
         except Exception as e:

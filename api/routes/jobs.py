@@ -22,6 +22,7 @@ from telegram_bot.notifications import (
     notify_recording_failed,
     notify_recording_started,
 )
+from uploading.progress import get_latest_progress, get_progress
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
@@ -231,6 +232,14 @@ async def get_current_recording(db: Session = Depends(get_db)):
     if not db_job:
         return {"active": False, "job": None}
 
+    terminal_statuses = {
+        JobStatus.SUCCEEDED.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELED.value,
+    }
+    if db_job.status in terminal_statuses:
+        return {"active": False, "job": None}
+
     # Build response with live status
     return {
         "active": True,
@@ -244,6 +253,58 @@ async def get_current_recording(db: Session = Depends(get_db)):
             "recording_started_at": db_job.recording_started_at.isoformat() if db_job.recording_started_at else None,
             # Detector status placeholder - will be populated when detection is active
             "detectors": {},
+        },
+    }
+
+
+@router.get("/progress/active")
+async def get_active_progress(db: Session = Depends(get_db)):
+    """Get latest compression/upload progress."""
+    latest = get_latest_progress()
+    if not latest:
+        return {"active": False, "job": None, "progress": None}
+
+    job_id, info = latest
+    repo = JobRepository(db)
+    job = repo.get_by_job_id(job_id)
+    job_info = None
+    if job:
+        job_info = {
+            "job_id": job.job_id,
+            "meeting_code": job.meeting_code,
+            "display_name": job.display_name,
+        }
+
+    return {
+        "active": True,
+        "job": job_info,
+        "progress": {
+            "phase": info.phase,
+            "percent": info.percent,
+            "current": info.current,
+            "total": info.total,
+            "unit": info.unit,
+            "updated_at": info.updated_at.isoformat(),
+        },
+    }
+
+
+@router.get("/{job_id}/progress")
+async def get_job_progress(job_id: str):
+    """Get compression/upload progress for a job."""
+    info = get_progress(job_id)
+    if not info:
+        return {"active": False, "progress": None}
+
+    return {
+        "active": True,
+        "progress": {
+            "phase": info.phase,
+            "percent": info.percent,
+            "current": info.current,
+            "total": info.total,
+            "unit": info.unit,
+            "updated_at": info.updated_at.isoformat(),
         },
     }
 
@@ -282,13 +343,51 @@ async def stop_job(job_id: str, db: Session = Depends(get_db)):
         )
 
     worker = get_worker()
-    if worker.request_cancel():
-        return {"message": "Cancellation requested", "job_id": job_id}
-    else:
+    if not worker.is_busy or not worker._current_job or worker._current_job.job_id != job_id:
         raise HTTPException(
             status_code=400,
-            detail="Could not request cancellation",
+            detail="Job is not currently running",
         )
+    if worker.request_cancel():
+        return {"message": "Cancellation requested", "job_id": job_id}
+    raise HTTPException(
+        status_code=400,
+        detail="Could not request cancellation",
+    )
+
+
+@router.post("/{job_id}/finish")
+async def finish_job(job_id: str, db: Session = Depends(get_db)):
+    """Request to finish a running job early (success path)."""
+    repo = JobRepository(db)
+    job = repo.get_by_job_id(job_id)
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    terminal_statuses = [
+        JobStatus.SUCCEEDED.value,
+        JobStatus.FAILED.value,
+        JobStatus.CANCELED.value,
+    ]
+    if job.status in terminal_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is already in terminal state: {job.status}",
+        )
+
+    worker = get_worker()
+    if not worker.is_busy or not worker._current_job or worker._current_job.job_id != job_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Job is not currently running",
+        )
+    if worker.request_finish():
+        return {"message": "Finish requested", "job_id": job_id}
+    raise HTTPException(
+        status_code=400,
+        detail="Could not request finish",
+    )
 
 
 @router.get("/", response_model=list[JobResponse])

@@ -1,7 +1,7 @@
 """Web UI routes using Jinja2 + HTMX."""
 
 import hmac
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,8 @@ from database.models import (
     ScheduleType,
     get_db,
 )
+from recording.remux import pick_preferred_video_path
+from recording.worker import get_worker
 from scheduling.job_runner import get_job_runner
 from scheduling.scheduler import get_scheduler
 from services.app_settings import get_all_settings
@@ -296,13 +298,17 @@ async def schedules_list(request: Request, db: Session = Depends(get_db)):
         if schedule.cron_expression:
             cron_descriptions[schedule.id] = cron_to_chinese(schedule.cron_expression)
 
-        # Mark as expired: ONCE schedule with past start_time OR no next_run_at
+        # Mark as expired: ONCE schedule with end_time passed OR no next_run_at
         schedule_type = (
             schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
         )
         if schedule_type == "once":
-            if schedule.start_time and ensure_utc(schedule.start_time) < now:
-                expired_ids.add(schedule.id)
+            if schedule.start_time:
+                start_time = ensure_utc(schedule.start_time)
+                if start_time:
+                    end_time = start_time + timedelta(seconds=schedule.duration_sec)
+                    if now >= end_time:
+                        expired_ids.add(schedule.id)
             elif not schedule.next_run_at:
                 expired_ids.add(schedule.id)
 
@@ -608,10 +614,29 @@ async def jobs_stop(request: Request, job_id: str, db: Session = Depends(get_db)
             JobStatus.UPLOADING.value,
         ]
         if job.status in running_statuses:
-            # Mark as canceled in database
-            # Note: actual worker cancellation would need additional implementation
-            job.status = JobStatus.CANCELED.value
-            db.commit()
+            worker = get_worker()
+            if worker.is_busy and worker._current_job and worker._current_job.job_id == job_id:
+                worker.request_cancel()
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@router.post("/jobs/{job_id}/finish", response_class=HTMLResponse)
+async def jobs_finish(request: Request, job_id: str, db: Session = Depends(get_db)):
+    """Finish a running job early (success path)."""
+    job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
+    if job:
+        running_statuses = [
+            JobStatus.STARTING.value,
+            JobStatus.JOINING.value,
+            JobStatus.WAITING_LOBBY.value,
+            JobStatus.RECORDING.value,
+            JobStatus.FINALIZING.value,
+            JobStatus.UPLOADING.value,
+        ]
+        if job.status in running_statuses:
+            worker = get_worker()
+            if worker.is_busy and worker._current_job and worker._current_job.job_id == job_id:
+                worker.request_finish()
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
 
 
@@ -686,9 +711,15 @@ async def recordings_download(job_id: str, db: Session = Depends(get_db)):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Recording file not found")
 
+    file_path = pick_preferred_video_path(file_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Recording file not found")
+
+    media_type = "video/mp4" if file_path.suffix.lower() == ".mp4" else "video/x-matroska"
+
     return FileResponse(
         file_path,
-        media_type="video/mp4",
+        media_type=media_type,
         filename=file_path.name,
     )
 
@@ -702,8 +733,15 @@ async def recordings_delete(job_id: str, db: Session = Depends(get_db)):
         if job.output_path:
             try:
                 file_path = Path(job.output_path)
-                if file_path.exists():
-                    file_path.unlink()
+                candidates = {file_path}
+                if file_path.suffix.lower() == ".mkv":
+                    candidates.add(file_path.with_suffix(".mp4"))
+                elif file_path.suffix.lower() == ".mp4":
+                    candidates.add(file_path.with_suffix(".mkv"))
+
+                for candidate in candidates:
+                    if candidate.exists():
+                        candidate.unlink()
             except Exception as e:
                 print(f"Error deleting file {job.output_path}: {e}")
 

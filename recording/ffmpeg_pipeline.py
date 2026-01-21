@@ -52,7 +52,7 @@ class FFmpegPipeline:
     """FFmpeg recording pipeline for capturing screen and audio.
 
     Captures video from X11 display and audio from PulseAudio,
-    encoding to Fragmented MP4 (H.264 + AAC) for crash resilience.
+    encoding based on output extension (MKV for recording stability).
     """
 
     output_path: Path
@@ -64,6 +64,7 @@ class FFmpegPipeline:
     log_path: Path | None = None
 
     _process: subprocess.Popen | None = field(default=None, init=False, repr=False)
+    _stderr_file: object | None = field(default=None, init=False, repr=False)
     _start_time: datetime | None = field(default=None, init=False)
     _recording: bool = field(default=False, init=False)
 
@@ -72,6 +73,13 @@ class FFmpegPipeline:
         """Check if currently recording."""
         return self._recording and self._process is not None
 
+    @property
+    def process_returncode(self) -> int | None:
+        """Return FFmpeg process return code if exited."""
+        if not self._process:
+            return None
+        return self._process.poll()
+
     def _build_command(self) -> list[str]:
         """Build FFmpeg command line."""
         settings = get_settings()
@@ -79,89 +87,76 @@ class FFmpegPipeline:
         # Check if PulseAudio is available
         use_pulse = _check_pulseaudio_available(self.audio_source)
 
+        cmd = ["ffmpeg", "-y"]
+
+        if settings.ffmpeg_debug_ts:
+            cmd += ["-loglevel", "debug", "-debug_ts"]
+
+        cmd += [
+            "-thread_queue_size",
+            str(settings.ffmpeg_thread_queue_size),
+            "-f",
+            "x11grab",
+            "-video_size",
+            f"{self.width}x{self.height}",
+            "-framerate",
+            str(self.framerate),
+        ]
+        if settings.ffmpeg_use_wallclock_timestamps:
+            cmd += ["-use_wallclock_as_timestamps", "1"]
+        cmd += ["-i", self.display]
+
         if use_pulse:
             logger.info(f"Using PulseAudio source: {self.audio_source}")
-            cmd = [
-                "ffmpeg",
-                "-y",  # Overwrite output
-                # Video input (X11 grab)
-                "-f",
-                "x11grab",
-                "-video_size",
-                f"{self.width}x{self.height}",
-                "-framerate",
-                str(self.framerate),
-                "-i",
-                self.display,
-                # Audio input (PulseAudio)
+            cmd += [
+                "-thread_queue_size",
+                str(settings.ffmpeg_thread_queue_size),
                 "-f",
                 "pulse",
-                "-i",
-                self.audio_source,
-                # Video encoding
-                "-c:v",
-                "libx264",
-                "-preset",
-                settings.ffmpeg_preset,
-                "-crf",
-                str(settings.ffmpeg_crf),
-                "-g",
-                "60",  # Force keyframe every 2s for crash resilience
-                "-pix_fmt",
-                "yuv420p",
-                # Audio encoding
-                "-c:a",
-                "aac",
-                "-b:a",
-                settings.ffmpeg_audio_bitrate,
-                # Fragmented MP4 for crash resilience + YouTube compatibility
-                "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof",
-                # Output
-                str(self.output_path),
             ]
+            if settings.ffmpeg_use_wallclock_timestamps:
+                cmd += ["-use_wallclock_as_timestamps", "1"]
+            cmd += ["-i", self.audio_source]
         else:
             logger.warning("PulseAudio not available, recording video only with silent audio track")
-            cmd = [
-                "ffmpeg",
-                "-y",  # Overwrite output
-                # Video input (X11 grab)
-                "-f",
-                "x11grab",
-                "-video_size",
-                f"{self.width}x{self.height}",
-                "-framerate",
-                str(self.framerate),
-                "-i",
-                self.display,
-                # Silent audio source (fallback when PulseAudio unavailable)
+            cmd += [
                 "-f",
                 "lavfi",
                 "-i",
                 "anullsrc=r=44100:cl=stereo",
-                # Video encoding
-                "-c:v",
-                "libx264",
-                "-preset",
-                settings.ffmpeg_preset,
-                "-crf",
-                str(settings.ffmpeg_crf),
-                "-g",
-                "60",  # Force keyframe every 2s for crash resilience
-                "-pix_fmt",
-                "yuv420p",
-                # Audio encoding
-                "-c:a",
-                "aac",
-                "-b:a",
-                settings.ffmpeg_audio_bitrate,
-                "-shortest",  # Stop when video ends
-                # Fragmented MP4 for crash resilience + YouTube compatibility
+            ]
+
+        cmd += [
+            "-c:v",
+            "libx264",
+            "-preset",
+            settings.ffmpeg_preset,
+            "-crf",
+            str(settings.ffmpeg_crf),
+            "-g",
+            "60",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+        if settings.ffmpeg_audio_filter:
+            cmd += [
+                "-filter:a",
+                settings.ffmpeg_audio_filter,
+            ]
+        cmd += [
+            "-c:a",
+            "aac",
+            "-b:a",
+            settings.ffmpeg_audio_bitrate,
+        ]
+        if not use_pulse:
+            cmd.append("-shortest")
+        if self.output_path.suffix.lower() == ".mp4":
+            cmd += [
                 "-movflags",
                 "+frag_keyframe+empty_moov+default_base_moof",
-                # Output
-                str(self.output_path),
             ]
+        cmd.append(str(self.output_path))
 
         return cmd
 
@@ -184,12 +179,23 @@ class FFmpegPipeline:
         env = os.environ.copy()
         env["DISPLAY"] = self.display
 
+        settings = get_settings()
+        stdout_target = subprocess.PIPE
+        stderr_target = subprocess.PIPE
+
+        if settings.ffmpeg_debug_ts and self.log_path:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._stderr_file = self.log_path.open("w", encoding="utf-8")
+            stdout_target = subprocess.DEVNULL
+            stderr_target = self._stderr_file
+            logger.info(f"FFmpeg debug logging enabled: {self.log_path}")
+
         try:
             self._process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=stdout_target,
+                stderr=stderr_target,
                 env=env,
                 preexec_fn=os.setsid if hasattr(os, "setsid") else None,
             )
@@ -199,14 +205,30 @@ class FFmpegPipeline:
 
             if self._process.poll() is not None:
                 # Process exited immediately - read stderr for error
-                _, stderr = self._process.communicate(timeout=1)
-                raise RuntimeError(f"FFmpeg failed to start: {stderr.decode()}")
+                stderr_output = ""
+                if self._stderr_file and self.log_path and self.log_path.exists():
+                    try:
+                        self._stderr_file.flush()
+                        self._stderr_file.close()
+                    finally:
+                        self._stderr_file = None
+                    stderr_output = self.log_path.read_text(encoding="utf-8", errors="ignore")
+                else:
+                    _, stderr = self._process.communicate(timeout=1)
+                    stderr_output = stderr.decode(errors="ignore")
+                raise RuntimeError(f"FFmpeg failed to start: {stderr_output}")
 
             self._recording = True
             self._start_time = utc_now()
             logger.info(f"Recording started: {self.output_path}")
 
         except Exception as e:
+            if self._stderr_file:
+                try:
+                    self._stderr_file.close()
+                except Exception:
+                    pass
+                self._stderr_file = None
             self._process = None
             self._recording = False
             raise RuntimeError(f"Failed to start FFmpeg: {e}") from e
@@ -226,6 +248,7 @@ class FFmpegPipeline:
         logger.info("Stopping FFmpeg recording")
 
         end_time = utc_now()
+        settings = get_settings()
 
         try:
             # Step 1: Send 'q' to FFmpeg to gracefully stop
@@ -239,7 +262,7 @@ class FFmpegPipeline:
 
             # Step 2: Wait 3 seconds for graceful stop
             try:
-                self._process.wait(timeout=3)
+                self._process.wait(timeout=max(0, settings.ffmpeg_stop_grace_sec))
             except subprocess.TimeoutExpired:
                 # Step 3: Send SIGINT (Ctrl+C) - FFmpeg handles this gracefully
                 logger.info("Sending SIGINT to FFmpeg")
@@ -249,13 +272,13 @@ class FFmpegPipeline:
                     pass
 
                 try:
-                    self._process.wait(timeout=5)
+                    self._process.wait(timeout=max(0, settings.ffmpeg_sigint_timeout_sec))
                 except subprocess.TimeoutExpired:
                     # Step 4: SIGTERM
                     logger.warning("FFmpeg didn't respond to SIGINT, terminating")
                     self._process.terminate()
                     try:
-                        self._process.wait(timeout=5)
+                        self._process.wait(timeout=max(0, settings.ffmpeg_sigterm_timeout_sec))
                     except subprocess.TimeoutExpired:
                         # Step 5: SIGKILL (last resort)
                         logger.warning("FFmpeg still running, killing")
@@ -263,12 +286,21 @@ class FFmpegPipeline:
                         self._process.wait()
 
             # Collect stderr for logging
-            if self._process.stderr:
+            if self._stderr_file:
+                try:
+                    self._stderr_file.flush()
+                    self._stderr_file.close()
+                    logger.info(f"FFmpeg log saved to: {self.log_path}")
+                except Exception as e:
+                    logger.warning(f"Could not save FFmpeg log: {e}")
+                finally:
+                    self._stderr_file = None
+            elif self._process.stderr:
                 try:
                     self._stderr_output = self._process.stderr.read().decode(errors="ignore")
                     if self._stderr_output and self.log_path:
                         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-                        self.log_path.write_text(self._stderr_output)
+                        self.log_path.write_text(self._stderr_output, encoding="utf-8")
                         logger.info(f"FFmpeg log saved to: {self.log_path}")
                 except Exception as e:
                     logger.warning(f"Could not save FFmpeg log: {e}")

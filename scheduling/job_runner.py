@@ -1,13 +1,17 @@
 import asyncio
 import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from config.settings import get_settings
 from database.models import (
     JobStatus,
     Schedule,
     get_session_local,
 )
 from database.session import JobRepository, build_result_update_fields
+from recording.remux import ensure_mp4
 from recording.worker import RecordingJob, get_worker
 from services.app_settings import get_setting_int
 from telegram_bot.notifications import (
@@ -17,12 +21,13 @@ from telegram_bot.notifications import (
     notify_recording_started,
     notify_youtube_upload_completed,
 )
+from uploading.progress import clear_progress, update_progress
 from uploading.youtube import (
     UploadStatus,
     VideoMetadata,
     get_youtube_uploader,
 )
-from utils.timezone import to_local, utc_now
+from utils.timezone import ensure_utc, to_local, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,15 @@ RETRYABLE_ERRORS = [
 ]
 
 
+@dataclass(frozen=True)
+class UploadRequest:
+    job_id: str
+    video_path: Path
+    title: str
+    privacy: str
+    meeting_name: str | None = None
+
+
 class JobRunner:
     """Job runner with single concurrency enforcement.
 
@@ -48,6 +62,7 @@ class JobRunner:
 
     def __init__(self):
         self._lock = asyncio.Lock()
+        self._upload_lock = asyncio.Lock()
         self._current_schedule_id: int | None = None
         self._queue: list[int] = []  # Queue of schedule IDs waiting to run
 
@@ -95,6 +110,8 @@ class JobRunner:
             logger.info(f"Schedule {schedule_id} waiting in queue (queue length: {len(self._queue)})")
             self._queue.append(schedule_id)
 
+        upload_request = None
+
         async with self._lock:
             # Remove from queue if present
             if schedule_id in self._queue:
@@ -102,11 +119,14 @@ class JobRunner:
 
             self._current_schedule_id = schedule_id
             try:
-                await self._execute_schedule(schedule_id)
+                upload_request = await self._execute_schedule(schedule_id)
             finally:
                 self._current_schedule_id = None
 
-    async def _execute_schedule(self, schedule_id: int) -> None:
+        if upload_request:
+            asyncio.create_task(self._run_upload_task(upload_request))
+
+    async def _execute_schedule(self, schedule_id: int) -> UploadRequest | None:
         """Execute a scheduled recording with retry support for network errors.
 
         Args:
@@ -134,8 +154,12 @@ class JobRunner:
                 logger.error(f"Meeting not found for schedule {schedule_id}")
                 return
 
+            deadline_at = self._get_fixed_deadline_at(schedule)
+            if deadline_at:
+                logger.info(f"Fixed duration deadline for schedule {schedule_id}: {deadline_at.isoformat()}")
+
             # Calculate meeting end time for retry deadline
-            meeting_end_time = utc_now() + __import__("datetime").timedelta(seconds=schedule.duration_sec)
+            meeting_end_time = deadline_at or (utc_now() + timedelta(seconds=schedule.duration_sec))
 
             # Create recording job
             job = RecordingJob.create(
@@ -149,6 +173,7 @@ class JobRunner:
                 dry_run=schedule.dry_run,
                 min_duration_sec=schedule.min_duration_sec,
                 stillness_timeout_sec=schedule.stillness_timeout_sec,
+                deadline_at=deadline_at,
             )
 
             # Store job in database
@@ -171,6 +196,7 @@ class JobRunner:
             # Store schedule info for retry
             youtube_enabled = schedule.youtube_enabled
             youtube_privacy = schedule.youtube_privacy
+            meeting_name = meeting.name
 
         except Exception as e:
             logger.error(f"Failed to create job for schedule {schedule_id}: {e}")
@@ -180,18 +206,38 @@ class JobRunner:
             session.close()
 
         # Run the recording with retry logic
-        await self._run_recording_with_retry(
+        return await self._run_recording_with_retry(
             job=job,
             schedule_id=schedule_id,
             meeting_end_time=meeting_end_time,
             youtube_enabled=youtube_enabled,
             youtube_privacy=youtube_privacy,
+            meeting_name=meeting_name,
         )
 
     def _is_retryable_error(self, error_message: str) -> bool:
         """Check if an error message indicates a retryable network error."""
         error_str = str(error_message)
         return any(pattern in error_str for pattern in RETRYABLE_ERRORS)
+
+    def _get_fixed_deadline_at(self, schedule: Schedule) -> datetime | None:
+        duration_mode = (
+            schedule.duration_mode.value if hasattr(schedule.duration_mode, "value") else schedule.duration_mode
+        )
+        if duration_mode != "fixed":
+            return None
+
+        start_time = None
+        if schedule.start_time:
+            start_time = ensure_utc(schedule.start_time)
+        elif schedule.last_run_at:
+            start_time = ensure_utc(schedule.last_run_at)
+        elif schedule.next_run_at:
+            start_time = ensure_utc(schedule.next_run_at)
+        else:
+            start_time = utc_now()
+
+        return start_time + timedelta(seconds=schedule.duration_sec)
 
     async def _run_recording_with_retry(
         self,
@@ -200,7 +246,8 @@ class JobRunner:
         meeting_end_time,
         youtube_enabled: bool,
         youtube_privacy: str,
-    ) -> None:
+        meeting_name: str | None,
+    ) -> UploadRequest | None:
         """Run recording with exponential backoff retry for network errors.
 
         Args:
@@ -214,6 +261,7 @@ class JobRunner:
         worker = get_worker()
         retry_delay = INITIAL_RETRY_DELAY_SEC
         attempt = 0
+        upload_request: UploadRequest | None = None
 
         def on_status_change(job_id: str, status: JobStatus):
             """Update status in database and send notifications."""
@@ -307,6 +355,7 @@ class JobRunner:
                                         dry_run=job.dry_run,
                                         min_duration_sec=job.min_duration_sec,
                                         stillness_timeout_sec=job.stillness_timeout_sec,
+                                        deadline_at=job.deadline_at,
                                     )
                                     session.close()
                                     continue  # Retry the recording
@@ -328,11 +377,16 @@ class JobRunner:
                     # Convert to local time for user-friendly title
                     local_time = to_local(recording_time)
                     time_str = local_time.strftime("%Y%m%d_%H%M")
-                    await self._upload_to_youtube(
+                    title_parts = [time_str]
+                    if meeting_name:
+                        title_parts.append(meeting_name)
+                    title_parts.append(job.meeting_code)
+                    upload_request = UploadRequest(
                         job_id=job.job_id,
                         video_path=output_path,
-                        title=f"{time_str} - {job.meeting_code}",
+                        title=" - ".join(title_parts),
                         privacy=youtube_privacy,
+                        meeting_name=meeting_name,
                     )
 
                 # Recording completed (success or non-retryable failure)
@@ -356,6 +410,44 @@ class JobRunner:
                 # Not retryable or no time left
                 break
 
+        return upload_request
+
+    async def _run_upload_task(self, upload_request: UploadRequest) -> None:
+        upload_job_id = upload_request.job_id
+        try:
+            video_path = upload_request.video_path
+            remux_log = None
+            transcode_log = None
+            if video_path.suffix.lower() == ".mkv":
+                settings = get_settings()
+                remux_log = settings.diagnostics_dir / upload_request.job_id / "remux.log"
+                transcode_log = settings.diagnostics_dir / upload_request.job_id / "transcode.log"
+
+            def transcode_progress(current_ms: int | None, total_ms: int | None):
+                update_progress(upload_job_id, "compressing", current_ms, total_ms, "ms")
+
+            upload_path = await ensure_mp4(
+                video_path,
+                remux_log_path=remux_log,
+                transcode_log_path=transcode_log,
+                progress_callback=transcode_progress,
+            )
+            if not upload_path or not upload_path.exists():
+                logger.error(f"MP4 preparation failed, skipping YouTube upload for job {upload_request.job_id}")
+                return
+
+            async with self._upload_lock:
+                await self._upload_to_youtube(
+                    job_id=upload_request.job_id,
+                    video_path=upload_path,
+                    title=upload_request.title,
+                    privacy=upload_request.privacy,
+                )
+        except Exception as e:
+            logger.error(f"YouTube upload task failed for job {upload_request.job_id}: {e}")
+        finally:
+            clear_progress(upload_job_id)
+
     async def _upload_to_youtube(
         self,
         job_id: str,
@@ -372,6 +464,11 @@ class JobRunner:
             privacy: Privacy status (public, private, unlisted)
         """
         logger.info(f"Starting YouTube upload for job {job_id}")
+        try:
+            file_size = video_path.stat().st_size
+        except OSError:
+            file_size = None
+        update_progress(job_id, "uploading", 0, file_size, "bytes")
 
         SessionLocal = get_session_local()
         session = SessionLocal()
@@ -407,6 +504,7 @@ class JobRunner:
             def log_progress(uploaded: int, total: int):
                 percent = (uploaded / total * 100) if total > 0 else 0
                 logger.debug(f"Upload progress: {percent:.1f}% ({uploaded}/{total} bytes)")
+                update_progress(job_id, "uploading", uploaded, total, "bytes")
 
             result = await uploader.upload_video(
                 video_path=video_path,

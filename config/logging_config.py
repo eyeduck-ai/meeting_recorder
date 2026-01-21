@@ -48,4 +48,8 @@ def setup_logging() -> None:
     file_handler.setFormatter(logging.Formatter(log_format))
     root_logger.addHandler(file_handler)
 
+    # Suppress verbose logs from libraries
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     logging.info(f"Log file: {log_file}")

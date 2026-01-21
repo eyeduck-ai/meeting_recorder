@@ -73,6 +73,32 @@
         </div>
     </div>
 
+    <div id="upload-progress-panel"
+        class="hidden bg-[#16181c] border border-info/30 rounded-xl p-4 md:p-6 relative overflow-hidden">
+        <div class="absolute top-0 left-0 w-1 h-full bg-info"></div>
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+            <div>
+                <h2 class="text-lg font-bold text-white">Processing</h2>
+                <div class="text-sm text-gray-500 mt-1" id="upload-progress-job">Job</div>
+            </div>
+            <div class="text-sm font-mono text-info" id="upload-progress-phase">Uploading</div>
+        </div>
+
+        <div class="space-y-2">
+            <div class="flex justify-between text-xs text-gray-500">
+                <span>Progress</span>
+                <span id="upload-progress-text">0%</span>
+            </div>
+            <progress id="upload-progress-bar" class="progress progress-info w-full bg-[#2f3336]" value="0"
+                max="100"></progress>
+            <div class="text-xs text-gray-500" id="upload-progress-detail"></div>
+        </div>
+
+        <div class="mt-4 text-right">
+            <a id="upload-progress-link" href="#" class="btn btn-sm btn-outline btn-info rounded-full">View Details</a>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <!-- Recent Jobs -->
         <div>
@@ -255,6 +281,22 @@
     let pollInterval = null;
     let recordingStartTime = null;
 
+    function formatBytes(bytes) {
+        if (!bytes && bytes !== 0) return '';
+        const mb = bytes / (1024 * 1024);
+        if (mb < 1024) return `${mb.toFixed(1)} MB`;
+        return `${(mb / 1024).toFixed(2)} GB`;
+    }
+
+    function formatMs(ms) {
+        if (!ms && ms !== 0) return '';
+        const totalSec = Math.floor(ms / 1000);
+        const h = String(Math.floor(totalSec / 3600)).padStart(2, '0');
+        const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
+        const s = String(totalSec % 60).padStart(2, '0');
+        return `${h}:${m}:${s}`;
+    }
+
     async function checkRecordingStatus() {
         try {
             const response = await fetch('/api/v1/jobs/current');
@@ -266,6 +308,7 @@
                 updateRecordingUI(data.job);
             } else {
                 panel.classList.add('hidden');
+                recordingStartTime = null;
             }
         } catch (error) { console.error(error); }
     }
@@ -298,9 +341,54 @@
         container.innerHTML = html;
     }
 
+    async function checkUploadProgress() {
+        try {
+            const response = await fetch('/api/v1/jobs/progress/active');
+            const data = await response.json();
+            const panel = document.getElementById('upload-progress-panel');
+
+            if (!data.active || !data.progress) {
+                panel.classList.add('hidden');
+                return;
+            }
+
+            panel.classList.remove('hidden');
+            const job = data.job || {};
+            const phase = data.progress.phase === 'compressing' ? 'Compressing' : 'Uploading';
+            const percent = data.progress.percent;
+            const bar = document.getElementById('upload-progress-bar');
+            const text = document.getElementById('upload-progress-text');
+            const detail = document.getElementById('upload-progress-detail');
+
+            document.getElementById('upload-progress-job').textContent = job.meeting_code || job.job_id || 'Job';
+            document.getElementById('upload-progress-phase').textContent = phase;
+            if (job.job_id) {
+                document.getElementById('upload-progress-link').href = '/jobs/' + job.job_id;
+            }
+
+            if (percent !== null && percent !== undefined) {
+                bar.value = percent;
+                text.textContent = `${percent.toFixed(1)}%`;
+            } else {
+                bar.value = 0;
+                text.textContent = '...';
+            }
+
+            if (data.progress.unit === 'bytes') {
+                detail.textContent = `${formatBytes(data.progress.current)} / ${formatBytes(data.progress.total)}`;
+            } else if (data.progress.unit === 'ms') {
+                detail.textContent = `${formatMs(data.progress.current)} / ${formatMs(data.progress.total)}`;
+            } else {
+                detail.textContent = '';
+            }
+        } catch (error) { console.error(error); }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         checkRecordingStatus();
+        checkUploadProgress();
         pollInterval = setInterval(checkRecordingStatus, 3000);
+        setInterval(checkUploadProgress, 3000);
     });
 </script>
 {% endblock %}

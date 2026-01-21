@@ -4,7 +4,11 @@
 
 ---
 
-## 部署架構說明
+## Docker 開發與部署（推薦）
+
+> Windows/macOS 必須使用 Docker；Linux 也可使用 Docker 以保持環境一致。
+
+### Docker Compose 架構
 
 本專案採用 Docker Compose Override 模式：
 
@@ -13,6 +17,57 @@
 | `docker-compose.yml` | 基礎設定 | 定義 Volume, Network, Environment 等共用配置 |
 | `docker-compose.override.yml` | 開發設定 | **預設自動載入**。定義 `build` context，用於本地建構 |
 | `docker-compose.prod.yml` | 生產設定 | 定義 GHCR image 來源。需透過 `-f` 參數顯式指定 |
+
+### 從原始碼啟動（Docker）
+
+```bash
+# 1. Clone 專案
+git clone https://github.com/eyeduck-ai/meeting_recorder.git
+cd meeting_recorder
+
+# 2. 設定環境變數
+cp .env.example .env
+nano .env
+
+# 3. 建構並啟動（自動讀取 docker-compose.override.yml）
+docker compose up --build -d
+```
+
+---
+
+## 本地開發環境（僅限 Linux）
+
+> ⚠️ 本地開發需要 Linux 環境，Windows/macOS 請使用 Docker 進行開發。
+
+### 系統需求
+
+| 需求 | 說明 |
+|------|------|
+| Python 3.12+ | 主程式語言 |
+| FFmpeg | 影音編碼 |
+| Xvfb | 虛擬 X11 顯示器 |
+| PulseAudio | 虛擬音訊系統 |
+| Chromium | 瀏覽器自動化 |
+
+### 安裝步驟
+
+```bash
+# 安裝 uv（Python 套件管理器）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 安裝依賴
+uv sync
+
+# 安裝 Playwright 瀏覽器
+uv run playwright install chromium
+uv run playwright install-deps chromium
+
+# 啟動虛擬音訊（需要 PulseAudio）
+pulseaudio --start
+
+# 啟動開發伺服器
+uv run uvicorn api.main:app --reload
+```
 
 ---
 
@@ -31,6 +86,19 @@
 | `RESOLUTION_H` | 錄製解析度高度 | `1080` |
 | `LOBBY_WAIT_SEC` | 等候室最長等待時間 | `900` |
 | `FFMPEG_PRESET` | FFmpeg 編碼預設 | `ultrafast` |
+| `FFMPEG_THREAD_QUEUE_SIZE` | FFmpeg 來源佇列大小 | `1024` |
+| `FFMPEG_USE_WALLCLOCK_TIMESTAMPS` | 使用系統時間戳 | `true` |
+| `FFMPEG_AUDIO_FILTER` | 音訊時間戳修正濾鏡 | `aresample=async=1:first_pts=0` |
+| `FFMPEG_DEBUG_TS` | 啟用 FFmpeg 時間戳除錯 | `false` |
+| `FFMPEG_STOP_GRACE_SEC` | 停止錄影時等待 FFmpeg 正常結束秒數 | `5` |
+| `FFMPEG_SIGINT_TIMEOUT_SEC` | 發送 SIGINT 後等待秒數 | `8` |
+| `FFMPEG_SIGTERM_TIMEOUT_SEC` | 發送 SIGTERM 後等待秒數 | `5` |
+| `FFMPEG_STALL_TIMEOUT_SEC` | 輸出檔案無成長視為卡住的秒數 | `120` |
+| `FFMPEG_STALL_GRACE_SEC` | 錄影開始後的監看緩衝秒數 | `30` |
+| `FFMPEG_TRANSCODE_ON_UPLOAD` | 上傳前轉檔壓縮成 MP4 | `false` |
+| `FFMPEG_TRANSCODE_PRESET` | 轉檔 preset | `slow` |
+| `FFMPEG_TRANSCODE_CRF` | 轉檔 CRF | `28` |
+| `FFMPEG_TRANSCODE_AUDIO_BITRATE` | 轉檔音訊位元率 | `96k` |
 | `DEBUG_VNC` | 啟用 VNC 遠端桌面 | `0` |
 | `SMTP_ENABLED` | 啟用 Email 通知 | `false` |
 | `SMTP_HOST` | SMTP 伺服器 | - |
@@ -167,56 +235,14 @@ curl -X POST "http://localhost:8000/api/v1/schedules" \
 
 ---
 
-## 本地開發環境（僅限 Linux）
+## 後端開發重點（近期更新）
 
-> ⚠️ 本地開發需要 Linux 環境，Windows/macOS 請使用 Docker 進行開發。
-
-### 系統需求
-
-| 需求 | 說明 |
-|------|------|
-| Python 3.12+ | 主程式語言 |
-| FFmpeg | 影音編碼 |
-| Xvfb | 虛擬 X11 顯示器 |
-| PulseAudio | 虛擬音訊系統 |
-| Chromium | 瀏覽器自動化 |
-
-### 安裝步驟
-
-```bash
-# 安裝 uv（Python 套件管理器）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 安裝依賴
-uv sync
-
-# 安裝 Playwright 瀏覽器
-uv run playwright install chromium
-uv run playwright install-deps chromium
-
-# 啟動虛擬音訊（需要 PulseAudio）
-pulseaudio --start
-
-# 啟動開發伺服器
-uv run uvicorn api.main:app --reload
-```
-
----
-
-## 從原始碼部署
-
-```bash
-# 1. Clone 專案
-git clone https://github.com/eyeduck-ai/meeting_recorder.git
-cd meeting_recorder
-
-# 2. 設定環境變數
-cp .env.example .env
-nano .env
-
-# 3. 建構並啟動（自動讀取 docker-compose.override.yml）
-docker compose up --build -d
-```
+- 錄影輸出改為 `.mkv`，YouTube 上傳前會 remux 成 `.mp4`（不重編碼），log 會寫到 `diagnostics/{job_id}/remux.log`。
+- YouTube 上傳改為背景任務，不再佔用錄影 lock；上傳本身用獨立鎖避免多個上傳互搶。
+- 目前上傳併發數為 1（使用獨立 lock 控制），可依需求改成 semaphore 提升併發上傳數。
+- 下載錄影時優先提供 `.mp4`，刪除會同步清除同名的 `.mkv`/`.mp4`。
+- FFmpeg 時間戳相關設定新增 `FFMPEG_THREAD_QUEUE_SIZE`、`FFMPEG_USE_WALLCLOCK_TIMESTAMPS`、`FFMPEG_AUDIO_FILTER`、`FFMPEG_DEBUG_TS`（開啟時 `diagnostics/{job_id}/ffmpeg.log` 會包含更完整時間戳資訊）。
+- 錄影期間會監看檔案大小，若超過 `FFMPEG_STALL_TIMEOUT_SEC` 無成長，視為 FFmpeg 卡住並標記失敗（不會觸發上傳）。
 
 ---
 

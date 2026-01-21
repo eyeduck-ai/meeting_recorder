@@ -16,7 +16,7 @@ from recording.detection import DetectionConfig, DetectionOrchestrator
 from recording.detectors import create_default_detectors
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
-from utils.timezone import utc_now
+from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ class RecordingJob:
     display_name: str
     duration_sec: int
     output_dir: Path
+    deadline_at: datetime | None = None
     base_url: str | None = None
     password: str | None = None
     lobby_wait_sec: int = 900
@@ -81,6 +82,7 @@ class RecordingJob:
             meeting_code=meeting_code,
             display_name=display_name,
             duration_sec=duration_sec,
+            deadline_at=kwargs.get("deadline_at"),
             output_dir=output_dir,
             lobby_wait_sec=kwargs.get("lobby_wait_sec", settings.lobby_wait_sec),
             base_url=kwargs.get("base_url"),
@@ -102,6 +104,7 @@ class RecordingWorker:
         self._current_job: RecordingJob | None = None
         self._status: JobStatus = JobStatus.QUEUED
         self._cancel_requested: bool = False
+        self._finish_requested: bool = False
         self._status_callback: Callable[[str, JobStatus], None] | None = None
 
     @property
@@ -163,6 +166,13 @@ class RecordingWorker:
             return True
         return False
 
+    def request_finish(self) -> bool:
+        """Request to finish recording early (success path)."""
+        if self._current_job:
+            self._finish_requested = True
+            return True
+        return False
+
     async def record(self, job: RecordingJob) -> RecordingResult:
         """Execute a recording job.
 
@@ -174,6 +184,7 @@ class RecordingWorker:
         """
         self._current_job = job
         self._cancel_requested = False
+        self._finish_requested = False
         self._update_status(JobStatus.STARTING)
 
         settings = get_settings()
@@ -187,7 +198,7 @@ class RecordingWorker:
         # Ensure output directory exists
         job.output_dir.mkdir(parents=True, exist_ok=True)
         # Use job_id for safe filename (meeting_code may contain URLs or special chars)
-        output_file = job.output_dir / f"recording_{job.job_id}.mp4"
+        output_file = job.output_dir / f"recording_{job.job_id}.mkv"
         diagnostics_dir = settings.diagnostics_dir / job.job_id
 
         virtual_env = None
@@ -317,6 +328,18 @@ class RecordingWorker:
             logger.info("Joined meeting, setting layout")
             await provider.set_layout(page, "speaker")
 
+            if job.duration_mode == "fixed" and job.deadline_at:
+                deadline_at = ensure_utc(job.deadline_at)
+                if deadline_at:
+                    remaining = int((deadline_at - utc_now()).total_seconds())
+                    if remaining <= 0:
+                        raise RuntimeError("Recording deadline already passed")
+                    job.duration_sec = remaining
+                    logger.info(f"Fixed duration deadline: {deadline_at.isoformat()} (remaining {remaining}s)")
+
+            if self._finish_requested:
+                raise asyncio.CancelledError("Finish requested before recording started")
+
             # Start recording
             self._update_status(JobStatus.RECORDING)
             result.recording_started_at = utc_now()
@@ -335,9 +358,15 @@ class RecordingWorker:
             # Record for specified duration or until meeting ends
             recording_start = asyncio.get_event_loop().time()
             check_interval = 5  # Check every 5 seconds
+            stall_timeout = settings.ffmpeg_stall_timeout_sec
+            stall_grace = settings.ffmpeg_stall_grace_sec
+            last_size = 0
+            last_growth_time = recording_start
 
             # Calculate effective min_duration - below this, ignore all detection
             effective_min_duration = job.min_duration_sec if job.min_duration_sec is not None else job.duration_sec
+            if effective_min_duration > job.duration_sec:
+                effective_min_duration = job.duration_sec
             logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={job.duration_sec}s")
 
             # Setup detection orchestrator for auto mode
@@ -357,7 +386,29 @@ class RecordingWorker:
                 )
 
             while True:
-                elapsed = asyncio.get_event_loop().time() - recording_start
+                now = asyncio.get_event_loop().time()
+                elapsed = now - recording_start
+
+                if self._finish_requested:
+                    logger.info("Finish requested, stopping recording early")
+                    break
+
+                if ffmpeg and ffmpeg.process_returncode is not None:
+                    result.error_code = ErrorCode.FFMPEG_ERROR.value
+                    raise RuntimeError(f"FFmpeg exited early (code {ffmpeg.process_returncode})")
+
+                if stall_timeout > 0 and elapsed >= stall_grace and output_file.exists():
+                    try:
+                        current_size = output_file.stat().st_size
+                    except OSError:
+                        current_size = last_size
+
+                    if current_size > last_size:
+                        last_size = current_size
+                        last_growth_time = now
+                    elif (now - last_growth_time) >= stall_timeout:
+                        result.error_code = ErrorCode.FFMPEG_ERROR.value
+                        raise RuntimeError(f"FFmpeg output stalled for {stall_timeout}s")
 
                 # Check if max duration reached
                 if elapsed >= job.duration_sec:

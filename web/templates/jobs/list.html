@@ -62,9 +62,14 @@
                     </div>
 
                     {% if job.job_id == current_job_id %}
-                    <form method="POST" action="/jobs/{{ job.job_id }}/stop" onclick="event.stopPropagation()">
-                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Stop</button>
-                    </form>
+                    <div class="flex items-center gap-2" onclick="event.stopPropagation()">
+                        <form method="POST" action="/jobs/{{ job.job_id }}/finish">
+                            <button type="submit" class="btn btn-xs btn-outline btn-warning rounded-full">Finish</button>
+                        </form>
+                        <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+                            <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Stop</button>
+                        </form>
+                    </div>
                     {% else %}
                     <button hx-delete="/jobs/{{ job.job_id }}" hx-target="closest div.p-4" hx-swap="outerHTML"
                         hx-confirm="Delete?" onclick="event.stopPropagation()"
@@ -126,7 +131,11 @@
                         </td>
                         <td class="text-right pr-6" onclick="event.stopPropagation()">
                             {% if job.job_id == current_job_id %}
-                            <form method="POST" action="/jobs/{{ job.job_id }}/stop" class="inline">
+                            <form method="POST" action="/jobs/{{ job.job_id }}/finish" class="inline">
+                                <button type="submit"
+                                    class="text-yellow-500 hover:text-yellow-400 text-sm font-bold">Finish</button>
+                            </form>
+                            <form method="POST" action="/jobs/{{ job.job_id }}/stop" class="inline ml-3">
                                 <button type="submit"
                                     class="text-red-500 hover:text-red-400 text-sm font-bold">Stop</button>
                             </form>
