@@ -9,6 +9,7 @@ from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from config.settings import get_settings
 from database.models import Schedule, ScheduleType, get_session_local
@@ -101,6 +102,19 @@ class SchedulerService:
 
         # Load existing schedules from database
         self._load_schedules_from_db()
+
+        # Add periodic sync job (every 5 minutes) to keep next_run_at in sync
+        # This handles cases where system hibernates and wakes up past scheduled time
+        self._scheduler.add_job(
+            self._sync_all_next_run_times,
+            trigger=IntervalTrigger(minutes=5),
+            id="schedule_sync",
+            name="Sync next_run_at times",
+            replace_existing=True,
+        )
+
+        # Immediate sync after loading schedules
+        self._sync_all_next_run_times()
 
     def stop(self) -> None:
         """Stop the scheduler."""
@@ -313,6 +327,32 @@ class SchedulerService:
                 session.commit()
         finally:
             session.close()
+
+    def _sync_all_next_run_times(self) -> None:
+        """Sync all APScheduler next_run_time to database.
+
+        This ensures next_run_at stays accurate even after system hibernation
+        when scheduled times may have been missed.
+        """
+        if not self._scheduler:
+            return
+
+        synced_count = 0
+        for job in self._scheduler.get_jobs():
+            # Skip the sync job itself
+            if not job.id.startswith("schedule_") or job.id == "schedule_sync":
+                continue
+
+            try:
+                schedule_id = int(job.id.replace("schedule_", ""))
+                if job.next_run_time:
+                    self._update_next_run(schedule_id, job.next_run_time)
+                    synced_count += 1
+            except (ValueError, Exception) as e:
+                logger.warning(f"Failed to sync next_run for {job.id}: {e}")
+
+        if synced_count > 0:
+            logger.debug(f"Synced next_run_at for {synced_count} schedules")
 
     def get_next_run_time(self, schedule_id: int) -> datetime | None:
         """Get next run time for a schedule.
