@@ -68,17 +68,12 @@
                     </select>
                 </div>
 
-                <!-- Duration Mode -->
-                <div class="form-control w-full">
-                    <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Duration Mode</label>
-                    <select name="duration_mode" id="duration_mode"
-                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
-                        required onchange="toggleDurationFields()">
-                        <option value="fixed" {% if not schedule or schedule.duration_mode=='fixed' %}selected{% endif
-                            %}>Fixed Time</option>
-                        <option value="auto" {% if schedule and schedule.duration_mode=='auto' %}selected{% endif %}>
-                            Auto-Detect End</option>
-                    </select>
+                <!-- Duration (Fixed) -->
+                <div class="form-control w-full" id="duration-field">
+                    <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Duration (Minutes)</label>
+                    <input type="number" name="duration_min" id="duration_min"
+                        value="{{ (schedule.duration_sec // 60) if schedule else 70 }}"
+                        class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg">
                 </div>
             </div>
 
@@ -107,26 +102,6 @@
                             <span class="label-text-alt text-gray-600">Min Hr Day Mon Wk (0=Sun)</span>
                         </label>
                     </div>
-                </div>
-
-                <!-- Fixed Duration -->
-                <div id="fixed-duration-fields" class="mt-4 hidden">
-                    <div class="form-control w-full">
-                        <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Duration
-                            (Minutes)</label>
-                        <input type="number" name="duration_min"
-                            value="{{ (schedule.duration_sec // 60) if schedule else 70 }}"
-                            class="input input-bordered w-full bg-[#16181c] border-[#2f3336] focus:border-primary">
-                    </div>
-                </div>
-
-                <!-- Auto Duration Info -->
-                <div id="auto-duration-info" class="mt-4 hidden text-sm text-blue-400 flex items-center gap-2">
-                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    Recording stops when meeting ends (or max system limit).
                 </div>
             </div>
 
@@ -170,12 +145,74 @@
                             class="input input-bordered w-full bg-[#16181c] border-[#2f3336]">
                     </div>
 
+                    <div class="divider my-2"></div>
+
+                    <!-- Auto-Detection End -->
                     <div class="form-control">
                         <label class="label cursor-pointer justify-start gap-3">
-                            <input type="checkbox" name="dry_run" value="true" class="checkbox checkbox-warning" {% if
-                                schedule and schedule.dry_run %}checked{% endif %}>
-                            <span class="label-text text-warning font-bold">Dry Run (Test Mode)</span>
+                            <input type="checkbox" name="auto_detect_end" id="auto_detect_end"
+                                value="true" class="checkbox checkbox-info"
+                                onchange="toggleAutoDetect()"
+                                {% if schedule and schedule.duration_mode == 'auto' %}checked{% endif %}>
+                            <span class="label-text font-bold">Enable Auto-Detection End</span>
                         </label>
+                    </div>
+
+                    <div id="auto-detect-options" class="hidden pl-8 space-y-4 border-l-2 border-info/30 ml-3">
+                        <!-- Detection Mode -->
+                        <div class="form-control">
+                            <label class="label font-bold text-gray-500 text-xs uppercase py-1">Detection Mode</label>
+                            <div class="space-y-2">
+                                <label class="label cursor-pointer justify-start gap-3 py-1">
+                                    <input type="radio" name="auto_detect_mode" value="after_min"
+                                        class="radio radio-sm radio-info"
+                                        {% if not schedule or not schedule.auto_detect_mode or schedule.auto_detect_mode == 'after_min' %}checked{% endif %}>
+                                    <div>
+                                        <span class="label-text">After Minimum Duration</span>
+                                        <span class="text-xs text-gray-500 block">Record at least X minutes before detecting end</span>
+                                    </div>
+                                </label>
+                                <label class="label cursor-pointer justify-start gap-3 py-1">
+                                    <input type="radio" name="auto_detect_mode" value="immediate"
+                                        class="radio radio-sm radio-info"
+                                        {% if schedule and schedule.auto_detect_mode == 'immediate' %}checked{% endif %}>
+                                    <div>
+                                        <span class="label-text">Immediate</span>
+                                        <span class="text-xs text-gray-500 block">Detect meeting end from the start</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Min Duration -->
+                        <div id="min-duration-field" class="form-control">
+                            <label class="label font-bold text-gray-500 text-xs uppercase py-1">Minimum Duration (Minutes)</label>
+                            <input type="number" name="min_duration_min"
+                                value="{{ (schedule.min_duration_sec // 60) if schedule and schedule.min_duration_sec else 30 }}"
+                                class="input input-bordered input-sm bg-[#16181c] border-[#2f3336] w-32">
+                        </div>
+
+                        <!-- Stillness Timeout -->
+                        <div class="form-control">
+                            <label class="label font-bold text-gray-500 text-xs uppercase py-1">Screen Freeze Timeout (Seconds)</label>
+                            <input type="number" name="stillness_timeout_sec"
+                                value="{{ schedule.stillness_timeout_sec if schedule else 180 }}"
+                                class="input input-bordered input-sm bg-[#16181c] border-[#2f3336] w-32">
+                            <span class="text-xs text-gray-500 mt-1">Stop if screen is frozen for this duration</span>
+                        </div>
+
+                        <!-- Dry Run -->
+                        <div class="form-control">
+                            <label class="label cursor-pointer justify-start gap-3 py-1">
+                                <input type="checkbox" name="dry_run" value="true"
+                                    class="checkbox checkbox-warning checkbox-sm"
+                                    {% if schedule and schedule.dry_run %}checked{% endif %}>
+                                <div>
+                                    <span class="label-text text-warning">Dry Run (Test Mode)</span>
+                                    <span class="text-xs text-gray-500 block">Log detection events but don't stop recording</span>
+                                </div>
+                            </label>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -216,19 +253,34 @@
 </div>
 
 <script>
-    function toggleDurationFields() {
-        const mode = document.getElementById('duration_mode').value;
-        const fixed = document.getElementById('fixed-duration-fields');
-        const auto = document.getElementById('auto-duration-info');
-        if (mode === 'fixed') { fixed.classList.remove('hidden'); auto.classList.add('hidden'); }
-        else { fixed.classList.add('hidden'); auto.classList.remove('hidden'); }
+    function toggleAutoDetect() {
+        const enabled = document.getElementById('auto_detect_end').checked;
+        const options = document.getElementById('auto-detect-options');
+        const durationField = document.getElementById('duration-field');
+
+        if (enabled) {
+            options.classList.remove('hidden');
+            durationField.classList.add('hidden');
+        } else {
+            options.classList.add('hidden');
+            durationField.classList.remove('hidden');
+        }
+    }
+
+    function toggleAutoDetectMode() {
+        const mode = document.querySelector('input[name="auto_detect_mode"]:checked')?.value;
+        const minField = document.getElementById('min-duration-field');
+        if (mode === 'immediate') {
+            minField.classList.add('hidden');
+        } else {
+            minField.classList.remove('hidden');
+        }
     }
 
     function toggleScheduleFields() {
         const type = document.getElementById('schedule_type').value;
         const once = document.getElementById('once-fields');
         const cron = document.getElementById('cron-fields');
-        // Simple logic based on value
         if (type === 'once') { once.classList.remove('hidden'); cron.classList.add('hidden'); }
         else { once.classList.add('hidden'); cron.classList.remove('hidden'); }
     }
@@ -252,10 +304,16 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        toggleDurationFields();
+        toggleAutoDetect();
+        toggleAutoDetectMode();
         toggleScheduleFields();
         toggleResolutionFields();
         toggleYouTube();
+
+        // Add event listeners for auto detect mode radio buttons
+        document.querySelectorAll('input[name="auto_detect_mode"]').forEach(radio => {
+            radio.addEventListener('change', toggleAutoDetectMode);
+        });
 
         // Default start time
         const start = document.querySelector('input[name="start_time"]');

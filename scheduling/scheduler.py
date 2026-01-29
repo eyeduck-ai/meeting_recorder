@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from croniter import croniter
 
 from config.settings import get_settings
 from database.models import Schedule, ScheduleType, get_session_local
@@ -159,7 +160,6 @@ class SchedulerService:
             schedule_type_value = (
                 schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
             )
-            cron_trigger: CronTrigger | None = None
 
             if schedule_type_value == ScheduleType.ONCE.value:
                 # One-time schedule - trigger early_join_sec before start_time
@@ -198,7 +198,6 @@ class SchedulerService:
                 # Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon)
                 converted_cron = convert_cron_weekday(schedule.cron_expression)
                 trigger = CronTrigger.from_crontab(converted_cron, timezone=self._scheduler.timezone)
-                cron_trigger = trigger
 
             else:
                 logger.error(f"Unknown schedule type: {schedule.schedule_type}")
@@ -225,19 +224,30 @@ class SchedulerService:
 
             logger.info(f"Added schedule {schedule.id} ({schedule.schedule_type})")
 
-            if cron_trigger and self._job_callback:
-                now_local = datetime.now(self._scheduler.timezone)
-                last_fire = cron_trigger.get_prev_fire_time(None, now_local)
-                if last_fire:
+            # Check for catch-up run (if we missed the last trigger and still within window)
+            if schedule.schedule_type == ScheduleType.CRON and schedule.cron_expression and self._job_callback:
+                try:
+                    now_local = datetime.now(self._scheduler.timezone)
+                    # Use croniter to get previous fire time
+                    cron_iter = croniter(schedule.cron_expression, now_local)
+                    last_fire = cron_iter.get_prev(datetime)
+                    # Ensure timezone aware
+                    if last_fire.tzinfo is None:
+                        last_fire = last_fire.replace(tzinfo=self._scheduler.timezone)
+
                     last_fire_utc = ensure_utc(last_fire)
                     end_utc = ensure_utc(last_fire + timedelta(seconds=schedule.duration_sec))
                     last_run_at = ensure_utc(schedule.last_run_at) if schedule.last_run_at else None
 
                     if last_run_at and last_fire_utc and last_run_at >= last_fire_utc:
                         logger.info(f"Schedule {schedule.id} already ran for latest window; skip catch-up")
+                    elif self._should_skip_catchup(schedule.id, last_fire_utc):
+                        pass  # Already logged in _should_skip_catchup
                     elif end_utc and utc_now() < end_utc:
                         logger.info(f"Schedule {schedule.id} within window; triggering catch-up run")
                         self._job_callback(schedule.id)
+                except Exception as catch_up_error:
+                    logger.debug(f"Catch-up check failed for schedule {schedule.id}: {catch_up_error}")
             return job_id
 
         except Exception as e:
@@ -325,6 +335,46 @@ class SchedulerService:
                 # Ensure next_run is UTC-aware (scheduler provides local time)
                 schedule.next_run_at = ensure_utc(next_run)
                 session.commit()
+        finally:
+            session.close()
+
+    def _should_skip_catchup(self, schedule_id: int, last_fire_utc: datetime) -> bool:
+        """Check if we should skip catch-up for this schedule.
+
+        Skip catch-up if the most recent job for this schedule in the current window
+        was auto-detected as ended (meeting finished naturally).
+
+        Args:
+            schedule_id: Schedule ID
+            last_fire_utc: The last fire time in UTC
+
+        Returns:
+            True if catch-up should be skipped
+        """
+        from database.models import RecordingJob
+
+        SessionLocal = get_session_local()
+        session = SessionLocal()
+        try:
+            # Query the most recent job for this schedule created after last_fire_utc
+            recent_job = (
+                session.query(RecordingJob)
+                .filter(RecordingJob.schedule_id == schedule_id)
+                .filter(RecordingJob.created_at >= last_fire_utc)
+                .order_by(RecordingJob.created_at.desc())
+                .first()
+            )
+
+            if recent_job:
+                # If auto-detected as ended, skip catch-up
+                if recent_job.end_reason == "auto_detected":
+                    logger.info(f"Schedule {schedule_id} auto-detected as ended; skip catch-up")
+                    return True
+                # If succeeded, skip catch-up
+                if recent_job.status == "succeeded":
+                    logger.info(f"Schedule {schedule_id} already succeeded; skip catch-up")
+                    return True
+            return False
         finally:
             session.close()
 

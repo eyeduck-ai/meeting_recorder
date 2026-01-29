@@ -168,6 +168,7 @@ class JobRunner:
                 display_name=schedule.get_effective_display_name(),
                 duration_sec=schedule.duration_sec,
                 base_url=meeting.site_base_url,
+                password=meeting.password_encrypted,
                 lobby_wait_sec=get_setting_int(session, "lobby_wait_sec"),
                 duration_mode=schedule.duration_mode,
                 dry_run=schedule.dry_run,
@@ -521,6 +522,7 @@ class JobRunner:
                         job_id,
                         JobStatus.SUCCEEDED.value,
                         youtube_video_id=result.video_id,
+                        youtube_uploaded_at=utc_now(),
                     )
                     logger.info(f"YouTube upload successful: {result.video_url}")
                     session.commit()

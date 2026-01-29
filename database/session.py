@@ -109,6 +109,9 @@ def build_result_update_fields(result: "RecordingResult") -> dict:
     if result.recording_started_at:
         fields["recording_started_at"] = result.recording_started_at
 
+    if result.recording_stopped_at:
+        fields["recording_stopped_at"] = result.recording_stopped_at
+
     if result.recording_info:
         fields["output_path"] = str(result.recording_info.output_path)
         fields["file_size"] = result.recording_info.file_size
@@ -119,5 +122,8 @@ def build_result_update_fields(result: "RecordingResult") -> dict:
         fields["has_screenshot"] = result.diagnostic_data.screenshot_path is not None
         fields["has_html_dump"] = result.diagnostic_data.html_path is not None
         fields["has_console_log"] = result.diagnostic_data.console_log_path is not None
+
+    if result.end_reason:
+        fields["end_reason"] = result.end_reason
 
     return fields

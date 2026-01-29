@@ -73,6 +73,18 @@
                     placeholder="https://meet.jit.si">
             </div>
 
+            <div class="form-control w-full">
+                <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Meeting Password <span
+                        class="text-gray-600 font-normal normal-case">(Optional)</span></label>
+                <input type="password" name="password"
+                    value="{{ meeting.password_encrypted or '' if meeting else '' }}"
+                    class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
+                    placeholder="Leave empty if no password required">
+                <label class="label">
+                    <span class="label-text-alt text-gray-600">Required for password-protected meetings</span>
+                </label>
+            </div>
+
             <div class="border-t border-[#2f3336] my-6"></div>
 
             <h3 class="text-lg font-bold">Identity</h3>

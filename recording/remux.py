@@ -55,6 +55,7 @@ async def ensure_mp4(
             preset=settings.ffmpeg_transcode_preset,
             crf=settings.ffmpeg_transcode_crf,
             audio_bitrate=settings.ffmpeg_transcode_audio_bitrate,
+            video_bitrate=settings.ffmpeg_transcode_video_bitrate,
             log_path=transcode_log_path or remux_log_path,
             progress_callback=progress_callback,
         )

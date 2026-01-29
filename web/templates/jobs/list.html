@@ -10,23 +10,32 @@
     </div>
 
     <!-- Filters -->
-    <div class="flex gap-2 overflow-x-auto no-scrollbar pb-2 md:pb-0">
-        <a href="/jobs"
-            class="btn btn-sm rounded-full px-4 font-bold border-none {% if not selected_status %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
-            All
-        </a>
-        <a href="/jobs?status=active"
-            class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'active' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
-            Active
-        </a>
-        <a href="/jobs?status=succeeded"
-            class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'succeeded' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
-            Success
-        </a>
-        <a href="/jobs?status=failed"
-            class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'failed' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
-            Failed
-        </a>
+    <div class="flex justify-between items-center gap-2">
+        <div class="flex gap-2 overflow-x-auto no-scrollbar pb-2 md:pb-0">
+            <a href="/jobs"
+                class="btn btn-sm rounded-full px-4 font-bold border-none {% if not selected_status %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
+                All
+            </a>
+            <a href="/jobs?status=active"
+                class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'active' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
+                Active
+            </a>
+            <a href="/jobs?status=succeeded"
+                class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'succeeded' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
+                Success
+            </a>
+            <a href="/jobs?status=failed"
+                class="btn btn-sm rounded-full px-4 font-bold border-none {% if selected_status == 'failed' %}bg-white text-black hover:bg-gray-200{% else %}bg-[#16181c] text-gray-500 hover:bg-[#1d1f23]{% endif %}">
+                Failed
+            </a>
+        </div>
+        {% if jobs %}
+        <button hx-delete="/jobs" hx-confirm="Delete ALL jobs? This cannot be undone."
+            hx-swap="none" hx-on::after-request="window.location.href='/jobs'"
+            class="btn btn-sm btn-outline btn-error rounded-full shrink-0">
+            Delete all
+        </button>
+        {% endif %}
     </div>
 
     <!-- Jobs List -->

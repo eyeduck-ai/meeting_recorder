@@ -46,7 +46,7 @@ docker compose up --build -d
 | Python 3.12+ | 主程式語言 |
 | FFmpeg | 影音編碼 |
 | Xvfb | 虛擬 X11 顯示器 |
-| PulseAudio | 虛擬音訊系統 |
+| PipeWire | 虛擬音訊系統（取代 PulseAudio，更低延遲） |
 | Chromium | 瀏覽器自動化 |
 
 ### 安裝步驟
@@ -62,8 +62,9 @@ uv sync
 uv run playwright install chromium
 uv run playwright install-deps chromium
 
-# 啟動虛擬音訊（需要 PulseAudio）
-pulseaudio --start
+# 啟動虛擬音訊（PipeWire）
+# 確保 pipewire 和 wireplumber 服務已啟動
+systemctl --user start pipewire pipewire-pulse wireplumber
 
 # 啟動開發伺服器
 uv run uvicorn api.main:app --reload
@@ -87,8 +88,7 @@ uv run uvicorn api.main:app --reload
 | `LOBBY_WAIT_SEC` | 等候室最長等待時間 | `900` |
 | `FFMPEG_PRESET` | FFmpeg 編碼預設 | `ultrafast` |
 | `FFMPEG_THREAD_QUEUE_SIZE` | FFmpeg 來源佇列大小 | `1024` |
-| `FFMPEG_USE_WALLCLOCK_TIMESTAMPS` | 使用系統時間戳 | `true` |
-| `FFMPEG_AUDIO_FILTER` | 音訊時間戳修正濾鏡 | `aresample=async=1:first_pts=0` |
+| `FFMPEG_AUDIO_FILTER` | 音訊時間戳修正濾鏡 | `aresample=async=1000:first_pts=0` |
 | `FFMPEG_DEBUG_TS` | 啟用 FFmpeg 時間戳除錯 | `false` |
 | `FFMPEG_STOP_GRACE_SEC` | 停止錄影時等待 FFmpeg 正常結束秒數 | `5` |
 | `FFMPEG_SIGINT_TIMEOUT_SEC` | 發送 SIGINT 後等待秒數 | `8` |
@@ -97,8 +97,9 @@ uv run uvicorn api.main:app --reload
 | `FFMPEG_STALL_GRACE_SEC` | 錄影開始後的監看緩衝秒數 | `30` |
 | `FFMPEG_TRANSCODE_ON_UPLOAD` | 上傳前轉檔壓縮成 MP4 | `false` |
 | `FFMPEG_TRANSCODE_PRESET` | 轉檔 preset | `slow` |
-| `FFMPEG_TRANSCODE_CRF` | 轉檔 CRF | `28` |
+| `FFMPEG_TRANSCODE_CRF` | 轉檔 CRF | `30` |
 | `FFMPEG_TRANSCODE_AUDIO_BITRATE` | 轉檔音訊位元率 | `96k` |
+| `FFMPEG_TRANSCODE_VIDEO_BITRATE` | 轉檔視訊位元率上限 | `1500k` |
 | `DEBUG_VNC` | 啟用 VNC 遠端桌面 | `0` |
 | `SMTP_ENABLED` | 啟用 Email 通知 | `false` |
 | `SMTP_HOST` | SMTP 伺服器 | - |
@@ -237,11 +238,31 @@ curl -X POST "http://localhost:8000/api/v1/schedules" \
 
 ## 後端開發重點（近期更新）
 
+### 錄製穩定性改進
+
+- **PipeWire 取代 PulseAudio**：更低延遲（~3-10ms vs ~20-50ms）、更好的緩衝管理、減少音訊斷續。
+- **Xvfb 每次錄製使用新實例**：避免長時間運行導致的 x11grab 阻塞問題。
+- **FFmpeg 音訊配置優化**：
+  - 添加 `-fflags +genpts` 生成時間戳
+  - 添加 `-rtbufsize 100M` 增加緩衝區
+  - 移除音訊輸入的 `use_wallclock_as_timestamps` 避免同步問題
+
+### Docker Image 優化
+
+- 移除非必要套件（x11vnc、wget、procps、build-essential）
+- 移除未使用的 Python 依賴（aiosqlite、alembic、python-multipart）
+- Image 大小減少約 125MB
+
+### 錄影與上傳
+
 - 錄影輸出改為 `.mkv`，YouTube 上傳前會 remux 成 `.mp4`（不重編碼），log 會寫到 `diagnostics/{job_id}/remux.log`。
 - YouTube 上傳改為背景任務，不再佔用錄影 lock；上傳本身用獨立鎖避免多個上傳互搶。
 - 目前上傳併發數為 1（使用獨立 lock 控制），可依需求改成 semaphore 提升併發上傳數。
 - 下載錄影時優先提供 `.mp4`，刪除會同步清除同名的 `.mkv`/`.mp4`。
-- FFmpeg 時間戳相關設定新增 `FFMPEG_THREAD_QUEUE_SIZE`、`FFMPEG_USE_WALLCLOCK_TIMESTAMPS`、`FFMPEG_AUDIO_FILTER`、`FFMPEG_DEBUG_TS`（開啟時 `diagnostics/{job_id}/ffmpeg.log` 會包含更完整時間戳資訊）。
+
+### FFmpeg 設定
+
+- 時間戳相關設定：`FFMPEG_THREAD_QUEUE_SIZE`、`FFMPEG_AUDIO_FILTER`、`FFMPEG_DEBUG_TS`（開啟時 `diagnostics/{job_id}/ffmpeg.log` 會包含更完整時間戳資訊）。
 - 錄影期間會監看檔案大小，若超過 `FFMPEG_STALL_TIMEOUT_SEC` 無成長，視為 FFmpeg 卡住並標記失敗（不會觸發上傳）。
 
 ---
@@ -273,7 +294,7 @@ curl -X POST "http://localhost:8000/api/v1/schedules" \
 
 - **Backend**: FastAPI + SQLAlchemy + APScheduler
 - **Browser Automation**: Playwright (Chromium)
-- **Recording**: FFmpeg + Xvfb + PulseAudio
+- **Recording**: FFmpeg + Xvfb + PipeWire（低延遲音訊）
 - **Frontend**: Jinja2 + HTMX + Tailwind CSS (DaisyUI)
 - **Notifications**: python-telegram-bot
 - **Deployment**: Docker + docker-compose
@@ -285,12 +306,16 @@ curl -X POST "http://localhost:8000/api/v1/schedules" \
 
 ### VNC 遠端桌面
 
+> **注意**：為減少 image 大小，x11vnc 預設不安裝。如需 VNC 功能，請在 Dockerfile 中加入 `x11vnc` 套件。
+
 ```bash
 # 開發模式（自動讀取 override，啟用 build）
-docker compose up --build
+DEBUG_VNC=1 docker compose up --build
 
 # VNC 連線：localhost:5900（無需密碼）
 ```
+
+若 x11vnc 未安裝，設定 `DEBUG_VNC=1` 會顯示警告但不影響錄製功能。
 
 推薦 VNC 客戶端：
 - Windows: [TightVNC Viewer](https://www.tightvnc.com/)
@@ -373,10 +398,22 @@ uv run ruff format .
 
 ## 未來改進方向
 
+### 錄製架構
+
+- **puppeteer-stream 方案**：使用瀏覽器內建 MediaRecorder API 直接錄製，音視頻天然同步，不依賴 Xvfb 和 PipeWire。適合追求最高穩定性的場景。
+- **ALSA loopback**：作為 PipeWire 的備選方案，更底層但配置較複雜。
+
 ### 瀏覽器媒體控制
+
 - 探索更底層的 Chromium 參數（如 `--disable-media-stream`）
 - 研究 Playwright 的 `browserContext.grantPermissions` 進階用法
 
 ### Provider 狀態偵測
+
 - 增加更多平台專屬的偵測選擇器
 - 考慮增加 Google Meet 等其他平台支援
+
+### 效能優化
+
+- 考慮使用 GPU 加速編碼（NVENC/VAAPI）
+- 支援多任務併發錄製（需要獨立的 display 和音訊 sink）

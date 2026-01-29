@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -123,6 +124,11 @@ Examples:
         "--no-screenshot",
         action="store_true",
         help="Disable automatic screenshots",
+    )
+    parser.add_argument(
+        "--record-selectors",
+        action="store_true",
+        help="Record found selectors to JSON for regression testing",
     )
 
     return parser.parse_args()
@@ -262,6 +268,121 @@ Hint: Check the HTML file for expected element selectors
     print_success(f"Debug info saved to {output_dir}")
 
 
+# Provider-specific selectors to probe for regression testing
+PROVIDER_SELECTORS = {
+    "jitsi": {
+        "in_meeting": [
+            "#filmstripLocalVideo",
+            "#remoteVideos",
+            ".details-container",
+            "#videoconference_page",
+            ".conference-timer",
+        ],
+        "lobby": [
+            ".lobby-screen",
+            'text="Waiting for the host"',
+            'text="Asking to join meeting"',
+        ],
+        "error": [
+            'text="Meeting not found"',
+            'text="Password required"',
+            'text="Wrong password"',
+        ],
+    },
+    "webex": {
+        "in_meeting": [
+            '[data-test="grid-layout"]',
+            '[data-test="participants-toggle-button"]',
+            '[data-test="in-meeting-chat-toggle-button"]',
+            '[data-test="mc-share"]',
+            '[data-test="raise-hand-button"]',
+        ],
+        "lobby": [
+            '[data-test="call_lobby_content"]',
+            '[data-test="local_stream"]',
+            '[data-test="pin-self-view-button"]',
+        ],
+        "error": [
+            '[data-test*="error"]',
+            '[class*="error-dialog"]',
+            '[data-test="meeting-ended"]',
+        ],
+    },
+    "zoom": {
+        "in_meeting": [
+            "#wc-footer",
+            '[data-testid="meeting-controls"]',
+            'button[aria-label*="Mute" i]',
+            'button[aria-label*="Stop Video" i]',
+            "#wc-container-left",
+            ".meeting-app",
+        ],
+        "lobby": [
+            '[data-testid="waiting-room"]',
+            'text="Please wait"',
+            'text="Waiting Room"',
+        ],
+        "error": [
+            'text="Meeting has ended"',
+            'text="Invalid meeting ID"',
+            'text="This meeting has been locked"',
+        ],
+    },
+}
+
+
+async def record_selectors(page, provider_name: str, output_dir: Path, step_name: str) -> dict:
+    """Probe and record which selectors are found on the page.
+
+    This helps detect UI changes by tracking which elements exist.
+
+    Args:
+        page: Playwright page object
+        provider_name: Name of the provider (jitsi, webex, zoom)
+        output_dir: Directory to save the JSON report
+        step_name: Name of the current step for labeling
+
+    Returns:
+        Dict with found/not_found selectors
+    """
+    selectors = PROVIDER_SELECTORS.get(provider_name.lower(), {})
+    results = {
+        "provider": provider_name,
+        "step": step_name,
+        "timestamp": utc_now().isoformat(),
+        "url": page.url,
+        "found": {},
+        "not_found": {},
+    }
+
+    for category, selector_list in selectors.items():
+        results["found"][category] = []
+        results["not_found"][category] = []
+
+        for selector in selector_list:
+            try:
+                locator = page.locator(selector)
+                count = await locator.count()
+                if count > 0:
+                    results["found"][category].append({"selector": selector, "count": count})
+                else:
+                    results["not_found"][category].append(selector)
+            except Exception as e:
+                results["not_found"][category].append(f"{selector} (error: {e})")
+
+    # Save to JSON
+    json_path = output_dir / f"{step_name}_selectors.json"
+    json_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+    print_info(f"Selector snapshot saved: {json_path.name}")
+
+    # Print summary
+    total_found = sum(len(v) for v in results["found"].values())
+    total_missing = sum(len(v) for v in results["not_found"].values())
+    print_info(f"Selectors found: {total_found}, not found: {total_missing}")
+
+    return results
+
+
 async def interactive_prompt(page, output_dir: Path, step_name: str) -> str:
     """Interactive prompt for user input.
 
@@ -271,10 +392,27 @@ async def interactive_prompt(page, output_dir: Path, step_name: str) -> str:
         'skip' - skip this step
     """
     print(f"\n  [Interactive] Step '{step_name}' completed")
-    print("  Input: [Enter]=continue | e=error & exit | html=dump HTML | skip=skip step")
+    print("  Input: [Enter]=continue | e=error | stage <name>=mark stage | html=dump | skip")
 
     response = await asyncio.get_event_loop().run_in_executor(None, lambda: input("  > "))
-    response = response.strip().lower()
+    response = response.strip()
+
+    # Handle 'stage <name>' command
+    if response.lower().startswith("stage "):
+        stage_name = response[6:].strip()
+        if stage_name:
+            # Create stage-specific output directory
+            stage_dir = output_dir / stage_name
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            print_info(f"Marking stage: {stage_name}")
+            await dump_debug_info(page, stage_dir, stage_name, f"User marked stage: {stage_name}")
+            print_success(f"Stage '{stage_name}' data saved to: {stage_dir}")
+            return "continue"
+        else:
+            print_error("Usage: stage <name> (e.g., 'stage prejoin_password')")
+            return await interactive_prompt(page, output_dir, step_name)
+
+    response = response.lower()
 
     if response in ("e", "error"):
         await dump_debug_info(page, output_dir, step_name, "User marked as error")
@@ -365,6 +503,9 @@ async def run_test(page, provider, args, output_dir: Path, timestamp: str) -> bo
 
     if result.success:
         print_success("Successfully joined meeting!")
+        # Record selectors if requested (for regression testing)
+        if args.record_selectors:
+            await record_selectors(page, args.provider, output_dir, f"{timestamp}_in_meeting")
         if interactive:
             await interactive_prompt(page, output_dir, "in_meeting")
         return True
@@ -374,6 +515,9 @@ async def run_test(page, provider, args, output_dir: Path, timestamp: str) -> bo
         # Auto-dump lobby debug info for detection development
         await dump_debug_info(page, output_dir, "lobby")
         print_info("Lobby HTML dumped for analysis")
+        # Record selectors if requested (for regression testing)
+        if args.record_selectors:
+            await record_selectors(page, args.provider, output_dir, f"{timestamp}_lobby")
 
         if interactive:
             lobby_result = await interactive_prompt(page, output_dir, "lobby")

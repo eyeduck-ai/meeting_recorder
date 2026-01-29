@@ -76,13 +76,21 @@
     {% if has_expired %}
     <div class="collapse collapse-arrow bg-transparent border border-[#2f3336] rounded-xl">
         <input type="checkbox" />
-        <div class="collapse-title font-medium text-gray-500 flex items-center gap-2">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                stroke="currentColor" class="w-5 h-5">
-                <path stroke-linecap="round" stroke-linejoin="round"
-                    d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-            </svg>
-            Expired Schedules ({{ expired_ids | length }})
+        <div class="collapse-title font-medium text-gray-500 flex items-center justify-between pr-12">
+            <div class="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                    stroke="currentColor" class="w-5 h-5">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+                </svg>
+                Expired Schedules ({{ expired_ids | length }})
+            </div>
+            <button hx-delete="/schedules/expired" hx-confirm="Delete all expired schedules?"
+                hx-swap="none" hx-on::after-request="window.location.href='/schedules'"
+                onclick="event.stopPropagation()"
+                class="btn btn-xs btn-outline btn-error rounded-full z-10">
+                Delete all
+            </button>
         </div>
         <div class="collapse-content !p-0 border-t border-[#2f3336]">
             <!-- Mobile View -->

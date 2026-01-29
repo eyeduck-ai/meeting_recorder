@@ -227,16 +227,6 @@
                     </svg>
                     <span>Settings</span>
                 </a>
-
-                <a href="/test"
-                    class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/test' in request.url.path %}active{% endif %}">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
-                        stroke="currentColor" class="w-7 h-7">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                            d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
-                    </svg>
-                    <span>Testing</span>
-                </a>
             </nav>
 
             <!-- New Recording Button (Desktop) -->
@@ -270,6 +260,26 @@
 
     <!-- Main Content Area -->
     <main class="flex-1 overflow-y-auto h-screen md:border-r border-[#2f3336]">
+        {% if env_status and not env_status.is_recording_capable %}
+        <!-- Environment Warning Banner -->
+        <div class="bg-warning/10 border-b border-warning/30 px-4 py-3">
+            <div class="flex items-center gap-3 max-w-7xl mx-auto">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                    stroke="currentColor" class="w-6 h-6 text-warning flex-shrink-0">
+                    <path stroke-linecap="round" stroke-linejoin="round"
+                        d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+                <div class="flex-1">
+                    <p class="text-warning font-semibold text-sm">Recording Not Available</p>
+                    <p class="text-warning/80 text-xs">{{ env_status.warning_message }}</p>
+                </div>
+                <a href="https://github.com/eyeduck-ai/meeting_recorder#docker" target="_blank"
+                    class="btn btn-warning btn-xs btn-outline hidden sm:inline-flex">
+                    Docker Guide
+                </a>
+            </div>
+        </div>
+        {% endif %}
         {% block content %}{% endblock %}
     </main>
 

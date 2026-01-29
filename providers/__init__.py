@@ -7,6 +7,7 @@ New providers can be registered using `register_provider()`.
 from providers.base import BaseProvider, DiagnosticData, JoinResult
 from providers.jitsi import JitsiProvider
 from providers.webex import WebexProvider
+from providers.zoom import ZoomProvider
 
 # Provider registry
 _registry: dict[str, type[BaseProvider]] = {}
@@ -53,6 +54,7 @@ def list_providers() -> list[str]:
 # Register built-in providers
 register_provider("jitsi", JitsiProvider)
 register_provider("webex", WebexProvider)
+register_provider("zoom", ZoomProvider)
 
 
 __all__ = [
@@ -61,6 +63,7 @@ __all__ = [
     "DiagnosticData",
     "JitsiProvider",
     "WebexProvider",
+    "ZoomProvider",
     "get_provider",
     "register_provider",
     "list_providers",

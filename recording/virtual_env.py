@@ -28,6 +28,7 @@ class VirtualEnvironment:
 
     config: VirtualEnvironmentConfig = field(default_factory=VirtualEnvironmentConfig)
     _xvfb_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
+    _audio_keepalive_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
     _xvfb_owned: bool = field(default=False, init=False)
 
@@ -48,11 +49,18 @@ class VirtualEnvironment:
 
     @property
     def env_vars(self) -> dict[str, str]:
-        """Return environment variables for subprocess."""
-        return {
-            "DISPLAY": self.display,
-            "PULSE_SERVER": "unix:/var/run/pulse/native",
-        }
+        """Return environment variables for subprocess.
+
+        Inherits current process environment and adds/overrides
+        display and audio server variables.
+        """
+        env = os.environ.copy()
+        env["DISPLAY"] = self.display
+        # PipeWire-Pulse uses XDG_RUNTIME_DIR-based socket path
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/user/0")
+        env["PULSE_SERVER"] = f"unix:{xdg_runtime}/pulse/native"
+        env["XDG_RUNTIME_DIR"] = xdg_runtime
+        return env
 
     async def start(self) -> dict[str, str]:
         """Start virtual display and audio.
@@ -84,8 +92,23 @@ class VirtualEnvironment:
 
         logger.info("Stopping virtual environment")
 
-        # Only stop Xvfb if we started it
-        if self._xvfb_owned and self._xvfb_process:
+        # Stop audio keepalive process
+        if self._audio_keepalive_process:
+            try:
+                self._audio_keepalive_process.terminate()
+                try:
+                    self._audio_keepalive_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self._audio_keepalive_process.kill()
+                    self._audio_keepalive_process.wait()
+                logger.debug("Audio keepalive process stopped")
+            except Exception as e:
+                logger.debug(f"Error stopping audio keepalive: {e}")
+            finally:
+                self._audio_keepalive_process = None
+
+        # Always stop Xvfb since we always start a fresh one
+        if self._xvfb_process:
             try:
                 self._xvfb_process.terminate()
                 try:
@@ -98,8 +121,6 @@ class VirtualEnvironment:
                 logger.warning(f"Error stopping Xvfb: {e}")
             finally:
                 self._xvfb_process = None
-        elif not self._xvfb_owned:
-            logger.info("Xvfb was reused, not stopping it")
 
         self._started = False
         self._xvfb_owned = False
@@ -117,24 +138,10 @@ class VirtualEnvironment:
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise RuntimeError("Xvfb not found. Please install xvfb package.")
 
-        # Check if Xvfb is already running on this display
-        try:
-            result = subprocess.run(
-                ["pgrep", "-x", "Xvfb"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                # Xvfb is already running, reuse it
-                logger.info(f"Xvfb already running on display {self.display}, reusing existing instance")
-                self._xvfb_owned = False
-                self._xvfb_process = None
-                return
-        except Exception as e:
-            logger.warning(f"Error checking for existing Xvfb: {e}")
-
-        # No existing Xvfb, start a new one
-        logger.info(f"Starting new Xvfb on display {self.display}")
+        # Always start a fresh Xvfb for each recording to avoid stale state issues
+        # Even if one is running (e.g., from DEBUG_VNC), we start our own
+        # This prevents x11grab from stalling due to Xvfb instability
+        logger.info(f"Starting fresh Xvfb on display {self.display}")
 
         # Kill any existing Xvfb on this display
         lock_file = f"/tmp/.X{self.config.display_num}-lock"
@@ -144,6 +151,18 @@ class VirtualEnvironment:
                 os.remove(lock_file)
             except OSError:
                 pass
+
+        # Try to kill existing Xvfb processes on our display
+        try:
+            subprocess.run(
+                ["pkill", "-f", f"Xvfb {self.display}"],
+                capture_output=True,
+                timeout=5,
+            )
+            # Give it time to clean up
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"No existing Xvfb to kill: {e}")
 
         # Start Xvfb
         screen = f"{self.config.width}x{self.config.height}x{self.config.depth}"
@@ -182,13 +201,14 @@ class VirtualEnvironment:
         logger.info(f"Xvfb started on display {self.display}")
 
     async def _setup_pulse_audio(self) -> None:
-        """Set up PulseAudio virtual audio sink.
+        """Set up virtual audio sink.
 
-        Note: PulseAudio should already be running from the Docker entrypoint.
+        Works with both PipeWire (via pipewire-pulse) and PulseAudio.
+        The audio server should already be running from the Docker entrypoint.
         This method ensures the virtual sink is configured correctly.
         """
         try:
-            # Check if PulseAudio is running
+            # Check if audio server is running (works for both PipeWire and PulseAudio)
             result = subprocess.run(
                 ["pactl", "info"],
                 capture_output=True,
@@ -197,8 +217,14 @@ class VirtualEnvironment:
             )
 
             if result.returncode != 0:
-                logger.warning("PulseAudio not running, audio may not work")
+                logger.warning("Audio server not running, audio may not work")
                 return
+
+            # Log which audio server is being used
+            if "PipeWire" in result.stdout:
+                logger.info("Using PipeWire audio server")
+            else:
+                logger.info("Using PulseAudio audio server")
 
             # Check if virtual sink exists
             result = subprocess.run(
@@ -209,7 +235,7 @@ class VirtualEnvironment:
             )
 
             if self.config.pulse_sink_name not in result.stdout:
-                # Create virtual sink
+                # Create virtual sink (works for both PipeWire and PulseAudio)
                 logger.info(f"Creating virtual audio sink: {self.config.pulse_sink_name}")
                 subprocess.run(
                     [
@@ -218,6 +244,8 @@ class VirtualEnvironment:
                         "module-null-sink",
                         f"sink_name={self.config.pulse_sink_name}",
                         f"sink_properties=device.description={self.config.pulse_sink_name}",
+                        "rate=48000",
+                        "channels=2",
                     ],
                     check=True,
                     capture_output=True,
@@ -231,14 +259,63 @@ class VirtualEnvironment:
                 timeout=5,
             )
 
-            logger.info("PulseAudio virtual sink configured")
+            # Start audio keepalive process to prevent PipeWire from suspending the sink
+            # PipeWire suspends idle sinks which causes FFmpeg to stall
+            await self._start_audio_keepalive()
+
+            logger.info("Virtual audio sink configured")
 
         except FileNotFoundError:
-            logger.warning("pactl not found, PulseAudio may not be installed")
+            logger.warning("pactl not found, audio system may not be installed")
         except subprocess.TimeoutExpired:
-            logger.warning("PulseAudio command timed out")
+            logger.warning("Audio command timed out")
         except Exception as e:
-            logger.warning(f"Error setting up PulseAudio: {e}")
+            logger.warning(f"Error setting up audio: {e}")
+
+    async def _start_audio_keepalive(self) -> None:
+        """Start a background process to keep the audio sink active.
+
+        PipeWire suspends idle sinks which causes FFmpeg audio capture to stall.
+        This sends silent audio to the sink to keep it in RUNNING state.
+        """
+        try:
+            # Use ffmpeg to generate silent audio and send to the virtual sink
+            # This keeps the sink active without affecting recordings
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=48000:cl=stereo",
+                "-f",
+                "pulse",
+                self.config.pulse_sink_name,
+            ]
+
+            logger.debug(f"Starting audio keepalive: {' '.join(cmd)}")
+
+            self._audio_keepalive_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            )
+
+            # Wait a moment to ensure it started
+            await asyncio.sleep(0.5)
+
+            if self._audio_keepalive_process.poll() is None:
+                logger.info("Audio keepalive process started (keeps sink active)")
+            else:
+                logger.warning("Audio keepalive process failed to start")
+                self._audio_keepalive_process = None
+
+        except Exception as e:
+            logger.warning(f"Could not start audio keepalive: {e}")
+            self._audio_keepalive_process = None
 
     async def __aenter__(self) -> "VirtualEnvironment":
         """Context manager entry."""

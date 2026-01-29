@@ -13,10 +13,11 @@ class MeetingCreate(BaseModel):
     """Request to create a meeting."""
 
     name: str = Field(..., min_length=1, max_length=255)
-    provider: Literal["jitsi", "webex"] = "jitsi"
+    provider: Literal["jitsi", "webex", "zoom"] = "jitsi"
     meeting_code: str = Field(..., min_length=1, max_length=255)
     site_base_url: str | None = None
     join_url: str | None = None
+    password: str | None = None
     default_display_name: str = "Recorder Bot"
     default_guest_name: str | None = None
     default_guest_email: str | None = None
@@ -29,6 +30,7 @@ class MeetingUpdate(BaseModel):
     meeting_code: str | None = None
     site_base_url: str | None = None
     join_url: str | None = None
+    password: str | None = None
     default_display_name: str | None = None
     default_guest_name: str | None = None
     default_guest_email: str | None = None
@@ -75,6 +77,7 @@ async def create_meeting(request: MeetingCreate, db: Session = Depends(get_db)):
         meeting_code=request.meeting_code,
         site_base_url=request.site_base_url,
         join_url=request.join_url,
+        password_encrypted=request.password,
         default_display_name=request.default_display_name,
         default_guest_name=request.default_guest_name,
         default_guest_email=request.default_guest_email,
@@ -117,6 +120,9 @@ async def update_meeting(
         raise HTTPException(status_code=404, detail="Meeting not found")
 
     update_data = request.model_dump(exclude_unset=True)
+    # Map 'password' to 'password_encrypted' for DB column
+    if "password" in update_data:
+        update_data["password_encrypted"] = update_data.pop("password")
     for field, value in update_data.items():
         setattr(meeting, field, value)
 

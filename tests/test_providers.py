@@ -6,6 +6,7 @@ from pathlib import Path
 from providers.base import DiagnosticData
 from providers.jitsi import JitsiProvider
 from providers.webex import WebexProvider
+from providers.zoom import ZoomProvider
 
 
 class TestJitsiProvider:
@@ -102,6 +103,57 @@ class TestWebexProvider:
         """Provider name should be 'webex'."""
         provider = WebexProvider()
         assert provider.name == "webex"
+
+
+class TestZoomProvider:
+    """Tests for ZoomProvider."""
+
+    def test_build_join_url_full_url(self):
+        """Full URL should have zc=0 added."""
+        provider = ZoomProvider()
+        input_url = "https://zoom.us/j/123456789"
+        url = provider.build_join_url(input_url)
+
+        assert "123456789" in url
+        assert "zc=0" in url
+
+    def test_build_join_url_with_existing_params(self):
+        """URL with existing params should preserve them and add zc=0."""
+        provider = ZoomProvider()
+        input_url = "https://zoom.us/j/123456789?pwd=abc123"
+        url = provider.build_join_url(input_url)
+
+        assert "pwd=abc123" in url
+        assert "zc=0" in url
+
+    def test_build_join_url_meeting_number(self):
+        """Numeric meeting ID should generate proper URL."""
+        provider = ZoomProvider()
+        url = provider.build_join_url("123456789")
+
+        assert "zoom.us/j/123456789" in url
+        assert "zc=0" in url
+
+    def test_build_join_url_meeting_number_with_dashes(self):
+        """Meeting ID with dashes should be cleaned."""
+        provider = ZoomProvider()
+        url = provider.build_join_url("123-456-789")
+
+        assert "123456789" in url
+        assert "zc=0" in url
+
+    def test_build_join_url_custom_base(self):
+        """Custom base URL should be used."""
+        provider = ZoomProvider()
+        url = provider.build_join_url("987654321", "https://company.zoom.us")
+
+        assert "company.zoom.us" in url
+        assert "987654321" in url
+
+    def test_name_property(self):
+        """Provider name should be 'zoom'."""
+        provider = ZoomProvider()
+        assert provider.name == "zoom"
 
 
 class TestDiagnosticData:

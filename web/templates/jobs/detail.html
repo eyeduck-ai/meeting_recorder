@@ -187,6 +187,23 @@
                         </div>
                     </li>
 
+                    <!-- Recording Stopped -->
+                    <li class="step {% if job.recording_stopped_at %}step-info{% endif %}">
+                        <div class="text-left w-full">
+                            <div class="font-medium flex items-center gap-2">
+                                Recording Stopped
+                                {% if job.recording_started_at and not job.recording_stopped_at and job.status.value == 'finalizing' %}
+                                <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
+                                {% endif %}
+                            </div>
+                            {% if job.recording_stopped_at %}
+                            <div class="text-xs text-base-content/60 font-mono">
+                                {{ job.recording_stopped_at | localtime }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </li>
+
                     <!-- Final Status (Success/Failed/Canceled) -->
                     {% set status_val = job.status.value if job.status is not string else job.status %}
                     <li class="step {% if status_val in ['succeeded', 'failed', 'canceled'] %}step-info{% endif %}">
@@ -227,6 +244,25 @@
                             {% endif %}
                         </div>
                     </li>
+
+                    <!-- YouTube Upload -->
+                    {% if job.youtube_enabled %}
+                    <li class="step {% if job.youtube_uploaded_at %}step-info{% endif %}">
+                        <div class="text-left w-full">
+                            <div class="font-medium flex items-center gap-2">
+                                YouTube Uploaded
+                                {% if job.status.value == 'uploading' %}
+                                <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
+                                {% endif %}
+                            </div>
+                            {% if job.youtube_uploaded_at %}
+                            <div class="text-xs text-base-content/60 font-mono">
+                                {{ job.youtube_uploaded_at | localtime }}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </li>
+                    {% endif %}
                 </ul>
             </div>
         </div>

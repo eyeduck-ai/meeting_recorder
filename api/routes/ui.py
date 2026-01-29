@@ -26,6 +26,7 @@ from scheduling.job_runner import get_job_runner
 from scheduling.scheduler import get_scheduler
 from services.app_settings import get_all_settings
 from utils.cron_helper import cron_to_chinese
+from utils.environment import get_environment_status
 from utils.timezone import ensure_utc, utc_now
 
 router = APIRouter(tags=["ui"])
@@ -60,10 +61,12 @@ templates.env.filters["localtime"] = localtime_filter
 
 def get_context(request: Request, **kwargs) -> dict:
     """Build template context with common data."""
+    env_status = get_environment_status()
     return {
         "request": request,
         "now": utc_now(),
         "auth_enabled": bool(settings.auth_password),
+        "env_status": env_status,
         **kwargs,
     }
 
@@ -244,6 +247,7 @@ async def meetings_save(
     provider: str = Form(...),
     meeting_code: str = Form(...),
     site_base_url: str | None = Form(None),
+    password: str | None = Form(None),
     default_display_name: str | None = Form(None),
     default_guest_email: str | None = Form(None),
 ):
@@ -260,6 +264,7 @@ async def meetings_save(
     meeting.provider = ProviderType(provider)
     meeting.meeting_code = meeting_code
     meeting.site_base_url = site_base_url or None
+    meeting.password_encrypted = password or None
     meeting.default_display_name = default_display_name or None
     meeting.default_guest_email = default_guest_email or None
 
@@ -397,20 +402,22 @@ async def schedules_save(
     meeting_id: int = Form(...),
     schedule_type: str = Form(...),
     start_time: str | None = Form(None),
-    duration_mode: str = Form("fixed"),
     duration_min: int = Form(60),
     cron_expression: str | None = Form(None),
     lobby_wait_sec: int = Form(900),
     resolution_preset: str = Form("1080p"),
     resolution_w: int = Form(1920),
     resolution_h: int = Form(1080),
-    dry_run: bool = Form(False),
     youtube_enabled: bool = Form(False),
     youtube_privacy: str = Form("unlisted"),
     override_display_name: str | None = Form(None),
     early_join_sec: int = Form(30),
+    # Auto-detection settings
+    auto_detect_end: bool = Form(False),
+    auto_detect_mode: str = Form("after_min"),
     min_duration_min: int | None = Form(None),
     stillness_timeout_sec: int = Form(180),
+    dry_run: bool = Form(False),
 ):
     """Save schedule (create or update)."""
     scheduler = get_scheduler()
@@ -426,11 +433,19 @@ async def schedules_save(
         schedule = Schedule()
         db.add(schedule)
 
-    # Convert duration from minutes to seconds
-    # For auto mode, use max_recording_sec as the ceiling
-    if duration_mode == "auto":
+    # Handle duration mode based on auto_detect_end checkbox
+    if auto_detect_end:
+        duration_mode = "auto"
+        schedule.auto_detect_mode = auto_detect_mode
+        if auto_detect_mode == "immediate":
+            schedule.min_duration_sec = 0
+        else:
+            schedule.min_duration_sec = min_duration_min * 60 if min_duration_min else 1800  # default 30 min
         duration_sec = settings.max_recording_sec
     else:
+        duration_mode = "fixed"
+        schedule.auto_detect_mode = None
+        schedule.min_duration_sec = None
         duration_sec = duration_min * 60
 
     # Handle resolution preset
@@ -452,7 +467,6 @@ async def schedules_save(
     schedule.youtube_privacy = youtube_privacy
     schedule.override_display_name = override_display_name or None
     schedule.early_join_sec = early_join_sec
-    schedule.min_duration_sec = min_duration_min * 60 if min_duration_min else None
     schedule.stillness_timeout_sec = stillness_timeout_sec
 
     if schedule.schedule_type == ScheduleType.ONCE and start_time:
@@ -518,6 +532,36 @@ async def schedules_trigger(request: Request, schedule_id: int, db: Session = De
     job_runner.queue_schedule(schedule.id)
 
     return RedirectResponse(url="/jobs", status_code=303)
+
+
+@router.delete("/schedules/expired", response_class=HTMLResponse)
+async def schedules_delete_expired(db: Session = Depends(get_db)):
+    """Delete all expired schedules."""
+    now = utc_now()
+    schedules = db.query(Schedule).all()
+    scheduler = get_scheduler()
+
+    for schedule in schedules:
+        schedule_type = (
+            schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
+        )
+        if schedule_type == "once":
+            is_expired = False
+            if schedule.start_time:
+                start_time = ensure_utc(schedule.start_time)
+                if start_time:
+                    end_time = start_time + timedelta(seconds=schedule.duration_sec)
+                    if now >= end_time:
+                        is_expired = True
+            elif not schedule.next_run_at:
+                is_expired = True
+
+            if is_expired:
+                scheduler.remove_schedule(schedule.id)
+                db.delete(schedule)
+
+    db.commit()
+    return HTMLResponse("")
 
 
 @router.delete("/schedules/{schedule_id}", response_class=HTMLResponse)
@@ -616,7 +660,13 @@ async def jobs_stop(request: Request, job_id: str, db: Session = Depends(get_db)
         if job.status in running_statuses:
             worker = get_worker()
             if worker.is_busy and worker._current_job and worker._current_job.job_id == job_id:
+                # Worker is running this job - request cancellation
                 worker.request_cancel()
+            else:
+                # Orphaned job - worker is not running it, update DB directly
+                job.status = JobStatus.CANCELED.value
+                job.error_message = "Stopped by user (job was orphaned)"
+                db.commit()
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
 
 
@@ -636,8 +686,22 @@ async def jobs_finish(request: Request, job_id: str, db: Session = Depends(get_d
         if job.status in running_statuses:
             worker = get_worker()
             if worker.is_busy and worker._current_job and worker._current_job.job_id == job_id:
+                # Worker is running this job - request finish
                 worker.request_finish()
+            else:
+                # Orphaned job - worker is not running it, update DB directly
+                job.status = JobStatus.CANCELED.value
+                job.error_message = "Finished by user (job was orphaned)"
+                db.commit()
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@router.delete("/jobs", response_class=HTMLResponse)
+async def jobs_delete_all(db: Session = Depends(get_db)):
+    """Delete all jobs."""
+    db.query(RecordingJob).delete()
+    db.commit()
+    return HTMLResponse("")
 
 
 @router.delete("/jobs/{job_id}", response_class=HTMLResponse)
@@ -698,6 +762,42 @@ async def recordings_list(request: Request, db: Session = Depends(get_db)):
             youtube_authorized=youtube_authorized,
         ),
     )
+
+
+@router.delete("/recordings", response_class=HTMLResponse)
+async def recordings_delete_all(db: Session = Depends(get_db)):
+    """Delete all recordings (files and database records)."""
+    jobs = (
+        db.query(RecordingJob)
+        .filter(
+            RecordingJob.status == JobStatus.SUCCEEDED,
+            RecordingJob.output_path != None,
+        )
+        .all()
+    )
+
+    for job in jobs:
+        # Try to delete file from disk if it exists
+        if job.output_path:
+            try:
+                file_path = Path(job.output_path)
+                candidates = {file_path}
+                if file_path.suffix.lower() == ".mkv":
+                    candidates.add(file_path.with_suffix(".mp4"))
+                elif file_path.suffix.lower() == ".mp4":
+                    candidates.add(file_path.with_suffix(".mkv"))
+
+                for candidate in candidates:
+                    if candidate.exists():
+                        candidate.unlink()
+            except Exception as e:
+                print(f"Error deleting file {job.output_path}: {e}")
+
+        # Delete job from database
+        db.delete(job)
+
+    db.commit()
+    return HTMLResponse("")
 
 
 @router.get("/recordings/{job_id}/download")
@@ -790,12 +890,3 @@ async def settings_page(request: Request, db: Session = Depends(get_db)):
 # =============================================================================
 # Test Center
 # =============================================================================
-
-
-@router.get("/test", response_class=HTMLResponse)
-async def test_page(request: Request):
-    """Test center page for system diagnostics."""
-    return templates.TemplateResponse(
-        "test.html",
-        get_context(request),
-    )

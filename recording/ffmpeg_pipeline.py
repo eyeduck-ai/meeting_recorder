@@ -92,31 +92,35 @@ class FFmpegPipeline:
         if settings.ffmpeg_debug_ts:
             cmd += ["-loglevel", "debug", "-debug_ts"]
 
+        # x11grab video input with thread queue to prevent blocking
         cmd += [
             "-thread_queue_size",
             str(settings.ffmpeg_thread_queue_size),
             "-f",
             "x11grab",
+            "-draw_mouse",
+            "0",
             "-video_size",
             f"{self.width}x{self.height}",
             "-framerate",
             str(self.framerate),
+            "-i",
+            self.display,
         ]
-        if settings.ffmpeg_use_wallclock_timestamps:
-            cmd += ["-use_wallclock_as_timestamps", "1"]
-        cmd += ["-i", self.display]
 
         if use_pulse:
             logger.info(f"Using PulseAudio source: {self.audio_source}")
+            # Audio input with thread queue - critical to prevent blocking
             cmd += [
                 "-thread_queue_size",
                 str(settings.ffmpeg_thread_queue_size),
                 "-f",
                 "pulse",
+                "-ac",
+                "2",
+                "-i",
+                self.audio_source,
             ]
-            if settings.ffmpeg_use_wallclock_timestamps:
-                cmd += ["-use_wallclock_as_timestamps", "1"]
-            cmd += ["-i", self.audio_source]
         else:
             logger.warning("PulseAudio not available, recording video only with silent audio track")
             cmd += [
@@ -126,6 +130,7 @@ class FFmpegPipeline:
                 "anullsrc=r=44100:cl=stereo",
             ]
 
+        # Video encoding with constant frame rate sync
         cmd += [
             "-c:v",
             "libx264",
@@ -137,18 +142,21 @@ class FFmpegPipeline:
             "60",
             "-pix_fmt",
             "yuv420p",
+            "-vsync",
+            "cfr",  # Force constant frame rate - critical for stability
         ]
-        if settings.ffmpeg_audio_filter:
-            cmd += [
-                "-filter:a",
-                settings.ffmpeg_audio_filter,
-            ]
+
+        # Audio encoding with strong timestamp correction
+        # async=1000 aggressively corrects timestamp issues from PipeWire
         cmd += [
+            "-af",
+            settings.ffmpeg_audio_filter,
             "-c:a",
             "aac",
             "-b:a",
             settings.ffmpeg_audio_bitrate,
         ]
+
         if not use_pulse:
             cmd.append("-shortest")
         if self.output_path.suffix.lower() == ".mp4":
@@ -175,20 +183,25 @@ class FFmpegPipeline:
         cmd = self._build_command()
         logger.info(f"Starting FFmpeg: {' '.join(cmd)}")
 
-        # Set environment for display
+        # Set environment for display and audio
         env = os.environ.copy()
         env["DISPLAY"] = self.display
+        # Ensure PipeWire-Pulse socket path is set correctly
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/user/0")
+        env["PULSE_SERVER"] = f"unix:{xdg_runtime}/pulse/native"
+        env["XDG_RUNTIME_DIR"] = xdg_runtime
 
-        settings = get_settings()
-        stdout_target = subprocess.PIPE
-        stderr_target = subprocess.PIPE
+        # Default: discard stdout, capture stderr to file for debugging
+        # CRITICAL: Do NOT use subprocess.PIPE without reading - buffer fills up and blocks FFmpeg!
+        stdout_target = subprocess.DEVNULL
+        stderr_target = subprocess.DEVNULL
 
-        if settings.ffmpeg_debug_ts and self.log_path:
+        if self.log_path:
+            # Always log FFmpeg output to file for debugging
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             self._stderr_file = self.log_path.open("w", encoding="utf-8")
-            stdout_target = subprocess.DEVNULL
             stderr_target = self._stderr_file
-            logger.info(f"FFmpeg debug logging enabled: {self.log_path}")
+            logger.info(f"FFmpeg logging to: {self.log_path}")
 
         try:
             self._process = subprocess.Popen(
@@ -204,18 +217,16 @@ class FFmpegPipeline:
             await asyncio.sleep(1)
 
             if self._process.poll() is not None:
-                # Process exited immediately - read stderr for error
+                # Process exited immediately - read stderr from log file for error
                 stderr_output = ""
-                if self._stderr_file and self.log_path and self.log_path.exists():
+                if self._stderr_file and self.log_path:
                     try:
                         self._stderr_file.flush()
                         self._stderr_file.close()
                     finally:
                         self._stderr_file = None
-                    stderr_output = self.log_path.read_text(encoding="utf-8", errors="ignore")
-                else:
-                    _, stderr = self._process.communicate(timeout=1)
-                    stderr_output = stderr.decode(errors="ignore")
+                    if self.log_path.exists():
+                        stderr_output = self.log_path.read_text(encoding="utf-8", errors="ignore")
                 raise RuntimeError(f"FFmpeg failed to start: {stderr_output}")
 
             self._recording = True

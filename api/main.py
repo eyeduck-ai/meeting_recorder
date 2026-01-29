@@ -10,7 +10,6 @@ from api.routes import detection as detection_routes
 from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
 from api.routes import recording_management as recording_mgmt_routes
 from api.routes import telegram as telegram_routes
-from api.routes import test as test_routes
 from config.logging_config import setup_logging
 from config.settings import get_settings
 from database.models import init_db
@@ -48,7 +47,6 @@ app.include_router(meetings.router, prefix="/api/v1")
 app.include_router(schedules.router, prefix="/api/v1")
 app.include_router(youtube.router, prefix="/api/v1")
 app.include_router(telegram_routes.router, prefix="/api/v1")
-app.include_router(test_routes.router)  # Test API
 app.include_router(detection_routes.router)  # Detection API
 app.include_router(recording_mgmt_routes.router)  # Recording management API
 app.include_router(settings.router)
@@ -73,6 +71,33 @@ async def startup_event():
     # Initialize database
     init_db()
     logging.info("Database initialized")
+
+    # Clean up orphaned jobs (jobs stuck in running state from previous session)
+    from database.models import JobStatus, RecordingJob, get_session_local
+
+    db = get_session_local()()
+    try:
+        running_statuses = [
+            JobStatus.QUEUED.value,
+            JobStatus.STARTING.value,
+            JobStatus.JOINING.value,
+            JobStatus.WAITING_LOBBY.value,
+            JobStatus.RECORDING.value,
+            JobStatus.FINALIZING.value,
+        ]
+        orphaned_jobs = db.query(RecordingJob).filter(RecordingJob.status.in_(running_statuses)).all()
+        for job in orphaned_jobs:
+            logging.warning(f"Cleaning up orphaned job {job.job_id} (was {job.status})")
+            job.status = JobStatus.FAILED.value
+            job.error_message = "Job interrupted by server restart"
+        if orphaned_jobs:
+            db.commit()
+            logging.info(f"Cleaned up {len(orphaned_jobs)} orphaned job(s)")
+    except Exception as e:
+        logging.error(f"Failed to clean up orphaned jobs: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
     # Start scheduler
     scheduler = get_scheduler()

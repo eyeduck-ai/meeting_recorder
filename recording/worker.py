@@ -34,7 +34,9 @@ class RecordingResult:
     start_time: datetime | None = None
     joined_at: datetime | None = None
     recording_started_at: datetime | None = None
+    recording_stopped_at: datetime | None = None
     end_time: datetime | None = None
+    end_reason: str | None = None  # 'completed' | 'auto_detected' | 'canceled' | 'failed'
 
 
 @dataclass
@@ -373,9 +375,8 @@ class RecordingWorker:
             detection_orchestrator = None
             if job.duration_mode == "auto":
                 detection_config = self._load_detection_config()
-                # Use job's stillness_timeout_sec for screen freeze detection
+                # Use job's stillness_timeout_sec for screen freeze detection (if enabled in global config)
                 detection_config.screen_freeze_timeout_sec = job.stillness_timeout_sec
-                detection_config.screen_freeze_enabled = True  # Enable screen freeze detection
                 detection_orchestrator = DetectionOrchestrator(detection_config)
                 detection_orchestrator.set_dry_run(job.dry_run)  # Enable dry run if specified
                 for detector in create_default_detectors(detection_config):
@@ -413,6 +414,7 @@ class RecordingWorker:
                 # Check if max duration reached
                 if elapsed >= job.duration_sec:
                     logger.info(f"Duration reached ({job.duration_sec}s)")
+                    result.end_reason = "completed"
                     break
 
                 # Check for cancellation (always allowed)
@@ -429,11 +431,13 @@ class RecordingWorker:
                             triggered = [r for r in results if r.detected]
                             reasons = ", ".join(r.reason for r in triggered[:2])
                             logger.info(f"Meeting ended detected after min_duration: {reasons}")
+                            result.end_reason = "auto_detected"
                             break
                     else:
                         # Fallback to provider's legacy method
                         if await provider.detect_meeting_end(page):
                             logger.info("Meeting ended")
+                            result.end_reason = "auto_detected"
                             break
                 else:
                     # Log that we're in protected period
@@ -451,6 +455,7 @@ class RecordingWorker:
             # Stop recording
             self._update_status(JobStatus.FINALIZING)
             recording_info = await ffmpeg.stop()
+            result.recording_stopped_at = utc_now()
             ffmpeg = None
 
             # Success
@@ -466,6 +471,7 @@ class RecordingWorker:
             result.error_code = ErrorCode.CANCELED.value
             result.error_message = "Job was cancelled"
             result.end_time = utc_now()
+            result.end_reason = "canceled"
             self._update_status(JobStatus.CANCELED)
             logger.info("Recording cancelled")
 
@@ -475,6 +481,7 @@ class RecordingWorker:
                 result.error_code = ErrorCode.INTERNAL_ERROR.value
             result.error_message = str(e)
             result.end_time = utc_now()
+            result.end_reason = "failed"
             self._update_status(JobStatus.FAILED)
             logger.error(f"Recording failed: {e}")
 
@@ -494,6 +501,34 @@ class RecordingWorker:
                     logger.warning(f"Failed to collect diagnostics: {diag_error}")
 
         finally:
+            # Save detection logs to database
+            if detection_orchestrator and detection_orchestrator.detection_log:
+                try:
+                    from database.models import DetectionLog, get_session_local
+                    from database.models import RecordingJob as DBJob
+
+                    SessionLocal = get_session_local()
+                    db_session = SessionLocal()
+                    try:
+                        db_job = db_session.query(DBJob).filter(DBJob.job_id == job.job_id).first()
+                        if db_job:
+                            for log_entry in detection_orchestrator.detection_log:
+                                detection_log = DetectionLog(
+                                    job_id=db_job.id,
+                                    detector_type=log_entry.detector_type.value,
+                                    detected=log_entry.detected,
+                                    confidence=log_entry.confidence,
+                                    reason=log_entry.reason,
+                                    triggered_at=log_entry.timestamp,
+                                )
+                                db_session.add(detection_log)
+                            db_session.commit()
+                            logger.info(f"Saved {len(detection_orchestrator.detection_log)} detection logs")
+                    finally:
+                        db_session.close()
+                except Exception as e:
+                    logger.warning(f"Failed to save detection logs: {e}")
+
             # Cleanup
             if ffmpeg and ffmpeg.is_recording:
                 try:

@@ -40,8 +40,7 @@ class Settings(BaseSettings):
     ffmpeg_crf: int = 23
     ffmpeg_audio_bitrate: str = "128k"
     ffmpeg_thread_queue_size: int = 1024
-    ffmpeg_use_wallclock_timestamps: bool = True
-    ffmpeg_audio_filter: str | None = "aresample=async=1:first_pts=0"
+    ffmpeg_audio_filter: str = "aresample=async=1000:first_pts=0"
     ffmpeg_debug_ts: bool = False
     ffmpeg_stop_grace_sec: int = 5
     ffmpeg_sigint_timeout_sec: int = 8
@@ -60,8 +59,9 @@ class Settings(BaseSettings):
         "slower",
         "veryslow",
     ] = "slow"
-    ffmpeg_transcode_crf: int = 28
+    ffmpeg_transcode_crf: int = 30
     ffmpeg_transcode_audio_bitrate: str = "96k"
+    ffmpeg_transcode_video_bitrate: str | None = "1500k"
 
     # Paths
     recordings_dir: Path = Path("./recordings")

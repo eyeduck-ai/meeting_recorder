@@ -564,6 +564,13 @@
         loadDetectionConfig();
         loadNotificationConfig();
         refreshDiskUsage();
+
+        // Check if we should switch to a specific tab (e.g., from detection-logs page)
+        const savedTab = sessionStorage.getItem('settings_tab');
+        if (savedTab) {
+            switchTab(savedTab);
+            sessionStorage.removeItem('settings_tab');
+        }
     });
 </script>
 

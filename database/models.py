@@ -171,6 +171,9 @@ class Schedule(Base):
     )  # Stillness detection timeout after duration
 
     # Detection settings
+    auto_detect_mode: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )  # 'immediate' | 'after_min' | None (None = fixed mode)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)  # Log only, don't stop
 
     # Status
@@ -205,6 +208,8 @@ class Schedule(Base):
             "early_join_sec": self.early_join_sec,
             "min_duration_sec": self.min_duration_sec,
             "stillness_timeout_sec": self.stillness_timeout_sec,
+            "auto_detect_mode": self.auto_detect_mode,
+            "dry_run": self.dry_run,
             "enabled": self.enabled,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
@@ -254,7 +259,9 @@ class RecordingJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     recording_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    recording_stopped_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    youtube_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Recording output
     output_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -274,6 +281,11 @@ class RecordingJob(Base):
     # Telegram notification tracking (Phase 12)
     telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # End reason tracking (for catch-up logic)
+    end_reason: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )  # 'completed' | 'auto_detected' | 'canceled' | 'failed' | 'timeout'
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
@@ -292,7 +304,9 @@ class RecordingJob(Base):
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "joined_at": self.joined_at.isoformat() if self.joined_at else None,
             "recording_started_at": self.recording_started_at.isoformat() if self.recording_started_at else None,
+            "recording_stopped_at": self.recording_stopped_at.isoformat() if self.recording_stopped_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "youtube_uploaded_at": self.youtube_uploaded_at.isoformat() if self.youtube_uploaded_at else None,
             "output_path": self.output_path,
             "file_size": self.file_size,
             "duration_actual_sec": self.duration_actual_sec,
@@ -302,6 +316,7 @@ class RecordingJob(Base):
             "has_console_log": self.has_console_log,
             "youtube_enabled": self.youtube_enabled,
             "youtube_video_id": self.youtube_video_id,
+            "end_reason": self.end_reason,
         }
 
 

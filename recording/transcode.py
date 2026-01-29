@@ -35,6 +35,7 @@ async def transcode_to_mp4(
     preset: str,
     crf: int,
     audio_bitrate: str,
+    video_bitrate: str | None = None,
     log_path: Path | None = None,
     progress_callback=None,
 ) -> Path | None:
@@ -61,6 +62,13 @@ async def transcode_to_mp4(
         preset,
         "-crf",
         str(crf),
+    ]
+
+    # Add video bitrate limit if specified
+    if video_bitrate:
+        cmd += ["-maxrate", video_bitrate, "-bufsize", video_bitrate]
+
+    cmd += [
         "-c:a",
         "aac",
         "-b:a",

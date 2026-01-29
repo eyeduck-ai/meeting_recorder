@@ -70,6 +70,7 @@ def is_authenticated(request: Request) -> bool:
 # Paths that don't require authentication
 PUBLIC_PATHS = [
     "/health",
+    "/api",  # API info and environment status
     "/login",
     "/static",
     "/favicon.ico",

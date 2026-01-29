@@ -1,6 +1,6 @@
 # MeetingRecorder
 
-自動線上會議錄製系統，使用 Python + Playwright 自動加入會議，透過 Xvfb + PulseAudio + FFmpeg 在無頭環境中錄製影音。
+自動線上會議錄製系統，使用 Python + Playwright 自動加入會議，透過 Xvfb + PipeWire + FFmpeg 在無頭環境中錄製影音。
 
 > **⚠️ 錄製功能僅支援 Linux**：Windows/macOS 使用者請透過 Docker 部署。
 
@@ -9,9 +9,9 @@
 - **多平台支援**：Jitsi Meet、Cisco Webex (Guest Join)
 - **自動化錄製**：Playwright 自動加入會議、處理等候室
 - **智慧會議結束偵測**：WebRTC、文字指示、影片元素、URL 變更、螢幕凍結、音訊靜音
-- **錄影可靠性增強**：Fragmented MP4 抗損毀格式、網路錯誤自動重試
+- **錄影可靠性增強**：MKV 抗損毀格式、網路錯誤自動重試、PipeWire 低延遲音訊
 - **排程管理**：支援單次與週期性 (cron) 排程
-- **通知系統**：Email、Webhook、Telegram Bot
+- **通知系統**：Telegram Bot、YouTube 自動上傳
 
 ## 先決條件
 
@@ -73,13 +73,15 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ### Q: 如何查看錄製過程中的畫面？
 
-啟用 VNC 遠端桌面功能：
+VNC 功能需要額外安裝 x11vnc。如需使用，請自行修改 Dockerfile 加入 `x11vnc` 套件，然後：
 
 ```bash
 DEBUG_VNC=1 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-然後使用 VNC 客戶端連線到 `localhost:5900`（無需密碼）。
+使用 VNC 客戶端連線到 `localhost:5900`（無需密碼）。
+
+> **注意**：為了減少 image 大小和提高錄製穩定性，預設不安裝 x11vnc。
 
 ### Q: 錄製失敗如何排查？
 
