@@ -18,11 +18,14 @@ from database.models import Meeting, Schedule, ScheduleType
 from telegram_bot import get_db_session
 from telegram_bot.keyboards import (
     get_confirm_keyboard,
+    get_delete_confirm_keyboard,
     get_duration_inline_keyboard,
     get_edit_confirm_keyboard,
     get_edit_time_keyboard,
     get_main_menu_keyboard,
+    get_meeting_confirm_keyboard,
     get_meetings_inline_keyboard,
+    get_provider_keyboard,
     get_schedules_select_keyboard,
     get_time_inline_keyboard,
     get_youtube_inline_keyboard,
@@ -451,6 +454,7 @@ class EditScheduleStates(IntEnum):
     SELECT_TIME = auto()
     INPUT_CUSTOM_TIME = auto()
     CONFIRM = auto()
+    CONFIRM_DELETE = auto()
 
 
 def _parse_time_text(text: str) -> datetime | None:
@@ -596,6 +600,13 @@ async def edit_select_time_callback(update: Update, context: ContextTypes.DEFAUL
         )
         return EditScheduleStates.INPUT_CUSTOM_TIME
 
+    if time_value == "delete":
+        await query.edit_message_text(
+            f"🗑️ 刪除排程\n\n" f"會議: {context.user_data['meeting_name']}\n\n" f"❗ 確定要刪除此排程嗎？",
+            reply_markup=get_delete_confirm_keyboard(),
+        )
+        return EditScheduleStates.CONFIRM_DELETE
+
     offset_minutes = int(time_value)
     new_time = datetime.now().replace(second=0, microsecond=0) + timedelta(minutes=offset_minutes)
     context.user_data["new_start_time"] = new_time
@@ -691,6 +702,50 @@ async def edit_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
+async def edit_delete_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle delete confirmation - remove schedule from database and scheduler."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("已取消操作")
+        return ConversationHandler.END
+
+    schedule_id = context.user_data["edit_schedule_id"]
+    meeting_name = context.user_data["meeting_name"]
+
+    db = get_db_session()
+    try:
+        schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
+        if not schedule:
+            await query.edit_message_text("排程不存在")
+            return ConversationHandler.END
+
+        # Remove from APScheduler first
+        try:
+            from scheduling.scheduler import get_scheduler
+
+            scheduler = get_scheduler()
+            if scheduler.is_running:
+                scheduler.remove_schedule(schedule_id)
+        except Exception as e:
+            logger.warning(f"Could not remove from scheduler: {e}")
+
+        # Delete from database
+        db.delete(schedule)
+        db.commit()
+
+        await query.edit_message_text(f"🗑️ 排程已刪除\n\n會議: {meeting_name}")
+    except Exception as e:
+        logger.error(f"Failed to delete schedule: {e}")
+        await query.edit_message_text(f"刪除排程失敗: {e}")
+    finally:
+        db.close()
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 def get_edit_schedule_conversation() -> ConversationHandler:
     """Get the schedule editing ConversationHandler.
 
@@ -713,6 +768,171 @@ def get_edit_schedule_conversation() -> ConversationHandler:
             ],
             EditScheduleStates.CONFIRM: [
                 CallbackQueryHandler(edit_confirm_callback, pattern=r"^(edit_confirm:\w+|cancel)$"),
+            ],
+            EditScheduleStates.CONFIRM_DELETE: [
+                CallbackQueryHandler(edit_delete_confirm_callback, pattern=r"^(edit_confirm:\w+|cancel)$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation),
+            CallbackQueryHandler(cancel_conversation, pattern="^cancel$"),
+        ],
+        per_message=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Create Meeting Conversation
+# ---------------------------------------------------------------------------
+
+
+class CreateMeetingStates(IntEnum):
+    """States for meeting creation conversation."""
+
+    SELECT_PROVIDER = auto()
+    INPUT_NAME = auto()
+    INPUT_URL = auto()
+    CONFIRM = auto()
+
+
+async def create_meeting_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start the meeting creation wizard."""
+    context.user_data.clear()
+
+    text = "📝 新增會議 (1/3)\n\n請選擇會議類型："
+    keyboard = get_provider_keyboard()
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, reply_markup=keyboard)
+
+    return CreateMeetingStates.SELECT_PROVIDER
+
+
+async def select_provider_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle provider selection."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("已取消操作")
+        return ConversationHandler.END
+
+    provider = query.data.split(":")[1]
+    context.user_data["provider"] = provider
+
+    await query.edit_message_text(
+        f"📝 新增會議 (2/3)\n\n" f"類型: {provider.upper()}\n\n" f"請輸入會議名稱：\n\n" f"輸入 /cancel 取消",
+    )
+    return CreateMeetingStates.INPUT_NAME
+
+
+async def input_meeting_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle meeting name input."""
+    name = update.message.text.strip()
+
+    if len(name) < 1 or len(name) > 100:
+        await update.message.reply_text("❌ 名稱長度需在 1-100 字元之間\n\n請重新輸入：")
+        return CreateMeetingStates.INPUT_NAME
+
+    context.user_data["name"] = name
+
+    provider = context.user_data["provider"]
+
+    # Provider-specific URL hints
+    url_hints = {
+        "jitsi": "範例: https://meet.jit.si/your-meeting-room",
+        "webex": "範例: https://xxx.webex.com/meet/your-room",
+        "zoom": "範例: https://zoom.us/j/1234567890",
+    }
+
+    await update.message.reply_text(
+        f"📝 新增會議 (3/3)\n\n"
+        f"類型: {provider.upper()}\n"
+        f"名稱: {name}\n\n"
+        f"請輸入會議 URL：\n"
+        f"{url_hints.get(provider, '')}\n\n"
+        f"輸入 /cancel 取消",
+    )
+    return CreateMeetingStates.INPUT_URL
+
+
+async def input_meeting_url_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle meeting URL input."""
+    url = update.message.text.strip()
+
+    if not url.startswith("http"):
+        await update.message.reply_text("❌ URL 需以 http:// 或 https:// 開頭\n\n請重新輸入：")
+        return CreateMeetingStates.INPUT_URL
+
+    context.user_data["url"] = url
+
+    provider = context.user_data["provider"]
+    name = context.user_data["name"]
+
+    await update.message.reply_text(
+        f"📋 確認新增會議\n\n" f"類型: {provider.upper()}\n" f"名稱: {name}\n" f"URL: {url}\n\n" f"確定要新增嗎？",
+        reply_markup=get_meeting_confirm_keyboard(),
+    )
+    return CreateMeetingStates.CONFIRM
+
+
+async def confirm_meeting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle meeting creation confirmation."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("已取消操作")
+        return ConversationHandler.END
+
+    db = get_db_session()
+    try:
+        meeting = Meeting(
+            name=context.user_data["name"],
+            provider=context.user_data["provider"],
+            meeting_url=context.user_data["url"],
+        )
+        db.add(meeting)
+        db.commit()
+        db.refresh(meeting)
+
+        await query.edit_message_text(
+            f"✅ 會議已新增\n\n" f"ID: {meeting.id}\n" f"名稱: {meeting.name}\n" f"類型: {meeting.provider.upper()}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to create meeting: {e}")
+        await query.edit_message_text(f"新增會議失敗: {e}")
+    finally:
+        db.close()
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+def get_create_meeting_conversation() -> ConversationHandler:
+    """Get the meeting creation ConversationHandler.
+
+    Entry point: "add_meeting" callback from meetings list.
+    """
+    return ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(create_meeting_start, pattern=r"^add_meeting$"),
+        ],
+        states={
+            CreateMeetingStates.SELECT_PROVIDER: [
+                CallbackQueryHandler(select_provider_callback, pattern=r"^(provider:\w+|cancel)$"),
+            ],
+            CreateMeetingStates.INPUT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, input_meeting_name_handler),
+            ],
+            CreateMeetingStates.INPUT_URL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, input_meeting_url_handler),
+            ],
+            CreateMeetingStates.CONFIRM: [
+                CallbackQueryHandler(confirm_meeting_callback, pattern=r"^(meeting_confirm:\w+|cancel)$"),
             ],
         },
         fallbacks=[

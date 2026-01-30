@@ -22,7 +22,7 @@ from database.models import (
 )
 from scheduling.scheduler import get_scheduler
 from telegram_bot import get_db_session
-from telegram_bot.keyboards import get_main_menu_keyboard
+from telegram_bot.keyboards import get_main_menu_keyboard, get_meetings_list_keyboard
 from utils.timezone import to_local, utc_now
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,10 @@ def _format_schedule_list(schedules: list[Schedule]) -> str:
             local_end = local_start + timedelta(seconds=s.duration_sec)
             end_time = f" ~ {local_end.strftime('%H:%M')}"
 
-        status = "[啟用]" if s.enabled else "[暫停]"
-        lines.append(f"• {s.meeting.name} {status}\n  {start}{end_time} ({duration_min}分)")
+        schedule_type_str = (
+            s.schedule_type.upper() if hasattr(s.schedule_type, "upper") else str(s.schedule_type).upper()
+        )
+        lines.append(f"• {s.meeting.name} [{schedule_type_str}]\n  {start}{end_time} ({duration_min}分)")
     return "\n".join(lines)
 
 
@@ -175,11 +177,10 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 新增排程 - 建立排程或立即錄製\n\n"
         "📝 指令列表：\n"
         "/start - 顯示選單\n"
-        "/list - 查看排程與錄製狀態\n"
-        "/record - 新增排程/立即錄製\n"
-        "/edit - 編輯排程時間\n"
-        "/meetings - 會議列表\n"
-        "/trigger <ID> - 手動觸發排程\n"
+        "/list - 查看排程\n"
+        "/record - 新增排程\n"
+        "/edit - 編輯/刪除排程\n"
+        "/meetings - 查看/新增會議\n"
         "/stop - 停止錄製\n"
         "/help - 顯示說明\n\n"
         "進階設定請使用 Web UI",
@@ -267,58 +268,25 @@ async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_approved
 async def meetings_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /meetings command - list all meetings."""
+    """Handle /meetings command - list all meetings with add button."""
     db = get_db_session()
     try:
         meetings = db.query(Meeting).order_by(Meeting.name).all()
 
-        if not meetings:
-            await update.message.reply_text("無會議設定", reply_markup=get_main_menu_keyboard())
-            return
-
-        lines = ["📝 會議列表：\n"]
-        for m in meetings:
-            provider = m.provider.upper() if hasattr(m.provider, "upper") else str(m.provider).upper()
-            lines.append(f"• {m.name} ({provider})")
-
-        await update.message.reply_text("\n".join(lines), reply_markup=get_main_menu_keyboard())
-    finally:
-        db.close()
-
-
-@require_approved
-async def trigger_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /trigger command - manually trigger a schedule."""
-    if not context.args:
-        await update.message.reply_text("用法: /trigger <排程ID>", reply_markup=get_main_menu_keyboard())
-        return
-
-    try:
-        schedule_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID 必須是數字", reply_markup=get_main_menu_keyboard())
-        return
-
-    db = get_db_session()
-    try:
-        schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-        if not schedule:
-            await update.message.reply_text(f"排程 #{schedule_id} 不存在", reply_markup=get_main_menu_keyboard())
-            return
-
-        scheduler = get_scheduler()
-        job_id = await scheduler.trigger_schedule(schedule_id)
-
-        if job_id:
-            await update.message.reply_text(
-                f"✅ 已觸發排程 #{schedule_id}\n會議: {schedule.meeting.name}\nJob: {job_id[:8]}...",
-                reply_markup=get_main_menu_keyboard(),
-            )
+        text = "📝 會議列表\n\n"
+        if meetings:
+            for m in meetings:
+                provider = m.provider.upper() if hasattr(m.provider, "upper") else str(m.provider).upper()
+                text += f"• {m.name} ({provider})\n"
         else:
-            await update.message.reply_text("觸發失敗，可能有其他錄製進行中", reply_markup=get_main_menu_keyboard())
-    except Exception as e:
-        logger.error(f"Failed to trigger schedule: {e}")
-        await update.message.reply_text(f"觸發失敗: {e}", reply_markup=get_main_menu_keyboard())
+            text += "尚無會議設定\n"
+
+        text += "\n點擊下方按鈕新增會議"
+
+        await update.message.reply_text(
+            text,
+            reply_markup=get_meetings_list_keyboard(meetings),
+        )
     finally:
         db.close()
 
@@ -398,18 +366,22 @@ async def schedule_action_callback(update: Update, context: ContextTypes.DEFAULT
 def setup_handlers(application: Application):
     """Setup all command handlers."""
     # Import conversation handler
-    from telegram_bot.conversations import get_create_schedule_conversation, get_edit_schedule_conversation
+    from telegram_bot.conversations import (
+        get_create_meeting_conversation,
+        get_create_schedule_conversation,
+        get_edit_schedule_conversation,
+    )
 
     # Conversation handlers (must be added first for priority)
     application.add_handler(get_create_schedule_conversation())
     application.add_handler(get_edit_schedule_conversation())
+    application.add_handler(get_create_meeting_conversation())
 
     # Command handlers
     application.add_handler(CommandHandler("start", start_handler))
     application.add_handler(CommandHandler("help", help_handler))
     application.add_handler(CommandHandler("list", list_handler))
     application.add_handler(CommandHandler("meetings", meetings_handler))
-    application.add_handler(CommandHandler("trigger", trigger_handler))
     application.add_handler(CommandHandler("stop", stop_handler))
     application.add_handler(CommandHandler("record", lambda u, c: None))  # Handled by conversation
     application.add_handler(CommandHandler("cancel", lambda u, c: None))  # Handled by conversation

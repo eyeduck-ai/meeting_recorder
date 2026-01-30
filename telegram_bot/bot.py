@@ -39,13 +39,12 @@ def get_application() -> Application | None:
 async def _set_bot_commands(bot: Bot):
     """Set bot commands for the menu."""
     commands = [
-        BotCommand("start", "開始使用 / 顯示主選單"),
+        BotCommand("start", "開始使用"),
         BotCommand("help", "顯示說明"),
-        BotCommand("list", "查看排程與錄製狀態"),
-        BotCommand("record", "新增排程 / 立即錄製"),
-        BotCommand("edit", "編輯排程時間"),
-        BotCommand("meetings", "會議列表"),
-        BotCommand("trigger", "手動觸發排程"),
+        BotCommand("list", "排程:查看"),
+        BotCommand("record", "排程:新增"),
+        BotCommand("edit", "排程:編輯/刪除"),
+        BotCommand("meetings", "會議:查看/新增"),
         BotCommand("stop", "停止錄製"),
     ]
     await bot.set_my_commands(commands)

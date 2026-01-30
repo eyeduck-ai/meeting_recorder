@@ -122,6 +122,9 @@ def get_edit_time_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("📅 自訂時間", callback_data="edit_time:custom"),
         ],
+        [
+            InlineKeyboardButton("🗑️ 刪除排程", callback_data="edit_time:delete"),
+        ],
         [InlineKeyboardButton("❌ 取消", callback_data="cancel")],
     ]
     return InlineKeyboardMarkup(buttons)
@@ -132,6 +135,56 @@ def get_edit_confirm_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [
             InlineKeyboardButton("✅ 確認修改", callback_data="edit_confirm:yes"),
+            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+        ],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_delete_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Get confirmation keyboard for delete."""
+    buttons = [
+        [
+            InlineKeyboardButton("🗑️ 確認刪除", callback_data="edit_confirm:delete"),
+            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+        ],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_meetings_list_keyboard(meetings: list) -> InlineKeyboardMarkup:
+    """Get inline keyboard for meeting list with add button."""
+    buttons = []
+    for meeting in meetings:
+        provider = meeting.provider.upper() if hasattr(meeting.provider, "upper") else str(meeting.provider).upper()
+        buttons.append(
+            [InlineKeyboardButton(f"{meeting.name} ({provider})", callback_data=f"view_meeting:{meeting.id}")]
+        )
+    buttons.append([InlineKeyboardButton("➕ 新增會議", callback_data="add_meeting")])
+    buttons.append([InlineKeyboardButton("❌ 關閉", callback_data="cancel")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_provider_keyboard() -> InlineKeyboardMarkup:
+    """Get inline keyboard for provider selection."""
+    buttons = [
+        [
+            InlineKeyboardButton("Jitsi", callback_data="provider:jitsi"),
+            InlineKeyboardButton("Webex", callback_data="provider:webex"),
+        ],
+        [
+            InlineKeyboardButton("Zoom", callback_data="provider:zoom"),
+        ],
+        [InlineKeyboardButton("❌ 取消", callback_data="cancel")],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_meeting_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Get confirmation keyboard for meeting creation."""
+    buttons = [
+        [
+            InlineKeyboardButton("✅ 確認新增", callback_data="meeting_confirm:yes"),
             InlineKeyboardButton("❌ 取消", callback_data="cancel"),
         ],
     ]
