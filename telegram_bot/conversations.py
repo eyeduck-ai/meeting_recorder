@@ -602,7 +602,7 @@ async def edit_select_time_callback(update: Update, context: ContextTypes.DEFAUL
 
     if time_value == "delete":
         await query.edit_message_text(
-            f"🗑️ 刪除排程\n\n" f"會議: {context.user_data['meeting_name']}\n\n" f"❗ 確定要刪除此排程嗎？",
+            f"🗑️ 刪除排程\n\n會議: {context.user_data['meeting_name']}\n\n❗ 確定要刪除此排程嗎？",
             reply_markup=get_delete_confirm_keyboard(),
         )
         return EditScheduleStates.CONFIRM_DELETE
@@ -824,7 +824,7 @@ async def select_provider_callback(update: Update, context: ContextTypes.DEFAULT
     context.user_data["provider"] = provider
 
     await query.edit_message_text(
-        f"📝 新增會議 (2/3)\n\n" f"類型: {provider.upper()}\n\n" f"請輸入會議名稱：\n\n" f"輸入 /cancel 取消",
+        f"📝 新增會議 (2/3)\n\n類型: {provider.upper()}\n\n請輸入會議名稱：\n\n輸入 /cancel 取消",
     )
     return CreateMeetingStates.INPUT_NAME
 
@@ -873,7 +873,7 @@ async def input_meeting_url_handler(update: Update, context: ContextTypes.DEFAUL
     name = context.user_data["name"]
 
     await update.message.reply_text(
-        f"📋 確認新增會議\n\n" f"類型: {provider.upper()}\n" f"名稱: {name}\n" f"URL: {url}\n\n" f"確定要新增嗎？",
+        f"📋 確認新增會議\n\n類型: {provider.upper()}\n名稱: {name}\nURL: {url}\n\n確定要新增嗎？",
         reply_markup=get_meeting_confirm_keyboard(),
     )
     return CreateMeetingStates.CONFIRM
@@ -900,7 +900,7 @@ async def confirm_meeting_callback(update: Update, context: ContextTypes.DEFAULT
         db.refresh(meeting)
 
         await query.edit_message_text(
-            f"✅ 會議已新增\n\n" f"ID: {meeting.id}\n" f"名稱: {meeting.name}\n" f"類型: {meeting.provider.upper()}"
+            f"✅ 會議已新增\n\nID: {meeting.id}\n名稱: {meeting.name}\n類型: {meeting.provider.upper()}"
         )
     except Exception as e:
         logger.error(f"Failed to create meeting: {e}")
