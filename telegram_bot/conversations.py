@@ -563,10 +563,7 @@ async def edit_select_schedule_callback(update: Update, context: ContextTypes.DE
         current_time_str = local_time.strftime("%Y-%m-%d %H:%M") if local_time else "-"
 
         await query.edit_message_text(
-            f"✏️ 編輯排程時間\n\n"
-            f"會議: {schedule.meeting.name}\n"
-            f"目前時間: {current_time_str}\n\n"
-            f"請選擇新的開始時間：",
+            f"✏️ 編輯排程時間\n\n會議: {schedule.meeting.name}\n目前時間: {current_time_str}\n\n請選擇新的開始時間：",
             reply_markup=get_edit_time_keyboard(),
         )
         return EditScheduleStates.SELECT_TIME
@@ -682,9 +679,7 @@ async def edit_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TY
             logger.warning(f"Could not update scheduler: {e}")
 
         await query.edit_message_text(
-            f"✅ 排程已更新\n\n"
-            f"會議: {context.user_data['meeting_name']}\n"
-            f"新時間: {new_time.strftime('%Y-%m-%d %H:%M')}"
+            f"✅ 排程已更新\n\n會議: {context.user_data['meeting_name']}\n新時間: {new_time.strftime('%Y-%m-%d %H:%M')}"
         )
     except Exception as e:
         logger.error(f"Failed to update schedule: {e}")
