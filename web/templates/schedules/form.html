@@ -32,8 +32,7 @@
         <form method="POST" action="/schedules/save" class="space-y-6">
             {% if schedule and schedule.id %}
             <input type="hidden" name="schedule_id" value="{{ schedule.id }}">
-            <div class="text-xs text-gray-500 font-mono text-right">Updated: {{ schedule.updated_at.strftime('%Y-%m-%d
-                %H:%M') if schedule.updated_at else '-' }}</div>
+            <div class="text-xs text-gray-500 font-mono text-right">Updated: {{ schedule.updated_at | localtime('%Y-%m-%d %H:%M') }}</div>
             {% endif %}
 
             <!-- Meeting Selection -->
@@ -84,7 +83,7 @@
                     <div class="form-control w-full">
                         <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Start Time</label>
                         <input type="datetime-local" name="start_time"
-                            value="{{ schedule.start_time.strftime('%Y-%m-%dT%H:%M') if schedule and schedule.start_time else '' }}"
+                            value="{% if schedule and schedule.start_time %}{{ schedule.start_time | localtime('%Y-%m-%dT%H:%M') }}{% endif %}"
                             class="input input-bordered w-full bg-[#16181c] border-[#2f3336] focus:border-primary">
                     </div>
                 </div>
@@ -95,7 +94,7 @@
                         <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Cron
                             Expression</label>
                         <input type="text" name="cron_expression"
-                            value="{{ schedule.cron_expression if schedule else '' }}"
+                            value="{{ schedule.cron_expression or '' if schedule else '' }}"
                             class="input input-bordered w-full bg-[#16181c] border-[#2f3336] focus:border-primary font-mono"
                             placeholder="30 14 * * 1,3">
                         <label class="label">
@@ -141,7 +140,7 @@
                         <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Override Display
                             Name</label>
                         <input type="text" name="override_display_name"
-                            value="{{ schedule.override_display_name if schedule else '' }}"
+                            value="{{ schedule.override_display_name or '' if schedule else '' }}"
                             class="input input-bordered w-full bg-[#16181c] border-[#2f3336]">
                     </div>
 

@@ -93,7 +93,7 @@
                 <div class="form-control w-full">
                     <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Display Name</label>
                     <input type="text" name="default_display_name"
-                        value="{{ meeting.default_display_name if meeting else '' }}"
+                        value="{{ meeting.default_display_name or '' if meeting else '' }}"
                         class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
                         placeholder="Recorder Bot">
                 </div>
