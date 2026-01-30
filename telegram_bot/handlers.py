@@ -13,6 +13,7 @@ from telegram.ext import (
     filters,
 )
 
+from config.settings import get_settings
 from database.models import (
     Meeting,
     RecordingJob,
@@ -22,7 +23,7 @@ from database.models import (
 from scheduling.scheduler import get_scheduler
 from telegram_bot import get_db_session
 from telegram_bot.keyboards import get_main_menu_keyboard
-from utils.timezone import utc_now
+from utils.timezone import to_local, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +49,21 @@ def _format_schedule_list(schedules: list[Schedule]) -> str:
     if not schedules:
         return "無即將執行的排程"
 
-    lines = ["📋 即將執行的排程：\n"]
+    settings = get_settings()
+    tz = settings.timezone
+
+    lines = ["📋 即將執行的排程\n"]
     for s in schedules:
-        start = s.next_run_at.strftime("%m/%d %H:%M") if s.next_run_at else "-"
+        local_start = to_local(s.next_run_at, tz) if s.next_run_at else None
+        start = local_start.strftime("%m/%d %H:%M") if local_start else "-"
         duration_min = s.duration_sec // 60
         end_time = ""
-        if s.next_run_at:
-            end = s.next_run_at + timedelta(seconds=s.duration_sec)
-            end_time = f" ~ {end.strftime('%H:%M')}"
+        if local_start:
+            local_end = local_start + timedelta(seconds=s.duration_sec)
+            end_time = f" ~ {local_end.strftime('%H:%M')}"
 
-        status_icon = "✅" if s.enabled else "⏸️"
-        lines.append(f"{status_icon} [{s.id}] {s.meeting.name}\n   📅 {start}{end_time} ({duration_min}分)")
+        status = "[啟用]" if s.enabled else "[暫停]"
+        lines.append(f"• {s.meeting.name} {status}\n  {start}{end_time} ({duration_min}分)")
     return "\n".join(lines)
 
 
@@ -148,6 +153,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "請使用下方選單操作，或輸入指令：\n"
                 "/list - 查看排程\n"
                 "/record - 新增排程/立即錄製\n"
+                "/edit - 編輯排程時間\n"
                 "/help - 說明",
                 reply_markup=get_main_menu_keyboard(),
             )
@@ -171,6 +177,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - 顯示選單\n"
         "/list - 查看排程與錄製狀態\n"
         "/record - 新增排程/立即錄製\n"
+        "/edit - 編輯排程時間\n"
         "/meetings - 會議列表\n"
         "/trigger <ID> - 手動觸發排程\n"
         "/stop - 停止錄製\n"
@@ -204,7 +211,9 @@ async def list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     current_job.status.value if hasattr(current_job.status, "value") else str(current_job.status)
                 )
                 status_text = _JOB_STATUS_MAP.get(status_value, status_value)
-                started = current_job.started_at.strftime("%H:%M") if current_job.started_at else "-"
+                settings = get_settings()
+                local_started = to_local(current_job.started_at, settings.timezone) if current_job.started_at else None
+                started = local_started.strftime("%H:%M") if local_started else "-"
                 recording_status = (
                     f"🎬 {status_text}\n   會議: {current_job.meeting_code}\n   開始: {started}\n\n{'─' * 20}\n\n"
                 )
@@ -270,7 +279,7 @@ async def meetings_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = ["📝 會議列表：\n"]
         for m in meetings:
             provider = m.provider.upper() if hasattr(m.provider, "upper") else str(m.provider).upper()
-            lines.append(f"[{m.id}] {m.name} ({provider})")
+            lines.append(f"• {m.name} ({provider})")
 
         await update.message.reply_text("\n".join(lines), reply_markup=get_main_menu_keyboard())
     finally:
@@ -389,10 +398,11 @@ async def schedule_action_callback(update: Update, context: ContextTypes.DEFAULT
 def setup_handlers(application: Application):
     """Setup all command handlers."""
     # Import conversation handler
-    from telegram_bot.conversations import get_create_schedule_conversation
+    from telegram_bot.conversations import get_create_schedule_conversation, get_edit_schedule_conversation
 
     # Conversation handlers (must be added first for priority)
     application.add_handler(get_create_schedule_conversation())
+    application.add_handler(get_edit_schedule_conversation())
 
     # Command handlers
     application.add_handler(CommandHandler("start", start_handler))

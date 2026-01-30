@@ -80,3 +80,59 @@ def get_schedule_actions_keyboard(schedule_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 返回列表", callback_data="back_to_list")],
     ]
     return InlineKeyboardMarkup(buttons)
+
+
+def get_youtube_inline_keyboard() -> InlineKeyboardMarkup:
+    """Get inline keyboard for YouTube upload option."""
+    buttons = [
+        [
+            InlineKeyboardButton("是 (unlisted)", callback_data="youtube:unlisted"),
+            InlineKeyboardButton("是 (private)", callback_data="youtube:private"),
+        ],
+        [
+            InlineKeyboardButton("否", callback_data="youtube:no"),
+        ],
+        [InlineKeyboardButton("❌ 取消", callback_data="cancel")],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_schedules_select_keyboard(schedules: list, tz: str) -> InlineKeyboardMarkup:
+    """Get inline keyboard for schedule selection (edit mode)."""
+    from utils.timezone import to_local
+
+    buttons = []
+    for s in schedules:
+        local_time = to_local(s.next_run_at, tz) if s.next_run_at else None
+        time_str = local_time.strftime("%m/%d %H:%M") if local_time else "-"
+        label = f"{s.meeting.name} ({time_str})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"edit_schedule:{s.id}")])
+    buttons.append([InlineKeyboardButton("❌ 取消", callback_data="cancel")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_edit_time_keyboard() -> InlineKeyboardMarkup:
+    """Get inline keyboard for editing time."""
+    buttons = [
+        [
+            InlineKeyboardButton("+15分", callback_data="edit_time:15"),
+            InlineKeyboardButton("+30分", callback_data="edit_time:30"),
+            InlineKeyboardButton("+1小時", callback_data="edit_time:60"),
+        ],
+        [
+            InlineKeyboardButton("📅 自訂時間", callback_data="edit_time:custom"),
+        ],
+        [InlineKeyboardButton("❌ 取消", callback_data="cancel")],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_edit_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Get confirmation keyboard for edit."""
+    buttons = [
+        [
+            InlineKeyboardButton("✅ 確認修改", callback_data="edit_confirm:yes"),
+            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+        ],
+    ]
+    return InlineKeyboardMarkup(buttons)

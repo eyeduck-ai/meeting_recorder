@@ -43,6 +43,7 @@ async def _set_bot_commands(bot: Bot):
         BotCommand("help", "顯示說明"),
         BotCommand("list", "查看排程與錄製狀態"),
         BotCommand("record", "新增排程 / 立即錄製"),
+        BotCommand("edit", "編輯排程時間"),
         BotCommand("meetings", "會議列表"),
         BotCommand("trigger", "手動觸發排程"),
         BotCommand("stop", "停止錄製"),
