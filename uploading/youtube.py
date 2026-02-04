@@ -13,7 +13,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import httpx
@@ -37,7 +37,7 @@ YOUTUBE_SCOPES = [
 ]
 
 
-class UploadStatus(str, Enum):
+class UploadStatus(StrEnum):
     """Upload status."""
 
     PENDING = "pending"

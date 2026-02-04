@@ -3,6 +3,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from croniter import croniter
 
 from config.settings import get_settings
 from database.models import (
@@ -222,6 +225,11 @@ class JobRunner:
         return any(pattern in error_str for pattern in RETRYABLE_ERRORS)
 
     def _get_fixed_deadline_at(self, schedule: Schedule) -> datetime | None:
+        """Calculate the fixed deadline for a schedule.
+
+        For CRON schedules, uses croniter to find the most recent scheduled
+        fire time, ensuring catch-up runs use the correct window's deadline.
+        """
         duration_mode = (
             schedule.duration_mode.value if hasattr(schedule.duration_mode, "value") else schedule.duration_mode
         )
@@ -229,14 +237,41 @@ class JobRunner:
             return None
 
         start_time = None
-        if schedule.start_time:
-            start_time = ensure_utc(schedule.start_time)
-        elif schedule.last_run_at:
-            start_time = ensure_utc(schedule.last_run_at)
-        elif schedule.next_run_at:
-            start_time = ensure_utc(schedule.next_run_at)
-        else:
-            start_time = utc_now()
+
+        # For CRON schedules, use croniter to find the correct window start time
+        # This ensures catch-up runs use today's scheduled time, not old last_run_at
+        schedule_type_value = (
+            schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else schedule.schedule_type
+        )
+        if schedule_type_value == "cron" and schedule.cron_expression:
+            try:
+                settings = get_settings()
+                try:
+                    tz = ZoneInfo(settings.timezone)
+                except Exception:
+                    tz = ZoneInfo("UTC")
+
+                now_local = datetime.now(tz)
+                cron_iter = croniter(schedule.cron_expression, now_local)
+                # Get the most recent fire time (the one that would have triggered this run)
+                last_fire = cron_iter.get_prev(datetime)
+                if last_fire.tzinfo is None:
+                    last_fire = last_fire.replace(tzinfo=tz)
+                start_time = ensure_utc(last_fire)
+            except Exception as e:
+                logger.warning(f"Failed to calculate CRON window start time: {e}")
+                # Fall back to existing logic
+
+        # Fall back to existing logic for non-CRON or if croniter failed
+        if start_time is None:
+            if schedule.start_time:
+                start_time = ensure_utc(schedule.start_time)
+            elif schedule.last_run_at:
+                start_time = ensure_utc(schedule.last_run_at)
+            elif schedule.next_run_at:
+                start_time = ensure_utc(schedule.next_run_at)
+            else:
+                start_time = utc_now()
 
         return start_time + timedelta(seconds=schedule.duration_sec)
 

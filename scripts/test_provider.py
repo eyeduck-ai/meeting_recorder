@@ -534,9 +534,9 @@ async def run_test(page, provider, args, output_dir: Path, timestamp: str) -> bo
                     # Wait for user to signal they're ready to check
                     user_input = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda a=attempt: input(f"  [{a + 1}] Check status? [Enter]=check | skip=exit > ")
-                        .strip()
-                        .lower(),
+                        lambda a=attempt: (
+                            input(f"  [{a + 1}] Check status? [Enter]=check | skip=exit > ").strip().lower()
+                        ),
                     )
 
                     if user_input == "skip":

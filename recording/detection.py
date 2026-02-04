@@ -8,7 +8,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ from utils.timezone import utc_now
 logger = logging.getLogger(__name__)
 
 
-class DetectorType(str, Enum):
+class DetectorType(StrEnum):
     """Types of meeting end detectors."""
 
     TEXT_INDICATOR = "text_indicator"

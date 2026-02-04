@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -14,28 +14,28 @@ class Base(DeclarativeBase):
     pass
 
 
-class ProviderType(str, Enum):
+class ProviderType(StrEnum):
     """Supported meeting providers."""
 
     JITSI = "jitsi"
     WEBEX = "webex"
 
 
-class ScheduleType(str, Enum):
+class ScheduleType(StrEnum):
     """Schedule type."""
 
     ONCE = "once"
     CRON = "cron"
 
 
-class DurationMode(str, Enum):
+class DurationMode(StrEnum):
     """Duration mode for recordings."""
 
     FIXED = "fixed"  # Use fixed duration_sec
     AUTO = "auto"  # Auto-detect meeting end
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     """Recording job status."""
 
     QUEUED = "queued"
@@ -50,7 +50,7 @@ class JobStatus(str, Enum):
     CANCELED = "canceled"
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """Standard error codes for recording failures."""
 
     # Join errors
