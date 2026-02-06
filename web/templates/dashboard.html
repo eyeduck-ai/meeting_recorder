@@ -36,42 +36,6 @@
         </div>
     </div>
 
-    <!-- Live Recording Panel (Hidden by default) -->
-    <div id="live-recording-panel"
-        class="hidden bg-[#16181c] border border-warning/30 rounded-xl p-4 md:p-6 relative overflow-hidden">
-        <div class="absolute top-0 left-0 w-1 h-full bg-warning"></div>
-        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
-            <div>
-                <h2 class="text-lg font-bold text-white flex items-center gap-2">
-                    <span class="relative flex h-3 w-3">
-                        <span
-                            class="animate-ping absolute inline-flex h-full w-full rounded-full bg-warning opacity-75"></span>
-                        <span class="relative inline-flex rounded-full h-3 w-3 bg-warning"></span>
-                    </span>
-                    Live Recording
-                </h2>
-                <div class="text-sm text-gray-500 mt-1" id="recording-meeting">Meeting Code</div>
-            </div>
-            <div class="text-2xl font-mono text-warning" id="recording-elapsed">00:00:00</div>
-        </div>
-
-        <div class="space-y-2">
-            <div class="flex justify-between text-xs text-gray-500">
-                <span>Progress</span>
-                <span id="recording-progress-text">0%</span>
-            </div>
-            <progress id="recording-progress" class="progress progress-warning w-full bg-[#2f3336]" value="0"
-                max="100"></progress>
-        </div>
-
-        <div class="mt-4 flex flex-wrap gap-2" id="detector-status">
-            <!-- Detectors injected via JS -->
-        </div>
-
-        <div class="mt-4 text-right">
-            <a id="recording-job-link" href="#" class="btn btn-sm btn-outline btn-warning rounded-full">View Details</a>
-        </div>
-    </div>
 
     <div id="upload-progress-panel"
         class="hidden bg-[#16181c] border border-info/30 rounded-xl p-4 md:p-6 relative overflow-hidden">
@@ -277,10 +241,6 @@
 </div>
 
 <script>
-    // Re-use logic for polling (simplified and cleaner)
-    let pollInterval = null;
-    let recordingStartTime = null;
-
     function formatBytes(bytes) {
         if (!bytes && bytes !== 0) return '';
         const mb = bytes / (1024 * 1024);
@@ -295,50 +255,6 @@
         const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
         const s = String(totalSec % 60).padStart(2, '0');
         return `${h}:${m}:${s}`;
-    }
-
-    async function checkRecordingStatus() {
-        try {
-            const response = await fetch('/api/v1/jobs/current');
-            const data = await response.json();
-            const panel = document.getElementById('live-recording-panel');
-
-            if (data.active && data.job) {
-                panel.classList.remove('hidden');
-                updateRecordingUI(data.job);
-            } else {
-                panel.classList.add('hidden');
-                recordingStartTime = null;
-            }
-        } catch (error) { console.error(error); }
-    }
-
-    function updateRecordingUI(job) {
-        if (!recordingStartTime && job.started_at) recordingStartTime = new Date(job.started_at);
-
-        if (recordingStartTime) {
-            const elapsed = Math.floor((Date.now() - recordingStartTime.getTime()) / 1000);
-            document.getElementById('recording-elapsed').textContent = new Date(elapsed * 1000).toISOString().substr(11, 8);
-
-            if (job.duration_sec) {
-                const progress = Math.min(100, (elapsed / job.duration_sec) * 100);
-                document.getElementById('recording-progress').value = progress;
-                document.getElementById('recording-progress-text').textContent = progress.toFixed(0) + '%';
-            }
-        }
-
-        document.getElementById('recording-meeting').textContent = job.meeting_code || 'Meeting';
-        document.getElementById('recording-job-link').href = '/jobs/' + job.job_id;
-
-        const container = document.getElementById('detector-status');
-        let html = '';
-        const names = { 'text_indicator': 'Text', 'video_element': 'Video', 'webrtc_connection': 'WebRTC', 'url_change': 'URL', 'screen_freeze': 'Freeze', 'audio_silence': 'Audio' };
-        for (const [k, v] of Object.entries(names)) {
-            const s = (job.detectors || {})[k];
-            let cls = s === true ? 'text-green-500 border-green-500' : (s === false ? 'text-gray-600 border-gray-700' : 'text-gray-500 border-gray-800');
-            html += `<span class="px-2 py-0.5 rounded border text-xs ${cls}">${v}</span>`;
-        }
-        container.innerHTML = html;
     }
 
     async function checkUploadProgress() {
@@ -385,10 +301,9 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        checkRecordingStatus();
         checkUploadProgress();
-        pollInterval = setInterval(checkRecordingStatus, 3000);
         setInterval(checkUploadProgress, 3000);
     });
 </script>
+
 {% endblock %}
