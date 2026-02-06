@@ -316,6 +316,13 @@ class RecordingWorker:
                     result.error_code = ErrorCode.LOBBY_TIMEOUT.value
                     raise RuntimeError("Lobby timeout - not admitted to meeting")
 
+                # Post-lobby verification: double-check we're actually in meeting now
+                # This catches edge cases where wait_in_lobby returned prematurely
+                final_check = await provider.wait_until_joined(page, timeout_sec=10)
+                if not final_check.success:
+                    result.error_code = ErrorCode.NEVER_JOINED.value
+                    raise RuntimeError("Never joined meeting - verification failed after lobby wait")
+
             elif not join_result.success:
                 result.error_code = join_result.error_code or ErrorCode.JOIN_FAILED.value
                 raise RuntimeError(f"Failed to join meeting: {join_result.error_code} - {join_result.error_message}")

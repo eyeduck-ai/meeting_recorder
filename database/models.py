@@ -64,6 +64,7 @@ class ErrorCode(StrEnum):
     # Lobby errors
     LOBBY_TIMEOUT = "LOBBY_TIMEOUT"
     LOBBY_REJECTED = "LOBBY_REJECTED"
+    NEVER_JOINED = "NEVER_JOINED"  # Never successfully joined meeting
 
     # Recording errors
     RECORDING_START_FAILED = "RECORDING_START_FAILED"

@@ -20,6 +20,7 @@ _ERROR_DESCRIPTIONS = {
     "PASSWORD_INCORRECT": "密碼錯誤",
     "LOBBY_TIMEOUT": "等候室等待逾時 (未被准入)",
     "LOBBY_REJECTED": "被主持人拒絕進入",
+    "NEVER_JOINED": "始終未能加入會議",
     "RECORDING_START_FAILED": "錄製啟動失敗",
     "RECORDING_INTERRUPTED": "錄製中斷",
     "FFMPEG_ERROR": "FFmpeg 錯誤",

@@ -53,6 +53,7 @@ class TestEnums:
         """ErrorCode should have lobby-related errors."""
         assert ErrorCode.LOBBY_TIMEOUT.value == "LOBBY_TIMEOUT"
         assert ErrorCode.LOBBY_REJECTED.value == "LOBBY_REJECTED"
+        assert ErrorCode.NEVER_JOINED.value == "NEVER_JOINED"
 
     def test_error_code_recording_errors(self):
         """ErrorCode should have recording-related errors."""

@@ -143,7 +143,7 @@
             <div class="card-body">
                 <h2 class="card-title">Timeline</h2>
                 <ul class="steps steps-vertical w-full">
-                    <!-- Created/Started -->
+                    <!-- Step 1: Job Created -->
                     <li class="step step-info">
                         <div class="text-left w-full">
                             <div class="font-medium">Job Created</div>
@@ -153,58 +153,52 @@
                         </div>
                     </li>
 
-                    <!-- Joined/Running -->
+                    <!-- Step 2: Connecting (shows started_at → joined_at) -->
                     <li class="step {% if job.joined_at %}step-info{% endif %}">
                         <div class="text-left w-full">
                             <div class="font-medium flex items-center gap-2">
-                                Joined Meeting
-                                {% if not job.joined_at and job.status.value in ['joining', 'waiting_lobby'] %}
+                                Connecting
+                                {% if not job.joined_at and job.status.value in ['starting', 'joining', 'waiting_lobby']
+                                %}
                                 <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
                             </div>
+                            {% if job.started_at %}
+                            <div class="text-xs text-base-content/60 font-mono">
+                                Started: {{ job.started_at | localtime }}
+                            </div>
+                            {% endif %}
                             {% if job.joined_at %}
                             <div class="text-xs text-base-content/60 font-mono">
-                                {{ job.joined_at | localtime }}
+                                Joined: {{ job.joined_at | localtime }}
                             </div>
                             {% endif %}
                         </div>
                     </li>
 
-                    <!-- Recording -->
+                    <!-- Step 3: Recording -->
                     <li class="step {% if job.recording_started_at %}step-info{% endif %}">
                         <div class="text-left w-full">
                             <div class="font-medium flex items-center gap-2">
-                                Recording Started
-                                {% if not job.recording_started_at and job.status.value == 'recording' %}
+                                Recording
+                                {% if job.recording_started_at and not job.recording_stopped_at %}
                                 <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
                             </div>
                             {% if job.recording_started_at %}
                             <div class="text-xs text-base-content/60 font-mono">
-                                {{ job.recording_started_at | localtime }}
+                                Started: {{ job.recording_started_at | localtime }}
                             </div>
                             {% endif %}
-                        </div>
-                    </li>
-
-                    <!-- Recording Stopped -->
-                    <li class="step {% if job.recording_stopped_at %}step-info{% endif %}">
-                        <div class="text-left w-full">
-                            <div class="font-medium flex items-center gap-2">
-                                Recording Stopped
-                                {% if job.recording_started_at and not job.recording_stopped_at and job.status.value == 'finalizing' %}
-                                <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
-                                {% endif %}
-                            </div>
                             {% if job.recording_stopped_at %}
                             <div class="text-xs text-base-content/60 font-mono">
-                                {{ job.recording_stopped_at | localtime }}
+                                Stopped: {{ job.recording_stopped_at | localtime }}
                             </div>
                             {% endif %}
                         </div>
                     </li>
 
-                    <!-- Final Status (Success/Failed/Canceled) -->
+                    <!-- Step 4: Final Status (Success/Failed/Canceled) -->
                     {% set status_val = job.status.value if job.status is not string else job.status %}
                     <li class="step {% if status_val in ['succeeded', 'failed', 'canceled'] %}step-info{% endif %}">
                         <div class="text-left w-full">
@@ -214,7 +208,7 @@
                                     stroke="currentColor" class="w-5 h-5">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                                 </svg>
-                                Completed Successfully
+                                Completed
                             </div>
                             {% elif status_val == 'failed' %}
                             <div class="font-bold text-error flex items-center gap-2">
@@ -234,7 +228,12 @@
                                 Canceled
                             </div>
                             {% else %}
-                            <div class="font-medium text-base-content/50">Completed</div>
+                            <div class="font-medium text-base-content/50 flex items-center gap-2">
+                                Completed
+                                {% if job.status.value == 'finalizing' %}
+                                <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
+                                {% endif %}
+                            </div>
                             {% endif %}
 
                             {% if job.completed_at %}
@@ -245,7 +244,7 @@
                         </div>
                     </li>
 
-                    <!-- YouTube Upload -->
+                    <!-- Step 5: YouTube Upload (if enabled) -->
                     {% if job.youtube_enabled %}
                     <li class="step {% if job.youtube_uploaded_at %}step-info{% endif %}">
                         <div class="text-left w-full">
@@ -339,6 +338,7 @@
                     'PASSWORD_INCORRECT': 'Incorrect password',
                     'LOBBY_TIMEOUT': 'Lobby wait timeout (not admitted)',
                     'LOBBY_REJECTED': 'Rejected by host',
+                    'NEVER_JOINED': 'Never successfully joined meeting',
                     'RECORDING_START_FAILED': 'Recording startup failed',
                     'RECORDING_INTERRUPTED': 'Recording interrupted',
                     'FFMPEG_ERROR': 'FFmpeg error',

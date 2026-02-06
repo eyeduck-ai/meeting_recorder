@@ -307,9 +307,34 @@ class JitsiProvider(BaseProvider):
         check_interval = 5  # Check every 5 seconds
 
         while asyncio.get_event_loop().time() < end_time:
-            # Check if now in meeting
-            in_meeting = page.locator("#largeVideoContainer, .videocontainer")
-            if await in_meeting.count() > 0:
+            # Check if still in lobby (must NOT be in lobby to proceed)
+            # .lobby-screen is the primary lobby indicator
+            lobby_screen = page.locator(".lobby-screen")
+            is_in_lobby = await lobby_screen.count() > 0
+
+            if not is_in_lobby:
+                # Fallback lobby checks
+                lobby_indicators = [
+                    'text="Waiting for the host"',
+                    'text="等待主持人"',
+                    'text="You are in the waiting room"',
+                    'text="Asking to join meeting"',
+                ]
+                for indicator in lobby_indicators:
+                    if await page.locator(indicator).count() > 0:
+                        is_in_lobby = True
+                        break
+
+            # Check if now in meeting using RELIABLE indicators
+            # These elements ONLY appear when successfully joined:
+            # - #filmstripLocalVideo: local video filmstrip (most reliable)
+            # - #remoteVideos: remote video filmstrip
+            # - .details-container: meeting details bar (timer, subject name)
+            in_meeting = page.locator("#filmstripLocalVideo,#remoteVideos,.details-container")
+            is_in_meeting = await in_meeting.count() > 0
+
+            # Must be in meeting AND not in lobby to be truly admitted
+            if is_in_meeting and not is_in_lobby:
                 logger.info("Admitted from lobby")
                 return True
 
@@ -325,7 +350,7 @@ class JitsiProvider(BaseProvider):
                     return False
 
             elapsed = int(asyncio.get_event_loop().time() - start_time)
-            if elapsed % 60 == 0:  # Log every minute
+            if elapsed % 60 == 0 and elapsed > 0:  # Log every minute
                 logger.info(f"Still waiting in lobby... ({elapsed}s elapsed)")
 
             await asyncio.sleep(check_interval)
