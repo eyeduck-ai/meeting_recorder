@@ -1,6 +1,7 @@
 """Telegram conversation handlers for schedule creation wizard."""
 
 import logging
+import re
 from datetime import datetime, timedelta
 from enum import IntEnum, auto
 
@@ -14,6 +15,7 @@ from telegram.ext import (
     filters,
 )
 
+from config.settings import get_settings
 from database.models import Meeting, Schedule, ScheduleType
 from telegram_bot import get_db_session
 from telegram_bot.keyboards import (
@@ -42,6 +44,7 @@ class CreateScheduleStates(IntEnum):
     SELECT_TIME = auto()
     INPUT_CUSTOM_TIME = auto()
     SELECT_DURATION = auto()
+    INPUT_CUSTOM_DURATION = auto()
     SELECT_YOUTUBE = auto()
     CONFIRM = auto()
 
@@ -235,6 +238,70 @@ async def input_custom_time_handler(update: Update, context: ContextTypes.DEFAUL
     return CreateScheduleStates.SELECT_DURATION
 
 
+def _parse_duration_minutes(text: str) -> int | None:
+    """Parse user-provided duration text and return total minutes."""
+    normalized = text.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized.isdigit():
+        return int(normalized)
+
+    match = re.fullmatch(r"(\d+)\s*:\s*(\d{1,2})", normalized)
+    if match:
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        return hours * 60 + minutes
+
+    match = re.fullmatch(r"(\d+)\s*(?:m|min|mins|minute|minutes|分鐘|分)", normalized)
+    if match:
+        return int(match.group(1))
+
+    match = re.fullmatch(r"(\d+)\s*(?:h|hr|hrs|hour|hours|小時)", normalized)
+    if match:
+        return int(match.group(1)) * 60
+
+    match = re.fullmatch(
+        r"(\d+)\s*(?:h|hr|hrs|hour|hours|小時)\s*(\d+)\s*(?:m|min|mins|minute|minutes|分鐘|分)?",
+        normalized,
+    )
+    if match:
+        return int(match.group(1)) * 60 + int(match.group(2))
+
+    return None
+
+
+def _validate_duration_minutes(duration_min: int) -> str | None:
+    """Validate duration against project constraints."""
+    if duration_min <= 0:
+        return "時長必須大於 0 分鐘"
+
+    settings = get_settings()
+    max_duration_min = max(1, settings.max_recording_sec // 60)
+    if duration_min > max_duration_min:
+        return f"時長不能超過 {max_duration_min} 分鐘"
+
+    return None
+
+
+def _build_youtube_step_text(context: ContextTypes.DEFAULT_TYPE, duration_min: int) -> str:
+    """Build step-4 text after duration is selected."""
+    start_time = context.user_data["start_time"]
+    is_immediate = context.user_data.get("is_immediate", False)
+    if is_immediate:
+        time_display = "立即開始"
+    else:
+        time_display = start_time.strftime("%Y-%m-%d %H:%M")
+
+    return (
+        f"📅 新增排程 (4/4)\n\n"
+        f"會議: {context.user_data['meeting_name']}\n"
+        f"時間: {time_display}\n"
+        f"時長: {duration_min} 分鐘\n\n"
+        f"是否自動上傳 YouTube？"
+    )
+
+
 async def select_duration_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle duration selection."""
     query = update.callback_query
@@ -244,23 +311,65 @@ async def select_duration_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("已取消操作")
         return ConversationHandler.END
 
-    duration_min = int(query.data.split(":")[1])
+    duration_value = query.data.split(":")[1]
+    if duration_value == "custom":
+        await query.edit_message_text(
+            "📅 新增排程 (3/4)\n\n"
+            f"會議: {context.user_data['meeting_name']}\n\n"
+            "請輸入錄製時長：\n\n"
+            "可用格式範例：\n"
+            "• `45`（分鐘）\n"
+            "• `1h30m`\n"
+            "• `90m`\n"
+            "• `2:15`（時:分）\n\n"
+            "輸入 /cancel 取消",
+            parse_mode="Markdown",
+        )
+        return CreateScheduleStates.INPUT_CUSTOM_DURATION
+
+    duration_min = int(duration_value)
+    error_msg = _validate_duration_minutes(duration_min)
+    if error_msg:
+        await query.edit_message_text(
+            f"❌ {error_msg}\n\n請重新選擇錄製時長：", reply_markup=get_duration_inline_keyboard()
+        )
+        return CreateScheduleStates.SELECT_DURATION
+
     context.user_data["duration_min"] = duration_min
 
-    start_time = context.user_data["start_time"]
-    is_immediate = context.user_data.get("is_immediate", False)
-
-    if is_immediate:
-        time_display = "立即開始"
-    else:
-        time_display = start_time.strftime("%Y-%m-%d %H:%M")
-
     await query.edit_message_text(
-        f"📅 新增排程 (4/4)\n\n"
-        f"會議: {context.user_data['meeting_name']}\n"
-        f"時間: {time_display}\n"
-        f"時長: {duration_min} 分鐘\n\n"
-        f"是否自動上傳 YouTube？",
+        _build_youtube_step_text(context, duration_min),
+        reply_markup=get_youtube_inline_keyboard(),
+    )
+    return CreateScheduleStates.SELECT_YOUTUBE
+
+
+async def input_custom_duration_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle custom duration text input."""
+    text = update.message.text.strip()
+    duration_min = _parse_duration_minutes(text)
+
+    if duration_min is None:
+        await update.message.reply_text(
+            "❌ 無法解析時長格式\n\n"
+            "請使用以下格式：\n"
+            "• `45`（分鐘）\n"
+            "• `1h30m`\n"
+            "• `90m`\n"
+            "• `2:15`（時:分）\n\n"
+            "輸入 /cancel 取消",
+            parse_mode="Markdown",
+        )
+        return CreateScheduleStates.INPUT_CUSTOM_DURATION
+
+    error_msg = _validate_duration_minutes(duration_min)
+    if error_msg:
+        await update.message.reply_text(f"❌ {error_msg}\n\n請重新輸入錄製時長：")
+        return CreateScheduleStates.INPUT_CUSTOM_DURATION
+
+    context.user_data["duration_min"] = duration_min
+    await update.message.reply_text(
+        _build_youtube_step_text(context, duration_min),
         reply_markup=get_youtube_inline_keyboard(),
     )
     return CreateScheduleStates.SELECT_YOUTUBE
@@ -425,7 +534,10 @@ def get_create_schedule_conversation() -> ConversationHandler:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, input_custom_time_handler),
             ],
             CreateScheduleStates.SELECT_DURATION: [
-                CallbackQueryHandler(select_duration_callback, pattern=r"^(duration:\d+|cancel)$"),
+                CallbackQueryHandler(select_duration_callback, pattern=r"^(duration:(?:\d+|custom)|cancel)$"),
+            ],
+            CreateScheduleStates.INPUT_CUSTOM_DURATION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, input_custom_duration_handler),
             ],
             CreateScheduleStates.SELECT_YOUTUBE: [
                 CallbackQueryHandler(select_youtube_callback, pattern=r"^(youtube:\w+|cancel)$"),

@@ -21,7 +21,7 @@ from telegram_bot.notifications import (
     notify_recording_completed,
     notify_recording_failed,
     notify_recording_retry,
-    notify_recording_started,
+    notify_recording_status,
     notify_youtube_upload_completed,
 )
 from uploading.progress import clear_progress, update_progress
@@ -46,6 +46,14 @@ RETRYABLE_ERRORS = [
     "net::ERR_",
     "NetworkError",
 ]
+
+ACTIVE_NOTIFICATION_STATUSES = {
+    JobStatus.STARTING,
+    JobStatus.JOINING,
+    JobStatus.WAITING_LOBBY,
+    JobStatus.RECORDING,
+    JobStatus.FINALIZING,
+}
 
 
 @dataclass(frozen=True)
@@ -275,6 +283,26 @@ class JobRunner:
 
         return start_time + timedelta(seconds=schedule.duration_sec)
 
+    async def _notify_stage_update(self, job_id: str, status: JobStatus) -> None:
+        """Send stage update notification and persist Telegram message ID."""
+        SessionLocal = get_session_local()
+        session = SessionLocal()
+        try:
+            repo = JobRepository(session)
+            db_job = repo.get_by_job_id(job_id)
+            if not db_job:
+                return
+
+            message_id = await notify_recording_status(db_job, status)
+            if message_id and not db_job.telegram_message_id:
+                repo.update_status(job_id, db_job.status, telegram_message_id=message_id)
+                session.commit()
+        except Exception as e:
+            logger.warning(f"Failed to send stage notification for job {job_id}: {e}")
+            session.rollback()
+        finally:
+            session.close()
+
     async def _run_recording_with_retry(
         self,
         job: RecordingJob,
@@ -312,23 +340,8 @@ class JobRunner:
                 r.update_status(job_id, status.value, **update_fields)
                 s.commit()
 
-                # Send start notification when recording begins and save message_id
-                if status == JobStatus.RECORDING:
-                    db_job = r.get_by_job_id(job_id)
-                    if db_job:
-
-                        async def send_and_save():
-                            msg_id = await notify_recording_started(db_job)
-                            if msg_id:
-                                ss = SessionLocal()
-                                try:
-                                    rr = JobRepository(ss)
-                                    rr.update_status(job_id, status.value, telegram_message_id=msg_id)
-                                    ss.commit()
-                                finally:
-                                    ss.close()
-
-                        asyncio.create_task(send_and_save())
+                if status in ACTIVE_NOTIFICATION_STATUSES:
+                    asyncio.create_task(self._notify_stage_update(job_id, status))
             finally:
                 s.close()
 
@@ -642,7 +655,7 @@ class JobRunner:
             finally:
                 session.close()
 
-            # Set up status callback for start notification
+            # Set up status callback for stage notifications
             def on_status_change(job_id: str, status: JobStatus):
                 """Update status in database and send notifications."""
                 s = SessionLocal()
@@ -656,11 +669,8 @@ class JobRunner:
                     r.update_status(job_id, status.value, **update_fields)
                     s.commit()
 
-                    # Send start notification when recording begins
-                    if status == JobStatus.RECORDING:
-                        db_job = r.get_by_job_id(job_id)
-                        if db_job:
-                            asyncio.create_task(notify_recording_started(db_job))
+                    if status in ACTIVE_NOTIFICATION_STATUSES:
+                        asyncio.create_task(self._notify_stage_update(job_id, status))
                 finally:
                     s.close()
 

@@ -54,6 +54,9 @@ def get_duration_inline_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("90 分鐘", callback_data="duration:90"),
             InlineKeyboardButton("120 分鐘", callback_data="duration:120"),
         ],
+        [
+            InlineKeyboardButton("📏 自訂時長", callback_data="duration:custom"),
+        ],
         [InlineKeyboardButton("❌ 取消", callback_data="cancel")],
     ]
     return InlineKeyboardMarkup(buttons)

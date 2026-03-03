@@ -23,7 +23,7 @@ from database.models import (
 from scheduling.scheduler import get_scheduler
 from telegram_bot import get_db_session
 from telegram_bot.keyboards import get_main_menu_keyboard, get_meetings_list_keyboard
-from utils.timezone import to_local, utc_now
+from utils.timezone import ensure_utc, to_local, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,37 @@ _JOB_STATUS_MAP = {
     "recording": "🔴 錄製中",
     "finalizing": "💾 處理中",
 }
+
+
+def _is_schedule_visible(schedule: Schedule) -> bool:
+    """Return True when schedule is upcoming or currently in progress."""
+    now = utc_now()
+
+    if schedule.next_run_at and ensure_utc(schedule.next_run_at) > now:
+        return True
+
+    schedule_type = (
+        schedule.schedule_type.value if hasattr(schedule.schedule_type, "value") else str(schedule.schedule_type)
+    )
+    if schedule_type != "once" or not schedule.start_time:
+        return False
+
+    start_time = ensure_utc(schedule.start_time)
+    end_time = start_time + timedelta(seconds=schedule.duration_sec)
+    return end_time > now
+
+
+def _get_visible_schedules(db, limit: int = 5) -> list[Schedule]:
+    """Get non-expired schedules for Telegram list views."""
+    schedules = (
+        db.query(Schedule)
+        .filter(Schedule.enabled == True)
+        .order_by(Schedule.next_run_at.asc().nullslast(), Schedule.start_time.asc().nullslast(), Schedule.id.asc())
+        .limit(50)
+        .all()
+    )
+    visible = [s for s in schedules if _is_schedule_visible(s)]
+    return visible[:limit]
 
 
 def _format_schedule_list(schedules: list[Schedule]) -> str:
@@ -54,7 +85,22 @@ def _format_schedule_list(schedules: list[Schedule]) -> str:
 
     lines = ["📋 即將執行的排程\n"]
     for s in schedules:
-        local_start = to_local(s.next_run_at, tz) if s.next_run_at else None
+        schedule_type = s.schedule_type.value if hasattr(s.schedule_type, "value") else str(s.schedule_type)
+        now = utc_now()
+
+        reference_time = s.next_run_at
+        in_progress = False
+
+        if schedule_type == "once" and s.start_time:
+            start_utc = ensure_utc(s.start_time)
+            end_utc = start_utc + timedelta(seconds=s.duration_sec)
+            if start_utc <= now < end_utc:
+                reference_time = s.start_time
+                in_progress = True
+            elif reference_time is None:
+                reference_time = s.start_time
+
+        local_start = to_local(reference_time, tz) if reference_time else None
         start = local_start.strftime("%m/%d %H:%M") if local_start else "-"
         duration_min = s.duration_sec // 60
         end_time = ""
@@ -62,10 +108,9 @@ def _format_schedule_list(schedules: list[Schedule]) -> str:
             local_end = local_start + timedelta(seconds=s.duration_sec)
             end_time = f" ~ {local_end.strftime('%H:%M')}"
 
-        schedule_type_str = (
-            s.schedule_type.upper() if hasattr(s.schedule_type, "upper") else str(s.schedule_type).upper()
-        )
-        lines.append(f"• {s.meeting.name} [{schedule_type_str}]\n  {start}{end_time} ({duration_min}分)")
+        schedule_type_str = schedule_type.upper()
+        progress_tag = "（進行中）" if in_progress else ""
+        lines.append(f"• {s.meeting.name} [{schedule_type_str}]{progress_tag}\n  {start}{end_time} ({duration_min}分)")
     return "\n".join(lines)
 
 
@@ -219,13 +264,7 @@ async def list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🎬 {status_text}\n   會議: {current_job.meeting_code}\n   開始: {started}\n\n{'─' * 20}\n\n"
                 )
 
-        schedules = (
-            db.query(Schedule)
-            .filter(Schedule.enabled == True, Schedule.next_run_at != None)
-            .order_by(Schedule.next_run_at)
-            .limit(5)
-            .all()
-        )
+        schedules = _get_visible_schedules(db, limit=5)
 
         if not schedules and not recording_status:
             await update.message.reply_text("無即將執行的排程", reply_markup=get_main_menu_keyboard())
@@ -314,13 +353,7 @@ async def schedule_action_callback(update: Update, context: ContextTypes.DEFAULT
         # Redirect to list handler by editing message
         db = get_db_session()
         try:
-            schedules = (
-                db.query(Schedule)
-                .filter(Schedule.enabled == True, Schedule.next_run_at != None)
-                .order_by(Schedule.next_run_at)
-                .limit(5)
-                .all()
-            )
+            schedules = _get_visible_schedules(db, limit=5)
             await query.edit_message_text(_format_schedule_list(schedules))
         finally:
             db.close()
