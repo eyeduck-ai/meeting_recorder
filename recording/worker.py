@@ -209,6 +209,7 @@ class RecordingWorker:
         ffmpeg: FFmpegPipeline | None = None
         provider: BaseProvider | None = None
         console_messages: list[dict] = []
+        detection_orchestrator = None
 
         def capture_console(msg):
             """Capture console messages for diagnostics."""
@@ -379,7 +380,6 @@ class RecordingWorker:
             logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={job.duration_sec}s")
 
             # Setup detection orchestrator for auto mode
-            detection_orchestrator = None
             if job.duration_mode == "auto":
                 detection_config = self._load_detection_config()
                 # Use job's stillness_timeout_sec for screen freeze detection (if enabled in global config)
@@ -490,7 +490,7 @@ class RecordingWorker:
             result.end_time = utc_now()
             result.end_reason = "failed"
             self._update_status(JobStatus.FAILED)
-            logger.error(f"Recording failed: {e}")
+            logger.error(f"Recording failed: {e} (diagnostics: {diagnostics_dir})")
 
             # Collect diagnostics
             if page and provider:
@@ -501,11 +501,32 @@ class RecordingWorker:
                         error_code=result.error_code,
                         error_message=result.error_message,
                         console_messages=console_messages,
+                        job_id=job.job_id,
+                        meeting_code=job.meeting_code,
                     )
                     result.diagnostic_data = diagnostic_data
                     logger.info(f"Diagnostics saved to: {diagnostics_dir}")
                 except Exception as diag_error:
                     logger.warning(f"Failed to collect diagnostics: {diag_error}")
+            else:
+                # Early failure (before browser launch) - save minimal diagnostics
+                try:
+                    import json as _json
+
+                    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+                    metadata = {
+                        "collected_at": utc_now().isoformat(),
+                        "job_id": job.job_id,
+                        "meeting_code": job.meeting_code,
+                        "error_code": result.error_code,
+                        "error_message": result.error_message,
+                        "provider": job.provider,
+                        "stage": "pre_browser",
+                    }
+                    (diagnostics_dir / "metadata.json").write_text(_json.dumps(metadata, indent=2, ensure_ascii=False))
+                    logger.info(f"Minimal diagnostics saved to: {diagnostics_dir}")
+                except Exception as diag_error:
+                    logger.warning(f"Failed to save minimal diagnostics: {diag_error}")
 
         finally:
             # Save detection logs to database

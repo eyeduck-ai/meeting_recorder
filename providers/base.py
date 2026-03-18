@@ -175,6 +175,8 @@ class BaseProvider(ABC):
         error_code: str | None = None,
         error_message: str | None = None,
         console_messages: list[dict] | None = None,
+        job_id: str | None = None,
+        meeting_code: str | None = None,
     ) -> DiagnosticData:
         """Collect diagnostic data on failure.
 
@@ -233,6 +235,8 @@ class BaseProvider(ABC):
             metadata_path = output_dir / "metadata.json"
             metadata = {
                 "collected_at": data.collected_at.isoformat(),
+                "job_id": job_id,
+                "meeting_code": meeting_code,
                 "url": page.url,
                 "title": await page.title(),
                 "viewport": page.viewport_size,

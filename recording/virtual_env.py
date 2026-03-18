@@ -126,8 +126,47 @@ class VirtualEnvironment:
         self._xvfb_owned = False
         logger.info("Virtual environment stopped")
 
+    async def _cleanup_xvfb(self) -> None:
+        """Kill existing Xvfb processes and clean up lock/socket files.
+
+        Order matters: kill processes first, wait for them to exit,
+        then remove lock files to avoid race conditions.
+        """
+        # Step 1: Kill existing Xvfb processes on our display
+        try:
+            subprocess.run(
+                ["pkill", "-f", f"Xvfb {self.display}"],
+                capture_output=True,
+                timeout=5,
+            )
+            # Wait for process to fully exit
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.debug(f"No existing Xvfb to kill: {e}")
+
+        # Step 2: Remove lock file AFTER process is killed
+        lock_file = f"/tmp/.X{self.config.display_num}-lock"
+        if os.path.exists(lock_file):
+            logger.warning(f"Removing stale lock file: {lock_file}")
+            try:
+                os.remove(lock_file)
+            except OSError as e:
+                logger.warning(f"Failed to remove lock file: {e}")
+
+        # Step 3: Remove socket file
+        socket_path = f"/tmp/.X11-unix/X{self.config.display_num}"
+        if os.path.exists(socket_path):
+            try:
+                os.remove(socket_path)
+            except OSError as e:
+                logger.debug(f"Failed to remove socket file: {e}")
+
     async def _start_xvfb(self) -> None:
-        """Start Xvfb virtual display server."""
+        """Start Xvfb virtual display server with retry logic.
+
+        Retries up to 3 times with increasing wait times.
+        Captures stderr for diagnostics when startup fails.
+        """
         # Check if Xvfb is available
         try:
             subprocess.run(
@@ -138,33 +177,6 @@ class VirtualEnvironment:
         except (subprocess.CalledProcessError, FileNotFoundError):
             raise RuntimeError("Xvfb not found. Please install xvfb package.")
 
-        # Always start a fresh Xvfb for each recording to avoid stale state issues
-        # Even if one is running (e.g., from DEBUG_VNC), we start our own
-        # This prevents x11grab from stalling due to Xvfb instability
-        logger.info(f"Starting fresh Xvfb on display {self.display}")
-
-        # Kill any existing Xvfb on this display
-        lock_file = f"/tmp/.X{self.config.display_num}-lock"
-        if os.path.exists(lock_file):
-            logger.warning(f"Removing stale lock file: {lock_file}")
-            try:
-                os.remove(lock_file)
-            except OSError:
-                pass
-
-        # Try to kill existing Xvfb processes on our display
-        try:
-            subprocess.run(
-                ["pkill", "-f", f"Xvfb {self.display}"],
-                capture_output=True,
-                timeout=5,
-            )
-            # Give it time to clean up
-            await asyncio.sleep(0.5)
-        except Exception as e:
-            logger.debug(f"No existing Xvfb to kill: {e}")
-
-        # Start Xvfb
         screen = f"{self.config.width}x{self.config.height}x{self.config.depth}"
         cmd = [
             "Xvfb",
@@ -181,24 +193,74 @@ class VirtualEnvironment:
             "RENDER",
         ]
 
-        logger.debug(f"Starting Xvfb: {' '.join(cmd)}")
+        max_attempts = 3
+        last_error = ""
 
-        self._xvfb_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        for attempt in range(1, max_attempts + 1):
+            logger.info(f"Starting fresh Xvfb on display {self.display} (attempt {attempt}/{max_attempts})")
+
+            # Clean up before each attempt
+            await self._cleanup_xvfb()
+
+            logger.debug(f"Starting Xvfb: {' '.join(cmd)}")
+
+            # Use DEVNULL for stderr to prevent disk overflow during long recordings.
+            # If Xvfb fails, we probe separately to capture the error message.
+            self._xvfb_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+            )
+            self._xvfb_owned = True
+
+            # Wait for Xvfb to start (increase wait on each retry)
+            wait_sec = 1.0 + (attempt - 1) * 0.5
+            await asyncio.sleep(wait_sec)
+
+            # Verify it's running
+            if self._xvfb_process.poll() is None:
+                logger.info(f"Xvfb started on display {self.display}")
+                return
+
+            # Failed - probe Xvfb briefly to capture the error message
+            exit_code = self._xvfb_process.returncode
+            stderr_output = self._probe_xvfb_error(cmd)
+            last_error = stderr_output or f"exit code {exit_code}"
+
+            logger.warning(f"Xvfb attempt {attempt}/{max_attempts} failed " f"(exit code: {exit_code}): {last_error}")
+
+            if attempt < max_attempts:
+                await asyncio.sleep(1)
+
+        raise RuntimeError(
+            f"Xvfb failed to start after {max_attempts} attempts "
+            f"(exit code: {self._xvfb_process.returncode}): {last_error}"
         )
-        self._xvfb_owned = True
 
-        # Wait a bit for Xvfb to start
-        await asyncio.sleep(1)
+    def _probe_xvfb_error(self, cmd: list[str]) -> str:
+        """Run Xvfb briefly to capture stderr error message.
 
-        # Verify it's running
-        if self._xvfb_process.poll() is not None:
-            raise RuntimeError(f"Xvfb failed to start (exit code: {self._xvfb_process.returncode})")
-
-        logger.info(f"Xvfb started on display {self.display}")
+        This is only called after Xvfb has already failed to start.
+        Uses a short timeout to avoid hanging, and captures stderr
+        without risking long-term disk usage.
+        """
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            return result.stderr.decode(errors="replace").strip()
+        except subprocess.TimeoutExpired as e:
+            # Xvfb started successfully in probe (unlikely but possible)
+            stderr = ""
+            if e.stderr:
+                stderr = e.stderr.decode(errors="replace").strip()
+            return stderr or "probe timed out (Xvfb may have started)"
+        except Exception:
+            return ""
 
     async def _setup_pulse_audio(self) -> None:
         """Set up virtual audio sink.
