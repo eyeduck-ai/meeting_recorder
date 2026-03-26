@@ -76,3 +76,6 @@ AGENTS.md
 # YouTube token
 data/youtube_token.json
 test_output/
+
+# Local scripts (machine-specific)
+scripts/docker_monthly_maintenance.ps1

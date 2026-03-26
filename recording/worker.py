@@ -89,6 +89,10 @@ class RecordingJob:
             lobby_wait_sec=kwargs.get("lobby_wait_sec", settings.lobby_wait_sec),
             base_url=kwargs.get("base_url"),
             password=kwargs.get("password"),
+            duration_mode=kwargs.get("duration_mode", "fixed"),
+            dry_run=kwargs.get("dry_run", False),
+            min_duration_sec=kwargs.get("min_duration_sec"),
+            stillness_timeout_sec=kwargs.get("stillness_timeout_sec", 180),
         )
 
 
@@ -530,7 +534,7 @@ class RecordingWorker:
 
         finally:
             # Save detection logs to database
-            if detection_orchestrator and detection_orchestrator.detection_log:
+            if detection_orchestrator is not None and detection_orchestrator.detection_log:
                 try:
                     from database.models import DetectionLog, get_session_local
                     from database.models import RecordingJob as DBJob

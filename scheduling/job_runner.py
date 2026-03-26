@@ -74,6 +74,7 @@ class JobRunner:
     def __init__(self):
         self._lock = asyncio.Lock()
         self._upload_lock = asyncio.Lock()
+        self._notification_lock = asyncio.Lock()
         self._current_schedule_id: int | None = None
         self._queue: list[int] = []  # Queue of schedule IDs waiting to run
 
@@ -284,24 +285,30 @@ class JobRunner:
         return start_time + timedelta(seconds=schedule.duration_sec)
 
     async def _notify_stage_update(self, job_id: str, status: JobStatus) -> None:
-        """Send stage update notification and persist Telegram message ID."""
-        SessionLocal = get_session_local()
-        session = SessionLocal()
-        try:
-            repo = JobRepository(session)
-            db_job = repo.get_by_job_id(job_id)
-            if not db_job:
-                return
+        """Send stage update notification and persist Telegram message ID.
 
-            message_id = await notify_recording_status(db_job, status)
-            if message_id and not db_job.telegram_message_id:
-                repo.update_status(job_id, db_job.status, telegram_message_id=message_id)
-                session.commit()
-        except Exception as e:
-            logger.warning(f"Failed to send stage notification for job {job_id}: {e}")
-            session.rollback()
-        finally:
-            session.close()
+        Uses a lock to serialize notifications, preventing race conditions where
+        a later status notification reads the DB before the earlier one has
+        persisted the telegram_message_id.
+        """
+        async with self._notification_lock:
+            SessionLocal = get_session_local()
+            session = SessionLocal()
+            try:
+                repo = JobRepository(session)
+                db_job = repo.get_by_job_id(job_id)
+                if not db_job:
+                    return
+
+                message_id = await notify_recording_status(db_job, status)
+                if message_id and not db_job.telegram_message_id:
+                    repo.update_status(job_id, db_job.status, telegram_message_id=message_id)
+                    session.commit()
+            except Exception as e:
+                logger.warning(f"Failed to send stage notification for job {job_id}: {e}")
+                session.rollback()
+            finally:
+                session.close()
 
     async def _run_recording_with_retry(
         self,

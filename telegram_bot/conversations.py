@@ -463,13 +463,13 @@ async def confirm_schedule_callback(update: Update, context: ContextTypes.DEFAUL
 
             if is_immediate:
                 # Trigger immediately
-                job_id = await scheduler.trigger_schedule(schedule.id)
-                if job_id:
+                triggered = await scheduler.trigger_schedule(schedule.id)
+                if triggered:
                     await query.edit_message_text(
                         f"✅ 已開始錄製！\n\n"
                         f"會議: {context.user_data['meeting_name']}\n"
                         f"時長: {context.user_data['duration_min']} 分鐘\n"
-                        f"Job: {job_id[:8]}...\n\n"
+                        f"排程 ID: {schedule.id}\n\n"
                         f"使用 /stop 停止錄製"
                     )
                 else:

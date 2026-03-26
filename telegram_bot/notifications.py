@@ -237,7 +237,7 @@ async def notify_recording_completed(job: RecordingJob) -> None:
     phase = "uploading" if job.youtube_enabled else "completed"
 
     message = _build_status_message(job, phase)
-    await _send_or_edit_status_message(job=job, message=message, notification_type="complete")
+    await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated recording complete notification for job {job.job_id}")
 
@@ -245,7 +245,7 @@ async def notify_recording_completed(job: RecordingJob) -> None:
 async def notify_recording_failed(job: RecordingJob) -> None:
     """Update notification to show recording failed."""
     message = _build_status_message(job, "failed")
-    await _send_or_edit_status_message(job=job, message=message, notification_type="failure")
+    await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated recording failure notification for job {job.job_id}")
 
@@ -288,7 +288,7 @@ async def notify_recording_retry(
 async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> None:
     """Update notification to show YouTube upload completed."""
     message = _build_status_message(job, "uploaded", video_url)
-    await _send_or_edit_status_message(job=job, message=message, notification_type="upload")
+    await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated YouTube upload notification for job {job.job_id}")
 
