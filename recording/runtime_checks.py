@@ -31,7 +31,7 @@ def get_recording_runtime_status() -> dict:
             audio_server_ready = False
             virtual_sink_ready = False
 
-    ready = ffmpeg_available and xvfb_available and (not pactl_available or audio_server_ready)
+    ready = ffmpeg_available and xvfb_available and (not pactl_available or (audio_server_ready and virtual_sink_ready))
     return {
         "ready": ready,
         "ffmpeg_available": ffmpeg_available,

@@ -214,6 +214,7 @@ class RecordingSession:
         recording_info: RecordingInfo | None = None,
     ) -> dict:
         """Build and persist a runtime summary."""
+        self.diagnostics_dir.mkdir(parents=True, exist_ok=True)
         summary = {
             "job_id": self.job.job_id,
             "attempt_no": self.job.attempt_no,
