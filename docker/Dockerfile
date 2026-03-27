@@ -33,17 +33,13 @@ ENV PATH="/root/.local/bin:$PATH"
 WORKDIR /app
 
 # Copy dependency files first for better caching
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 
-# Create stub packages for editable install (will be overwritten later)
-# This allows dependencies to be cached separately from application code
-RUN mkdir -p api config database providers recording scheduling telegram_bot uploading utils web && \
-    touch api/__init__.py config/__init__.py database/__init__.py providers/__init__.py \
-          recording/__init__.py scheduling/__init__.py telegram_bot/__init__.py \
-          uploading/__init__.py utils/__init__.py web/__init__.py
-
-# Install Python dependencies with uv (editable install for development)
-RUN uv pip install --system --no-cache-dir -e .
+# Install pinned Python dependencies from uv.lock
+RUN uv export --format requirements.txt --frozen --no-dev --no-editable --no-emit-project \
+        --output-file requirements.lock.txt && \
+    uv pip install --system --no-cache-dir -r requirements.lock.txt && \
+    rm requirements.lock.txt
 
 # Install Playwright Chromium only (skip other browsers)
 # Use --with-deps to install browser dependencies
@@ -63,6 +59,9 @@ RUN apt-get purge -y build-essential && \
 # Copy application code (after dependencies for better caching)
 ARG BUILD_TIMESTAMP=unknown
 COPY . .
+
+# Install the application itself without re-resolving dependencies
+RUN uv pip install --system --no-cache-dir --no-deps -e .
 
 # Copy .env.example to .env if .env doesn't exist
 RUN cp -n .env.example .env 2>/dev/null || true

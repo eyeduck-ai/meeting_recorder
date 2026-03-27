@@ -71,6 +71,15 @@ def get_context(request: Request, **kwargs) -> dict:
     }
 
 
+def render_template(request: Request, name: str, **kwargs):
+    """Render templates using the Starlette 1.0-compatible signature."""
+    return templates.TemplateResponse(
+        request=request,
+        name=name,
+        context=get_context(request, **kwargs),
+    )
+
+
 # =============================================================================
 # Login / Logout
 # =============================================================================
@@ -83,10 +92,7 @@ async def login_page(request: Request, next: str = "/", error: str = None):
     if not settings.auth_password:
         return RedirectResponse(url="/", status_code=302)
 
-    return templates.TemplateResponse(
-        "login.html",
-        {"request": request, "next_url": next, "error": error},
-    )
+    return render_template(request, "login.html", next_url=next, error=error)
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -112,10 +118,7 @@ async def login_submit(
         )
         return response
     else:
-        return templates.TemplateResponse(
-            "login.html",
-            {"request": request, "next_url": next, "error": "Invalid password"},
-        )
+        return render_template(request, "login.html", next_url=next, error="Invalid password")
 
 
 @router.get("/logout")
@@ -170,21 +173,19 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
     total_jobs = db.query(RecordingJob).count()
     successful_jobs = db.query(RecordingJob).filter(RecordingJob.status == JobStatus.SUCCEEDED).count()
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "dashboard.html",
-        get_context(
-            request,
-            recent_jobs=recent_jobs,
-            upcoming_schedules=upcoming_schedules,
-            current_job_id=current_job_id,
-            stats={
-                "total_meetings": total_meetings,
-                "total_schedules": total_schedules,
-                "active_schedules": active_schedules,
-                "total_jobs": total_jobs,
-                "successful_jobs": successful_jobs,
-            },
-        ),
+        recent_jobs=recent_jobs,
+        upcoming_schedules=upcoming_schedules,
+        current_job_id=current_job_id,
+        stats={
+            "total_meetings": total_meetings,
+            "total_schedules": total_schedules,
+            "active_schedules": active_schedules,
+            "total_jobs": total_jobs,
+            "successful_jobs": successful_jobs,
+        },
     )
 
 
@@ -196,10 +197,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 @router.get("/detection-logs", response_class=HTMLResponse)
 async def detection_logs_page(request: Request):
     """Detection logs viewer page."""
-    return templates.TemplateResponse(
-        "detection_logs.html",
-        get_context(request),
-    )
+    return render_template(request, "detection_logs.html")
 
 
 # =============================================================================
@@ -211,19 +209,13 @@ async def detection_logs_page(request: Request):
 async def meetings_list(request: Request, db: Session = Depends(get_db)):
     """Meetings list page."""
     meetings = db.query(Meeting).order_by(Meeting.created_at.desc()).all()
-    return templates.TemplateResponse(
-        "meetings/list.html",
-        get_context(request, meetings=meetings),
-    )
+    return render_template(request, "meetings/list.html", meetings=meetings)
 
 
 @router.get("/meetings/new", response_class=HTMLResponse)
 async def meetings_new(request: Request):
     """New meeting form."""
-    return templates.TemplateResponse(
-        "meetings/form.html",
-        get_context(request, meeting=None, providers=list(ProviderType)),
-    )
+    return render_template(request, "meetings/form.html", meeting=None, providers=list(ProviderType))
 
 
 @router.get("/meetings/{meeting_id}/edit", response_class=HTMLResponse)
@@ -232,10 +224,7 @@ async def meetings_edit(request: Request, meeting_id: int, db: Session = Depends
     meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    return templates.TemplateResponse(
-        "meetings/form.html",
-        get_context(request, meeting=meeting, providers=list(ProviderType)),
-    )
+    return render_template(request, "meetings/form.html", meeting=meeting, providers=list(ProviderType))
 
 
 @router.post("/meetings/save", response_class=HTMLResponse)
@@ -317,15 +306,13 @@ async def schedules_list(request: Request, db: Session = Depends(get_db)):
             elif not schedule.next_run_at:
                 expired_ids.add(schedule.id)
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "schedules/list.html",
-        get_context(
-            request,
-            schedules=schedules,
-            cron_descriptions=cron_descriptions,
-            expired_ids=expired_ids,
-            has_expired=len(expired_ids) > 0,
-        ),
+        schedules=schedules,
+        cron_descriptions=cron_descriptions,
+        expired_ids=expired_ids,
+        has_expired=len(expired_ids) > 0,
     )
 
 
@@ -365,14 +352,12 @@ async def schedules_new(
             )
 
     meetings = db.query(Meeting).order_by(Meeting.name).all()
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "schedules/form.html",
-        get_context(
-            request,
-            schedule=schedule,
-            meetings=meetings,
-            schedule_types=list(ScheduleType),
-        ),
+        schedule=schedule,
+        meetings=meetings,
+        schedule_types=list(ScheduleType),
     )
 
 
@@ -383,14 +368,12 @@ async def schedules_edit(request: Request, schedule_id: int, db: Session = Depen
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
     meetings = db.query(Meeting).order_by(Meeting.name).all()
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "schedules/form.html",
-        get_context(
-            request,
-            schedule=schedule,
-            meetings=meetings,
-            schedule_types=list(ScheduleType),
-        ),
+        schedule=schedule,
+        meetings=meetings,
+        schedule_types=list(ScheduleType),
     )
 
 
@@ -515,10 +498,7 @@ async def schedules_toggle(
     # Return updated row for HTMX
     cron_description = cron_to_chinese(schedule.cron_expression) if schedule.cron_expression else None
     template_name = "schedules/_card.html" if variant == "card" else "schedules/_row.html"
-    return templates.TemplateResponse(
-        template_name,
-        get_context(request, schedule=schedule, cron_description=cron_description),
-    )
+    return render_template(request, template_name, schedule=schedule, cron_description=cron_description)
 
 
 @router.post("/schedules/{schedule_id}/trigger", response_class=HTMLResponse)
@@ -620,14 +600,12 @@ async def jobs_list(
     )
     current_job_id = current_job.job_id if current_job else None
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "jobs/list.html",
-        get_context(
-            request,
-            jobs=jobs,
-            current_job_id=current_job_id,
-            selected_status=status,
-        ),
+        jobs=jobs,
+        current_job_id=current_job_id,
+        selected_status=status,
     )
 
 
@@ -637,10 +615,7 @@ async def jobs_detail(request: Request, job_id: str, db: Session = Depends(get_d
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return templates.TemplateResponse(
-        "jobs/detail.html",
-        get_context(request, job=job),
-    )
+    return render_template(request, "jobs/detail.html", job=job)
 
 
 @router.post("/jobs/{job_id}/stop", response_class=HTMLResponse)
@@ -753,14 +728,12 @@ async def recordings_list(request: Request, db: Session = Depends(get_db)):
     youtube_configured = settings.youtube_configured
     youtube_authorized = uploader.is_authorized if youtube_configured else False
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "recordings/list.html",
-        get_context(
-            request,
-            jobs=jobs,
-            youtube_configured=youtube_configured,
-            youtube_authorized=youtube_authorized,
-        ),
+        jobs=jobs,
+        youtube_configured=youtube_configured,
+        youtube_authorized=youtube_authorized,
     )
 
 
@@ -875,15 +848,13 @@ async def settings_page(request: Request, db: Session = Depends(get_db)):
     # Get editable settings from database
     app_settings = get_all_settings(db)
 
-    return templates.TemplateResponse(
+    return render_template(
+        request,
         "settings.html",
-        get_context(
-            request,
-            youtube_status=youtube_status,
-            telegram_status=telegram_status,
-            settings=settings,
-            app_settings=app_settings,
-        ),
+        youtube_status=youtube_status,
+        telegram_status=telegram_status,
+        settings=settings,
+        app_settings=app_settings,
     )
 
 
