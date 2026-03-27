@@ -158,7 +158,7 @@
                         <div class="text-left w-full">
                             <div class="font-medium flex items-center gap-2">
                                 Connecting
-                                {% if not job.joined_at and job.status.value in ['starting', 'joining', 'waiting_lobby']
+                                {% if not job.joined_at and status_val in ['starting', 'joining', 'waiting_lobby']
                                 %}
                                 <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
@@ -230,7 +230,7 @@
                             {% else %}
                             <div class="font-medium text-base-content/50 flex items-center gap-2">
                                 Completed
-                                {% if job.status.value == 'finalizing' %}
+                                {% if status_val == 'finalizing' %}
                                 <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
                             </div>
@@ -250,7 +250,7 @@
                         <div class="text-left w-full">
                             <div class="font-medium flex items-center gap-2">
                                 YouTube Uploaded
-                                {% if job.status.value == 'uploading' %}
+                                {% if status_val == 'uploading' %}
                                 <span class="loading loading-spinner loading-xs text-[#1d9bf0]"></span>
                                 {% endif %}
                             </div>
@@ -267,7 +267,7 @@
         </div>
     </div>
 
-    {% if job.status.value == 'succeeded' and job.output_path %}
+    {% if status_val == 'succeeded' and job.output_path %}
     <!-- Recording Info -->
     <div class="card bg-base-100 shadow-xl">
         <div class="card-body">
@@ -314,18 +314,19 @@
     </div>
     {% endif %}
 
-    {% if job.status.value in ['failed', 'canceled'] %}
+    {% if status_val in ['failed', 'canceled'] %}
     <!-- Error Info -->
     <div class="card bg-error/10 shadow-xl">
         <div class="card-body">
             <h2 class="card-title text-error">
-                {% if job.status.value == 'canceled' %}Canceled{% else %}Error Information{% endif %}
+                {% if status_val == 'canceled' %}Canceled{% else %}Error Information{% endif %}
             </h2>
             <div class="space-y-4">
                 {% if job.error_code %}
+                {% set error_code_val = job.error_code.value if job.error_code is not string else job.error_code %}
                 <div>
                     <div class="text-sm text-base-content/60">Error Code</div>
-                    <div class="font-mono text-error">{{ job.error_code.value }}</div>
+                    <div class="font-mono text-error">{{ error_code_val }}</div>
                 </div>
                 <div>
                     <div class="text-sm text-base-content/60">Description</div>
@@ -348,7 +349,7 @@
                     'CANCELED': 'Canceled by user',
                     'INTERNAL_ERROR': 'Internal error'
                     } %}
-                    <div class="text-error">{{ error_descriptions.get(job.error_code.value, job.error_code.value) }}
+                    <div class="text-error">{{ error_descriptions.get(error_code_val, error_code_val) }}
                     </div>
                 </div>
                 {% endif %}
@@ -359,6 +360,79 @@
                 </div>
                 {% endif %}
             </div>
+        </div>
+    </div>
+
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">
+                {% if status_val == 'canceled' %}Cancellation Reason{% else %}Failure Reason{% endif %}
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div>
+                    <div class="text-base-content/60">Stage</div>
+                    <div class="font-mono">{{ failure_context.stage if failure_context and failure_context.stage else '-' }}</div>
+                </div>
+                <div>
+                    <div class="text-base-content/60">Metadata Error Code</div>
+                    <div class="font-mono">{{ failure_context.error_code if failure_context and failure_context.error_code else '-' }}</div>
+                </div>
+                <div class="md:col-span-2">
+                    <div class="text-base-content/60">Reason</div>
+                    <div>
+                        {% if failure_context and failure_context.error_message %}
+                        {{ failure_context.error_message }}
+                        {% elif job.error_message %}
+                        {{ job.error_message }}
+                        {% else %}
+                        -
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="md:col-span-2">
+                    <div class="text-base-content/60">Page Title</div>
+                    <div class="break-all">{{ failure_context.title if failure_context and failure_context.title else '-' }}</div>
+                </div>
+                <div class="md:col-span-2">
+                    <div class="text-base-content/60">URL</div>
+                    <div class="font-mono text-xs break-all">{{ failure_context.url if failure_context and failure_context.url else '-' }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <div class="flex items-center justify-between gap-4">
+                <h2 class="card-title">Failure Logs</h2>
+                <span class="text-xs text-base-content/50">Per-job diagnostics only</span>
+            </div>
+            {% if job_logs %}
+            <div class="space-y-6">
+                {% for log in job_logs %}
+                <section class="rounded-2xl border border-base-300 bg-base-200/60">
+                    <div class="flex items-center justify-between gap-4 px-4 py-3 border-b border-base-300">
+                        <div>
+                            <div class="font-medium">{{ log.label }}</div>
+                            <div class="text-xs text-base-content/50 font-mono">{{ log.name }}</div>
+                        </div>
+                        <a href="{{ log.full_log_url }}" target="_blank" rel="noopener noreferrer"
+                            class="btn btn-outline btn-sm">
+                            Open full log
+                        </a>
+                    </div>
+                    <div class="px-4 py-3 space-y-3">
+                        {% if log.truncated %}
+                        <div class="text-xs text-warning">Showing tail only (last 64 KiB)</div>
+                        {% endif %}
+                        <pre class="bg-base-100 rounded-xl p-4 text-xs md:text-sm whitespace-pre-wrap break-words overflow-x-auto max-h-[32rem]">{{ log.content_excerpt }}</pre>
+                    </div>
+                </section>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-sm text-base-content/60">No per-job logs captured for this failure.</div>
+            {% endif %}
         </div>
     </div>
 
