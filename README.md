@@ -1,114 +1,134 @@
 # MeetingRecorder
 
-自動線上會議錄製系統，使用 Python + Playwright 自動加入會議，透過 Xvfb + PipeWire + FFmpeg 在無頭環境中錄製影音。
+自動化線上會議錄製系統。服務會用 Playwright 以來賓身分加入會議，並在 Linux 錄製環境中透過 Xvfb、PipeWire、FFmpeg 產生錄影檔，提供 Web UI、排程、Telegram 通知與 YouTube 上傳能力。
 
-> **⚠️ 錄製功能僅支援 Linux**：Windows/macOS 使用者請透過 Docker 部署。
+> 錄製核心依賴 Linux。Windows 與 macOS 使用者請透過 Docker 部署；若直接在原始碼環境執行，僅 Linux 支援實際錄製。
 
-## 功能特色
+## 支援能力
 
-- **多平台支援**：Jitsi Meet、Cisco Webex (Guest Join)
-- **自動化錄製**：Playwright 自動加入會議、處理等候室
-- **智慧會議結束偵測**：WebRTC、文字指示、影片元素、URL 變更、螢幕凍結、音訊靜音
-- **錄影可靠性增強**：MKV 抗損毀格式、網路錯誤自動重試、PipeWire 低延遲音訊
-- **排程管理**：支援單次與週期性 (cron) 排程
-- **通知系統**：Telegram Bot、YouTube 自動上傳
-
-## 先決條件
-
-請先安裝 Docker 環境：
-
-| 平台 | 安裝方式 |
-|------|----------|
-| Windows / macOS | [Docker Desktop](https://www.docker.com/products/docker-desktop/) |
-| Linux | [Docker Engine](https://docs.docker.com/engine/install/) 或 `curl -fsSL https://get.docker.com \| sh` |
-
-安裝完成後執行 `docker --version` 確認安裝成功。
+- 會議平台：Jitsi Meet、Cisco Webex
+- 排程模式：單次排程、CRON 週期排程、手動立即觸發
+- 錄製控制：大廳等待、提前加入、自動偵測會議結束、手動停止/提前完成
+- 整合能力：Telegram Bot 通知與管理、YouTube Device Flow 授權與上傳
+- 除錯能力：診斷截圖、頁面 HTML、console log、FFmpeg/remux/transcode log
 
 ## 快速開始
 
-```bash
-# 1. 建立部署目錄
-mkdir meeting-recorder && cd meeting-recorder
-mkdir -p data recordings diagnostics
+### 1. 安裝 Docker
 
-# 2. 下載設定檔
-curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/docker-compose.prod.yml
-curl -O https://raw.githubusercontent.com/eyeduck-ai/meeting_recorder/main/.env.example
+| 平台 | 建議方式 |
+| --- | --- |
+| Windows / macOS | [Docker Desktop](https://www.docker.com/products/docker-desktop/) |
+| Linux | [Docker Engine](https://docs.docker.com/engine/install/) |
+
+安裝完成後，先確認 `docker --version` 與 `docker compose version` 可正常執行。
+
+### 2. 取得部署檔案
+
+```bash
+git clone https://github.com/eyeduck-ai/meeting_recorder.git
+cd meeting_recorder
 cp .env.example .env
+mkdir -p data recordings diagnostics logs
+```
 
-# 3. 設定密碼（編輯 .env）
-# AUTH_PASSWORD=your-secure-password
+### 3. 編輯 `.env`
 
-# 4. 啟動服務
-docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
+至少確認下列項目：
+
+- `AUTH_PASSWORD`: Web UI / API 密碼；留空代表不啟用密碼保護
+- `DATABASE_URL`: 預設為 `sqlite:///./data/app.db`
+- `TELEGRAM_BOT_TOKEN`: 要使用 Telegram Bot 時設定
+- `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`: 要使用 YouTube 上傳時設定
+
+其餘錄製與通知相關設定可先使用預設值。
+
+### 4. 啟動服務
+
+使用已發布映像：
+
+```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-開啟 **http://localhost:8000** 即可使用。
-
-## YouTube 授權設定
-
-1. 前往 [Google Cloud Console](https://console.cloud.google.com/)
-2. 建立專案並啟用 **YouTube Data API v3**
-3. 建立 OAuth 2.0 憑證（桌面應用程式類型）
-4. 設定環境變數 `YOUTUBE_CLIENT_ID` 和 `YOUTUBE_CLIENT_SECRET`
-5. 在 Web UI `/settings` 頁面完成 Device Code 授權流程
-
-## Telegram Bot 設定
-
-1. 向 [@BotFather](https://t.me/BotFather) 建立 Bot 並取得 Token
-2. 設定環境變數 `TELEGRAM_BOT_TOKEN`
-3. 啟動服務後，向 Bot 發送 `/start` 註冊
-4. 在 Web UI `/settings` 頁面核准用戶
-
-## 常見問題（FAQ）
-
-### Q: Docker 容器需要多少資源？
-
-建議配置：
-- **RAM**：4GB 以上（2GB 為最低需求）
-- **CPU**：2 核心以上
-- **磁碟**：視錄製時長而定，1080p 影片約 500MB/小時
-
-### Q: 如何查看錄製過程中的畫面？
-
-VNC 功能需要額外安裝 x11vnc。如需使用，請自行修改 Dockerfile 加入 `x11vnc` 套件，然後：
+若你要從目前原始碼自行建置：
 
 ```bash
-DEBUG_VNC=1 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose up --build -d
 ```
 
-使用 VNC 客戶端連線到 `localhost:5900`（無需密碼）。
+啟動後開啟 [http://localhost:8000](http://localhost:8000)。
 
-> **注意**：為了減少 image 大小和提高錄製穩定性，預設不安裝 x11vnc。
+## 首次設定建議
 
-### Q: 錄製失敗如何排查？
+### Telegram Bot
 
-1. 查看容器日誌：`docker compose logs -f`
-2. 檢查診斷資料：`diagnostics/{job_id}/` 目錄（含截圖、HTML、錯誤詳情）
-3. 啟用 VNC 觀察實際執行狀況
+1. 透過 [@BotFather](https://t.me/BotFather) 建立 Bot。
+2. 將 Token 寫入 `.env` 的 `TELEGRAM_BOT_TOKEN`。
+3. 重新啟動服務。
+4. 使用者先對 Bot 發送 `/start`。
+5. 進入 Web UI 的 `/settings` 或 Telegram 管理流程核准使用者。
 
-### Q: 如何更新到最新版本？
+### YouTube 上傳
+
+1. 在 [Google Cloud Console](https://console.cloud.google.com/) 建立專案並啟用 YouTube Data API v3。
+2. 建立 OAuth 2.0 Desktop App 憑證。
+3. 將 `YOUTUBE_CLIENT_ID`、`YOUTUBE_CLIENT_SECRET` 寫入 `.env`。
+4. 重啟服務後，到 Web UI 的 `/settings` 完成 Device Flow 授權。
+
+## 資料保存位置
+
+| 路徑 | 內容 |
+| --- | --- |
+| `data/` | SQLite 資料庫、YouTube 授權資料 |
+| `recordings/` | 錄影輸出檔案 |
+| `diagnostics/` | 錄製失敗與除錯資料 |
+| `logs/` | 應用程式日誌 |
+
+這些目錄都會掛載到容器外部，重新部署後仍會保留。
+
+## 日常操作
+
+查看容器狀態與日誌：
 
 ```bash
-docker pull ghcr.io/eyeduck-ai/meeting_recorder:latest
+docker compose ps
+docker compose logs -f app
+```
+
+更新到最新發布映像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-### Q: 資料會保存在哪裡？
+## 常見問題
 
-| 目錄 | 內容 |
-|------|------|
-| `./data/` | SQLite 資料庫、YouTube token |
-| `./recordings/` | 錄製的影片檔案 |
-| `./diagnostics/` | 失敗診斷資料 |
+### Windows 或 macOS 為什麼不能直接執行錄製？
 
-即使刪除容器，這些資料也會保留。
+錄製流程依賴 Linux 上的 Xvfb、PipeWire 與相關瀏覽器/影音元件，因此非 Linux 主機需要透過 Docker 容器提供相容環境。
 
-## 文件
+### 需要多少資源？
 
-- 🛠️ [開發者指南](docs/development.md) - 環境變數、API、架構、調試、測試
+- RAM：建議 4 GB 以上
+- CPU：建議 2 vCPU 以上
+- 磁碟：視錄製長度而定，1080p 錄影大約數百 MB 到數 GB
+
+### 錄製失敗時先看哪裡？
+
+1. `docker compose logs -f app`
+2. `diagnostics/<job_id>/`
+3. Web UI 的工作詳情與偵測日誌頁面
+
+### 錄製檔案會存成什麼格式？
+
+錄製原始輸出為 `.mkv`。在下載或 YouTube 上傳流程中，系統會視情況 remux 或轉成 `.mp4`。
+
+## 文件導覽
+
+- [docs/development.md](docs/development.md)：給人看的開發與維護指南
+- [AGENTS.md](AGENTS.md)：給 agent 與 contributor 的唯一規格來源
 
 ## License
 
