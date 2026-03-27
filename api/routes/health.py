@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from recording.runtime_checks import get_recording_runtime_status
 from utils.environment import get_environment_status
 from utils.timezone import utc_now
 
@@ -12,6 +13,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": utc_now().isoformat(),
+        "recording_runtime": get_recording_runtime_status(),
     }
 
 
@@ -24,6 +26,7 @@ async def api_info():
         "version": "0.1.0",
         "status": "running",
         "environment": env_status.to_dict(),
+        "recording_runtime": get_recording_runtime_status(),
     }
 
 

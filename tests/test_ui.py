@@ -41,10 +41,12 @@ def test_health_and_api_smoke(client):
     health_response = client.get("/health")
     assert health_response.status_code == 200
     assert health_response.json()["status"] == "healthy"
+    assert "recording_runtime" in health_response.json()
 
     api_response = client.get("/api")
     assert api_response.status_code == 200
     assert api_response.json()["status"] == "running"
+    assert "recording_runtime" in api_response.json()
 
 
 def test_login_page_renders(client):

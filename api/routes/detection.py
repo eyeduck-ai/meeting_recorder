@@ -22,7 +22,10 @@ class DetectionConfigRequest(BaseModel):
     screen_freeze_enabled: bool = False
     audio_silence_enabled: bool = False
     url_change_enabled: bool = True
+    screen_freeze_threshold: float = 0.98
     screen_freeze_timeout_sec: int = 60
+    audio_silence_timeout_sec: int = 120
+    audio_silence_threshold: float = 0.05
     min_detectors_agree: int = 1
 
 
@@ -43,7 +46,10 @@ async def get_detection_config(db: Session = Depends(get_db)):
             "screen_freeze_enabled": False,
             "audio_silence_enabled": False,
             "url_change_enabled": True,
+            "screen_freeze_threshold": 0.98,
             "screen_freeze_timeout_sec": 60,
+            "audio_silence_timeout_sec": 120,
+            "audio_silence_threshold": 0.05,
             "min_detectors_agree": 1,
         }
 

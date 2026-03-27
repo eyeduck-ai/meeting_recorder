@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from enum import StrEnum
 
@@ -252,8 +253,13 @@ class RecordingJob(Base):
 
     # Status
     status: Mapped[str] = mapped_column(String(32), default=JobStatus.QUEUED.value, index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_ffmpeg_exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
@@ -299,8 +305,12 @@ class RecordingJob(Base):
             "duration_sec": self.duration_sec,
             "lobby_wait_sec": self.lobby_wait_sec,
             "status": self.status,
+            "attempt_no": self.attempt_no,
+            "retry_count": self.retry_count,
             "error_code": self.error_code,
             "error_message": self.error_message,
+            "failure_stage": self.failure_stage,
+            "last_ffmpeg_exit_code": self.last_ffmpeg_exit_code,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "joined_at": self.joined_at.isoformat() if self.joined_at else None,
@@ -318,7 +328,18 @@ class RecordingJob(Base):
             "youtube_enabled": self.youtube_enabled,
             "youtube_video_id": self.youtube_video_id,
             "end_reason": self.end_reason,
+            "runtime_summary": self.runtime_summary,
         }
+
+    @property
+    def runtime_summary(self) -> dict | None:
+        """Return the parsed runtime summary payload."""
+        if not self.runtime_summary_json:
+            return None
+        try:
+            return json.loads(self.runtime_summary_json)
+        except json.JSONDecodeError:
+            return None
 
 
 class TelegramUser(Base):
@@ -397,6 +418,7 @@ class DetectionLog(Base):
     detected: Mapped[bool] = mapped_column(Boolean, default=False)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
     was_accurate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # For manual review
     triggered_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
@@ -408,6 +430,7 @@ class DetectionLog(Base):
             "detected": self.detected,
             "confidence": self.confidence,
             "reason": self.reason,
+            "attempt_no": self.attempt_no,
             "was_accurate": self.was_accurate,
             "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
         }
@@ -440,7 +463,9 @@ def get_session_local():
 
 def init_db():
     """Initialize database tables."""
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    _run_schema_migrations(engine)
 
 
 def get_db():
@@ -451,3 +476,29 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _has_column(connection, table_name: str, column_name: str) -> bool:
+    """Check whether a SQLite table contains a column."""
+    rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
+def _ensure_column(connection, table_name: str, column_name: str, ddl: str) -> None:
+    """Add a column if it does not already exist."""
+    if not _has_column(connection, table_name, column_name):
+        connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
+
+
+def _run_schema_migrations(engine) -> None:
+    """Apply idempotent schema migrations for existing SQLite databases."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_column(connection, "recording_jobs", "attempt_no", "INTEGER NOT NULL DEFAULT 1")
+        _ensure_column(connection, "recording_jobs", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "recording_jobs", "failure_stage", "VARCHAR(64)")
+        _ensure_column(connection, "recording_jobs", "last_ffmpeg_exit_code", "INTEGER")
+        _ensure_column(connection, "recording_jobs", "runtime_summary_json", "TEXT")
+        _ensure_column(connection, "detection_logs", "attempt_no", "INTEGER NOT NULL DEFAULT 1")

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -6,16 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import Browser, Page, async_playwright
-
 from config.settings import get_settings
 from database.models import ErrorCode, JobStatus
-from providers import get_provider
-from providers.base import BaseProvider, DiagnosticData
 from recording.detection import DetectionConfig, DetectionOrchestrator
-from recording.detectors import create_default_detectors
-from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
-from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
+from recording.detectors import AudioSilenceDetector, create_default_detectors
+from recording.ffmpeg_pipeline import RecordingInfo
+from recording.session import RecordingSession
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -27,8 +24,9 @@ class RecordingResult:
 
     job_id: str
     status: JobStatus
+    attempt_no: int = 1
     recording_info: RecordingInfo | None = None
-    diagnostic_data: DiagnosticData | None = None
+    diagnostic_data: object | None = None
     error_code: str | None = None
     error_message: str | None = None
     start_time: datetime | None = None
@@ -36,7 +34,10 @@ class RecordingResult:
     recording_started_at: datetime | None = None
     recording_stopped_at: datetime | None = None
     end_time: datetime | None = None
-    end_reason: str | None = None  # 'completed' | 'auto_detected' | 'canceled' | 'failed'
+    end_reason: str | None = None
+    failure_stage: str | None = None
+    ffmpeg_exit_code: int | None = None
+    runtime_summary: dict | None = None
 
 
 @dataclass
@@ -49,14 +50,15 @@ class RecordingJob:
     display_name: str
     duration_sec: int
     output_dir: Path
+    attempt_no: int = 1
     deadline_at: datetime | None = None
     base_url: str | None = None
     password: str | None = None
     lobby_wait_sec: int = 900
-    duration_mode: str = "fixed"  # "fixed" or "auto"
-    dry_run: bool = False  # Log detection only, don't stop
-    min_duration_sec: int | None = None  # Min recording time (None = use duration_sec)
-    stillness_timeout_sec: int = 180  # Stillness detection timeout after min_duration
+    duration_mode: str = "fixed"
+    dry_run: bool = False
+    min_duration_sec: int | None = None
+    stillness_timeout_sec: int = 180
 
     @classmethod
     def create(
@@ -66,26 +68,27 @@ class RecordingJob:
         display_name: str,
         duration_sec: int,
         output_dir: Path | None = None,
+        job_id: str | None = None,
+        attempt_no: int = 1,
         **kwargs,
     ) -> "RecordingJob":
         """Create a new recording job with generated ID."""
         settings = get_settings()
-        job_id = str(uuid.uuid4())[:8]
+        resolved_job_id = job_id or str(uuid.uuid4())[:8]
         timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
 
         if output_dir is None:
-            # Use timestamp + job_id for safe directory naming
-            # meeting_code may contain URLs or special characters
-            output_dir = settings.recordings_dir / f"{timestamp}_{job_id}"
+            output_dir = settings.recordings_dir / f"{timestamp}_{resolved_job_id}"
 
         return cls(
-            job_id=job_id,
+            job_id=resolved_job_id,
             provider=provider,
             meeting_code=meeting_code,
             display_name=display_name,
             duration_sec=duration_sec,
-            deadline_at=kwargs.get("deadline_at"),
             output_dir=output_dir,
+            attempt_no=attempt_no,
+            deadline_at=kwargs.get("deadline_at"),
             lobby_wait_sec=kwargs.get("lobby_wait_sec", settings.lobby_wait_sec),
             base_url=kwargs.get("base_url"),
             password=kwargs.get("password"),
@@ -97,14 +100,7 @@ class RecordingJob:
 
 
 class RecordingWorker:
-    """Recording worker that orchestrates the entire recording process.
-
-    This class coordinates:
-    - Virtual environment (Xvfb + PulseAudio)
-    - Browser automation (Playwright)
-    - Meeting provider (Jitsi, etc.)
-    - FFmpeg recording pipeline
-    """
+    """Recording worker that orchestrates the entire recording process."""
 
     def __init__(self):
         self._current_job: RecordingJob | None = None
@@ -115,20 +111,16 @@ class RecordingWorker:
 
     @property
     def is_busy(self) -> bool:
-        """Check if worker is currently processing a job."""
         return self._current_job is not None
 
     @property
     def current_status(self) -> JobStatus:
-        """Get current job status."""
         return self._status
 
     def set_status_callback(self, callback: Callable[[str, JobStatus], None]) -> None:
-        """Set callback for status updates."""
         self._status_callback = callback
 
     def _update_status(self, status: JobStatus) -> None:
-        """Update status and notify callback."""
         self._status = status
         if self._status_callback and self._current_job:
             try:
@@ -138,8 +130,6 @@ class RecordingWorker:
 
     def _load_detection_config(self) -> DetectionConfig:
         """Load detection configuration from database."""
-        import json
-
         from database.models import AppSettings, get_session_local
 
         try:
@@ -154,8 +144,12 @@ class RecordingWorker:
                         video_element_enabled=data.get("video_element_enabled", True),
                         webrtc_connection_enabled=data.get("webrtc_connection_enabled", True),
                         screen_freeze_enabled=data.get("screen_freeze_enabled", False),
+                        audio_silence_enabled=data.get("audio_silence_enabled", False),
                         url_change_enabled=data.get("url_change_enabled", True),
+                        screen_freeze_threshold=data.get("screen_freeze_threshold", 0.98),
                         screen_freeze_timeout_sec=data.get("screen_freeze_timeout_sec", 60),
+                        audio_silence_timeout_sec=data.get("audio_silence_timeout_sec", 120),
+                        audio_silence_threshold=data.get("audio_silence_threshold", 0.05),
                         min_detectors_agree=data.get("min_detectors_agree", 1),
                     )
             finally:
@@ -163,184 +157,87 @@ class RecordingWorker:
         except Exception as e:
             logger.warning(f"Failed to load detection config from database: {e}")
 
-        return DetectionConfig()  # Return defaults
+        return DetectionConfig()
 
     def request_cancel(self) -> bool:
-        """Request cancellation of current job."""
         if self._current_job:
             self._cancel_requested = True
             return True
         return False
 
     def request_finish(self) -> bool:
-        """Request to finish recording early (success path)."""
         if self._current_job:
             self._finish_requested = True
             return True
         return False
 
     async def record(self, job: RecordingJob) -> RecordingResult:
-        """Execute a recording job.
-
-        Args:
-            job: Recording job configuration
-
-        Returns:
-            RecordingResult with outcome details
-        """
+        """Execute a recording job."""
         self._current_job = job
         self._cancel_requested = False
         self._finish_requested = False
         self._update_status(JobStatus.STARTING)
 
-        settings = get_settings()
-        start_time = utc_now()
         result = RecordingResult(
             job_id=job.job_id,
             status=JobStatus.STARTING,
-            start_time=start_time,
+            attempt_no=job.attempt_no,
+            start_time=utc_now(),
         )
 
-        # Ensure output directory exists
+        settings = get_settings()
         job.output_dir.mkdir(parents=True, exist_ok=True)
-        # Use job_id for safe filename (meeting_code may contain URLs or special chars)
-        output_file = job.output_dir / f"recording_{job.job_id}.mkv"
-        diagnostics_dir = settings.diagnostics_dir / job.job_id
 
-        virtual_env = None
-        browser: Browser | None = None
-        page: Page | None = None
-        ffmpeg: FFmpegPipeline | None = None
-        provider: BaseProvider | None = None
-        console_messages: list[dict] = []
-        detection_orchestrator = None
-
-        def capture_console(msg):
-            """Capture console messages for diagnostics."""
-            console_messages.append(
-                {
-                    "type": msg.type,
-                    "text": msg.text,
-                    "timestamp": utc_now().isoformat(),
-                }
-            )
+        session = RecordingSession(job)
+        detection_orchestrator: DetectionOrchestrator | None = None
 
         try:
-            # Get provider
-            provider = get_provider(job.provider)
-            logger.info(f"Using provider: {provider.name}")
-
-            # Start virtual environment
-            logger.info("Starting virtual environment")
-            virtual_env = VirtualEnvironment(
-                config=VirtualEnvironmentConfig(
-                    width=settings.resolution_w,
-                    height=settings.resolution_h,
-                )
-            )
-            env_vars = await virtual_env.start()
+            session.begin_stage("prepare_runtime")
+            await session.prepare_runtime()
+            session.end_stage("prepare_runtime")
 
             if self._cancel_requested:
                 raise asyncio.CancelledError("Job cancelled")
 
-            # Start browser
-            logger.info("Starting browser")
-            playwright = await async_playwright().start()
-            browser = await playwright.chromium.launch(
-                headless=False,  # Need visible window for X11 grab
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    f"--window-size={settings.resolution_w},{settings.resolution_h}",
-                    "--window-position=0,0",
-                    "--autoplay-policy=no-user-gesture-required",
-                    # "--start-fullscreen",  # Removed: inconsistent behavior
-                    "--hide-scrollbars",
-                    "--disable-infobars",
-                    "--app=about:blank",  # App mode - no address bar
-                ],
-                env={**env_vars},
-            )
-
-            context = await browser.new_context(
-                viewport={"width": settings.resolution_w, "height": settings.resolution_h},
-                # Only grant microphone permission (not camera) = video OFF by default
-                permissions=["microphone"],
-            )
-            page = await context.new_page()
-
-            # Force fullscreen via JS and hide scrollbars
-            await page.add_init_script("""
-                window.addEventListener('load', () => {
-                   document.body.style.overflow = 'hidden';
-                   document.documentElement.style.overflow = 'hidden';
-                });
-            """)
-
-            # Capture console messages
-            page.on("console", capture_console)
-
-            if self._cancel_requested:
-                raise asyncio.CancelledError("Job cancelled")
-
-            # Navigate to meeting
             self._update_status(JobStatus.JOINING)
-            join_url = provider.build_join_url(job.meeting_code, job.base_url)
-            logger.info(f"Navigating to: {join_url}")
-            await page.goto(join_url, wait_until="domcontentloaded")
-
-            # Request fullscreen after navigation (might fail without user gesture, but worth trying)
-            try:
-                await page.evaluate(
-                    "document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen failed:', e))"
-                )
-            except Exception:
-                pass
-
-            # Handle prejoin
-            logger.info("Handling prejoin page")
-            await provider.prejoin(page, job.display_name, job.password)
-
-            if self._cancel_requested:
-                raise asyncio.CancelledError("Job cancelled")
-
-            # Click join
-            await provider.click_join(page)
-
-            # Wait to join
-            join_result = await provider.wait_until_joined(page, timeout_sec=60)
+            session.begin_stage("join_meeting")
+            join_result = await session.join_meeting()
+            if join_result.in_lobby:
+                session.end_stage("join_meeting", status="lobby")
+            elif not join_result.success:
+                session.end_stage("join_meeting", status="error")
+                result.failure_stage = "join_meeting"
+                result.error_code = join_result.error_code or ErrorCode.JOIN_FAILED.value
+                raise RuntimeError(f"Failed to join meeting: {join_result.error_code} - {join_result.error_message}")
+            else:
+                session.end_stage("join_meeting")
 
             if join_result.in_lobby:
-                # Wait in lobby
                 self._update_status(JobStatus.WAITING_LOBBY)
-                logger.info(f"Waiting in lobby (max {job.lobby_wait_sec}s)")
-                admitted = await provider.wait_in_lobby(page, job.lobby_wait_sec)
-
+                session.begin_stage("admit_or_fail")
+                admitted = await session.wait_for_lobby_admission()
                 if not admitted:
+                    session.end_stage("admit_or_fail", status="error")
+                    result.failure_stage = "admit_or_fail"
                     result.error_code = ErrorCode.LOBBY_TIMEOUT.value
                     raise RuntimeError("Lobby timeout - not admitted to meeting")
 
-                # Post-lobby verification: double-check we're actually in meeting now
-                # This catches edge cases where wait_in_lobby returned prematurely
-                final_check = await provider.wait_until_joined(page, timeout_sec=10)
+                final_check = await session.ensure_joined()
                 if not final_check.success:
+                    session.end_stage("admit_or_fail", status="error")
+                    result.failure_stage = "admit_or_fail"
                     result.error_code = ErrorCode.NEVER_JOINED.value
                     raise RuntimeError("Never joined meeting - verification failed after lobby wait")
+                session.end_stage("admit_or_fail")
 
-            elif not join_result.success:
-                result.error_code = join_result.error_code or ErrorCode.JOIN_FAILED.value
-                raise RuntimeError(f"Failed to join meeting: {join_result.error_code} - {join_result.error_message}")
-
-            # Successfully joined - record timestamp
             result.joined_at = utc_now()
 
             if self._cancel_requested:
                 raise asyncio.CancelledError("Job cancelled")
 
-            # Successfully joined - try to set layout
-            logger.info("Joined meeting, setting layout")
-            await provider.set_layout(page, "speaker")
+            session.begin_stage("set_layout")
+            await session.set_layout("speaker")
+            session.end_stage("set_layout")
 
             if job.duration_mode == "fixed" and job.deadline_at:
                 deadline_at = ensure_utc(job.deadline_at)
@@ -354,186 +251,106 @@ class RecordingWorker:
             if self._finish_requested:
                 raise asyncio.CancelledError("Finish requested before recording started")
 
-            # Start recording
             self._update_status(JobStatus.RECORDING)
             result.recording_started_at = utc_now()
-            logger.info(f"Starting recording: {output_file}")
 
-            ffmpeg = FFmpegPipeline(
-                output_path=output_file,
-                display=virtual_env.display,
-                audio_source=virtual_env.pulse_monitor,
-                width=settings.resolution_w,
-                height=settings.resolution_h,
-                log_path=diagnostics_dir / "ffmpeg.log",
-            )
-            await ffmpeg.start()
+            session.begin_stage("start_capture")
+            await session.start_capture()
+            session.end_stage("start_capture")
 
-            # Record for specified duration or until meeting ends
-            recording_start = asyncio.get_event_loop().time()
-            check_interval = 5  # Check every 5 seconds
-            stall_timeout = settings.ffmpeg_stall_timeout_sec
-            stall_grace = settings.ffmpeg_stall_grace_sec
-            last_size = 0
-            last_growth_time = recording_start
-
-            # Calculate effective min_duration - below this, ignore all detection
-            effective_min_duration = job.min_duration_sec if job.min_duration_sec is not None else job.duration_sec
-            if effective_min_duration > job.duration_sec:
-                effective_min_duration = job.duration_sec
-            logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={job.duration_sec}s")
-
-            # Setup detection orchestrator for auto mode
             if job.duration_mode == "auto":
                 detection_config = self._load_detection_config()
-                # Use job's stillness_timeout_sec for screen freeze detection (if enabled in global config)
                 detection_config.screen_freeze_timeout_sec = job.stillness_timeout_sec
                 detection_orchestrator = DetectionOrchestrator(detection_config)
-                detection_orchestrator.set_dry_run(job.dry_run)  # Enable dry run if specified
+                detection_orchestrator.set_dry_run(job.dry_run)
                 for detector in create_default_detectors(detection_config):
+                    if isinstance(detector, AudioSilenceDetector) and session.virtual_env:
+                        detector.set_audio_source(session.virtual_env.pulse_monitor)
                     detection_orchestrator.register_detector(detector)
-                await detection_orchestrator.setup_all(page)
+                await detection_orchestrator.setup_all(session.page)
                 logger.info(
-                    f"Auto-detection mode enabled (dry_run={job.dry_run}, stillness_timeout={job.stillness_timeout_sec}s)"
+                    "Auto-detection mode enabled "
+                    f"(dry_run={job.dry_run}, stillness_timeout={job.stillness_timeout_sec}s)"
                 )
 
-            while True:
-                now = asyncio.get_event_loop().time()
-                elapsed = now - recording_start
+            session.begin_stage("monitor_recording")
+            result.end_reason, result.ffmpeg_exit_code = await self._monitor_recording(
+                session=session,
+                job=job,
+                detection_orchestrator=detection_orchestrator,
+                ffmpeg_stall_timeout_sec=settings.ffmpeg_stall_timeout_sec,
+                ffmpeg_stall_grace_sec=settings.ffmpeg_stall_grace_sec,
+            )
+            session.end_stage("monitor_recording")
 
-                if self._finish_requested:
-                    logger.info("Finish requested, stopping recording early")
-                    break
-
-                if ffmpeg and ffmpeg.process_returncode is not None:
-                    result.error_code = ErrorCode.FFMPEG_ERROR.value
-                    raise RuntimeError(f"FFmpeg exited early (code {ffmpeg.process_returncode})")
-
-                if stall_timeout > 0 and elapsed >= stall_grace and output_file.exists():
-                    try:
-                        current_size = output_file.stat().st_size
-                    except OSError:
-                        current_size = last_size
-
-                    if current_size > last_size:
-                        last_size = current_size
-                        last_growth_time = now
-                    elif (now - last_growth_time) >= stall_timeout:
-                        result.error_code = ErrorCode.FFMPEG_ERROR.value
-                        raise RuntimeError(f"FFmpeg output stalled for {stall_timeout}s")
-
-                # Check if max duration reached
-                if elapsed >= job.duration_sec:
-                    logger.info(f"Duration reached ({job.duration_sec}s)")
-                    result.end_reason = "completed"
-                    break
-
-                # Check for cancellation (always allowed)
-                if self._cancel_requested:
-                    raise asyncio.CancelledError("Job cancelled")
-
-                # Only check detection after min_duration is reached
-                if elapsed >= effective_min_duration:
-                    # Check if meeting ended (using orchestrator or legacy method)
-                    if detection_orchestrator:
-                        # Use new detection framework
-                        should_end, results = await detection_orchestrator.check_all(page)
-                        if should_end:
-                            triggered = [r for r in results if r.detected]
-                            reasons = ", ".join(r.reason for r in triggered[:2])
-                            logger.info(f"Meeting ended detected after min_duration: {reasons}")
-                            result.end_reason = "auto_detected"
-                            break
-                    else:
-                        # Fallback to provider's legacy method
-                        if await provider.detect_meeting_end(page):
-                            logger.info("Meeting ended")
-                            result.end_reason = "auto_detected"
-                            break
-                else:
-                    # Log that we're in protected period
-                    if int(elapsed) % 60 == 0 and int(elapsed) > 0:
-                        remaining_protection = effective_min_duration - elapsed
-                        logger.debug(f"Min duration protection: {remaining_protection:.0f}s remaining")
-
-                # Log progress every minute
-                if int(elapsed) % 60 == 0 and int(elapsed) > 0:
-                    remaining = job.duration_sec - elapsed
-                    logger.info(f"Recording in progress... {elapsed:.0f}s elapsed, {remaining:.0f}s remaining")
-
-                await asyncio.sleep(check_interval)
-
-            # Stop recording
             self._update_status(JobStatus.FINALIZING)
-            recording_info = await ffmpeg.stop()
+            session.begin_stage("finalize_capture")
+            result.recording_info = await session.finalize_capture()
+            session.end_stage("finalize_capture")
             result.recording_stopped_at = utc_now()
-            ffmpeg = None
 
-            # Success
             result.status = JobStatus.SUCCEEDED
-            result.recording_info = recording_info
             result.end_time = utc_now()
+            result.runtime_summary = session.build_runtime_summary(
+                end_reason=result.end_reason,
+                recording_info=result.recording_info,
+            )
             self._update_status(JobStatus.SUCCEEDED)
 
-            logger.info(f"Recording completed successfully: {recording_info.output_path}")
+            logger.info(f"Recording completed successfully: {result.recording_info.output_path}")
 
         except asyncio.CancelledError:
+            active_stage = session.current_stage()
+            if active_stage:
+                session.end_stage(active_stage, status="canceled")
             result.status = JobStatus.CANCELED
             result.error_code = ErrorCode.CANCELED.value
             result.error_message = "Job was cancelled"
             result.end_time = utc_now()
             result.end_reason = "canceled"
+            result.failure_stage = result.failure_stage or active_stage
+            result.ffmpeg_exit_code = session.process_returncode()
+            result.runtime_summary = session.build_runtime_summary(
+                failure_stage=result.failure_stage,
+                ffmpeg_exit_code=result.ffmpeg_exit_code,
+                end_reason=result.end_reason,
+                error_code=result.error_code,
+                error_message=result.error_message,
+            )
             self._update_status(JobStatus.CANCELED)
             logger.info("Recording cancelled")
 
         except Exception as e:
+            active_stage = session.current_stage()
+            if active_stage:
+                session.end_stage(active_stage, status="error")
             result.status = JobStatus.FAILED
             if not result.error_code:
-                result.error_code = ErrorCode.INTERNAL_ERROR.value
+                if "ffmpeg" in str(e).lower():
+                    result.error_code = ErrorCode.FFMPEG_ERROR.value
+                else:
+                    result.error_code = ErrorCode.INTERNAL_ERROR.value
             result.error_message = str(e)
             result.end_time = utc_now()
             result.end_reason = "failed"
+            result.failure_stage = result.failure_stage or active_stage
+            result.ffmpeg_exit_code = session.process_returncode()
+            result.runtime_summary = session.build_runtime_summary(
+                failure_stage=result.failure_stage,
+                ffmpeg_exit_code=result.ffmpeg_exit_code,
+                end_reason=result.end_reason,
+                error_code=result.error_code,
+                error_message=result.error_message,
+            )
             self._update_status(JobStatus.FAILED)
-            logger.error(f"Recording failed: {e} (diagnostics: {diagnostics_dir})")
-
-            # Collect diagnostics
-            if page and provider:
-                try:
-                    diagnostic_data = await provider.collect_diagnostics(
-                        page,
-                        diagnostics_dir,
-                        error_code=result.error_code,
-                        error_message=result.error_message,
-                        console_messages=console_messages,
-                        job_id=job.job_id,
-                        meeting_code=job.meeting_code,
-                    )
-                    result.diagnostic_data = diagnostic_data
-                    logger.info(f"Diagnostics saved to: {diagnostics_dir}")
-                except Exception as diag_error:
-                    logger.warning(f"Failed to collect diagnostics: {diag_error}")
-            else:
-                # Early failure (before browser launch) - save minimal diagnostics
-                try:
-                    import json as _json
-
-                    diagnostics_dir.mkdir(parents=True, exist_ok=True)
-                    metadata = {
-                        "collected_at": utc_now().isoformat(),
-                        "job_id": job.job_id,
-                        "meeting_code": job.meeting_code,
-                        "error_code": result.error_code,
-                        "error_message": result.error_message,
-                        "provider": job.provider,
-                        "stage": "pre_browser",
-                    }
-                    (diagnostics_dir / "metadata.json").write_text(_json.dumps(metadata, indent=2, ensure_ascii=False))
-                    logger.info(f"Minimal diagnostics saved to: {diagnostics_dir}")
-                except Exception as diag_error:
-                    logger.warning(f"Failed to save minimal diagnostics: {diag_error}")
+            logger.error(f"Recording failed: {e} (stage={result.failure_stage}, diagnostics={session.diagnostics_dir})")
+            result.diagnostic_data = await session.collect_diagnostics(
+                error_code=result.error_code,
+                error_message=result.error_message,
+                runtime_summary=result.runtime_summary,
+            )
 
         finally:
-            # Save detection logs to database
             if detection_orchestrator is not None and detection_orchestrator.detection_log:
                 try:
                     from database.models import DetectionLog, get_session_local
@@ -551,6 +368,7 @@ class RecordingWorker:
                                     detected=log_entry.detected,
                                     confidence=log_entry.confidence,
                                     reason=log_entry.reason,
+                                    attempt_no=job.attempt_no,
                                     triggered_at=log_entry.timestamp,
                                 )
                                 db_session.add(detection_log)
@@ -561,31 +379,84 @@ class RecordingWorker:
                 except Exception as e:
                     logger.warning(f"Failed to save detection logs: {e}")
 
-            # Cleanup
-            if ffmpeg and ffmpeg.is_recording:
-                try:
-                    await ffmpeg.stop()
-                except Exception as e:
-                    logger.warning(f"Error stopping FFmpeg: {e}")
-
-            if browser:
-                try:
-                    await browser.close()
-                except Exception as e:
-                    logger.warning(f"Error closing browser: {e}")
-
-            if virtual_env:
-                try:
-                    await virtual_env.stop()
-                except Exception as e:
-                    logger.warning(f"Error stopping virtual env: {e}")
-
+            await session.cleanup()
             self._current_job = None
 
         return result
 
+    async def _monitor_recording(
+        self,
+        *,
+        session: RecordingSession,
+        job: RecordingJob,
+        detection_orchestrator: DetectionOrchestrator | None,
+        ffmpeg_stall_timeout_sec: int,
+        ffmpeg_stall_grace_sec: int,
+    ) -> tuple[str, int | None]:
+        """Monitor the recording loop until it should stop."""
+        recording_start = asyncio.get_event_loop().time()
+        check_interval = 5
+        last_size = 0
+        last_growth_time = recording_start
 
-# Global worker instance (singleton for single concurrency)
+        effective_min_duration = job.min_duration_sec if job.min_duration_sec is not None else job.duration_sec
+        if effective_min_duration > job.duration_sec:
+            effective_min_duration = job.duration_sec
+        logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={job.duration_sec}s")
+
+        while True:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - recording_start
+
+            if self._finish_requested:
+                logger.info("Finish requested, stopping recording early")
+                return "completed", session.process_returncode()
+
+            if session.process_returncode() is not None:
+                raise RuntimeError(f"FFmpeg exited early (code {session.process_returncode()})")
+
+            if ffmpeg_stall_timeout_sec > 0 and elapsed >= ffmpeg_stall_grace_sec and session.output_file.exists():
+                try:
+                    current_size = session.output_file.stat().st_size
+                except OSError:
+                    current_size = last_size
+
+                if current_size > last_size:
+                    last_size = current_size
+                    last_growth_time = now
+                elif (now - last_growth_time) >= ffmpeg_stall_timeout_sec:
+                    raise RuntimeError(f"FFmpeg output stalled for {ffmpeg_stall_timeout_sec}s")
+
+            if elapsed >= job.duration_sec:
+                logger.info(f"Duration reached ({job.duration_sec}s)")
+                return "completed", session.process_returncode()
+
+            if self._cancel_requested:
+                raise asyncio.CancelledError("Job cancelled")
+
+            if elapsed >= effective_min_duration:
+                if detection_orchestrator:
+                    should_end, results = await detection_orchestrator.check_all(session.page)
+                    if should_end:
+                        triggered = [r for r in results if r.detected]
+                        reasons = ", ".join(r.reason for r in triggered[:2])
+                        logger.info(f"Meeting ended detected after min_duration: {reasons}")
+                        return "auto_detected", session.process_returncode()
+                elif await session.detect_meeting_end("monitor_recording"):
+                    logger.info("Meeting ended")
+                    return "auto_detected", session.process_returncode()
+            else:
+                if int(elapsed) % 60 == 0 and int(elapsed) > 0:
+                    remaining_protection = effective_min_duration - elapsed
+                    logger.debug(f"Min duration protection: {remaining_protection:.0f}s remaining")
+
+            if int(elapsed) % 60 == 0 and int(elapsed) > 0:
+                remaining = job.duration_sec - elapsed
+                logger.info(f"Recording in progress... {elapsed:.0f}s elapsed, {remaining:.0f}s remaining")
+
+            await asyncio.sleep(check_interval)
+
+
 _worker_instance: RecordingWorker | None = None
 
 

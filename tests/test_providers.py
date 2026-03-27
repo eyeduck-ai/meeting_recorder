@@ -3,7 +3,9 @@
 from datetime import datetime
 from pathlib import Path
 
-from providers.base import DiagnosticData
+import pytest
+
+from providers.base import BaseProvider, DiagnosticData, JoinResult, MeetingState, MeetingStateSnapshot
 from providers.jitsi import JitsiProvider
 from providers.webex import WebexProvider
 from providers.zoom import ZoomProvider
@@ -206,3 +208,153 @@ class TestDiagnosticData:
         result = data.to_dict()
 
         assert result["collected_at"] == "2024-06-15T14:30:45"
+
+
+class FakeLocator:
+    """Minimal async locator stub for provider probe tests."""
+
+    def __init__(self, count: int = 0):
+        self._count = count
+
+    async def count(self) -> int:
+        return self._count
+
+
+class FakePage:
+    """Minimal Playwright page stub for provider probe tests."""
+
+    def __init__(
+        self, counts: dict[str, int] | None = None, *, url: str = "https://example.test/room", title: str = ""
+    ):
+        self._counts = counts or {}
+        self.url = url
+        self._title = title
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(self._counts.get(selector, 0))
+
+    async def title(self) -> str:
+        return self._title
+
+
+class FakeFrame:
+    """Minimal frame locator stub for Webex probe tests."""
+
+    def __init__(self, counts: dict[str, int] | None = None):
+        self._counts = counts or {}
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(self._counts.get(selector, 0))
+
+
+class SequenceProvider(BaseProvider):
+    """Small provider used to exercise the generic BaseProvider state machine."""
+
+    def __init__(self, snapshots: list[MeetingStateSnapshot]):
+        self._snapshots = list(snapshots)
+        self.password_attempts = 0
+
+    @property
+    def name(self) -> str:
+        return "sequence"
+
+    def build_join_url(self, meeting_code: str, base_url: str | None = None) -> str:
+        return "https://example.test/room"
+
+    async def prejoin(self, page, display_name: str, password: str | None = None) -> None:
+        return None
+
+    async def click_join(self, page) -> None:
+        return None
+
+    async def apply_password(self, page, password: str) -> bool:
+        self.password_attempts += 1
+        return True
+
+    async def probe_state(self, page) -> MeetingStateSnapshot:
+        if self._snapshots:
+            return self._snapshots.pop(0)
+        return MeetingStateSnapshot(state=MeetingState.JOINING, confidence=0.5)
+
+    async def set_layout(self, page, preset: str = "speaker") -> bool:
+        return True
+
+
+class TestProviderStateMachine:
+    """Tests for the shared BaseProvider state-machine helpers."""
+
+    @pytest.mark.asyncio
+    async def test_wait_until_joined_retries_password_prompt(self):
+        """The generic join wait should retry through a password prompt and keep the provider contract stable."""
+        provider = SequenceProvider(
+            [
+                MeetingStateSnapshot(
+                    state=MeetingState.ERROR,
+                    error_code="PASSWORD_REQUIRED",
+                    evidence={"password_prompt": True},
+                ),
+                MeetingStateSnapshot(state=MeetingState.IN_MEETING),
+            ]
+        )
+
+        result = await provider.wait_until_joined(FakePage(), timeout_sec=5, password="secret")
+
+        assert result == JoinResult(success=True)
+        assert provider.password_attempts == 1
+
+
+class TestProviderProbeState:
+    """Tests for provider-specific probe_state implementations."""
+
+    @pytest.mark.asyncio
+    async def test_jitsi_probe_state_detects_in_meeting(self):
+        provider = JitsiProvider()
+        page = FakePage({"#remoteVideos": 1}, url="https://meet.jit.si/test-room")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.IN_MEETING
+        assert "#remoteVideos" in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_jitsi_probe_state_detects_password_prompt(self):
+        provider = JitsiProvider()
+        page = FakePage({'input[name="lockKey"]': 1}, url="https://meet.jit.si/test-room")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.ERROR
+        assert snapshot.error_code == "PASSWORD_REQUIRED"
+        assert snapshot.evidence["password_prompt"] is True
+
+    @pytest.mark.asyncio
+    async def test_webex_probe_state_detects_lobby_from_title(self, monkeypatch):
+        provider = WebexProvider()
+        page = FakePage(url="https://company.webex.com/meet/test", title="In Lobby")
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _: FakeFrame())
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.LOBBY
+        assert "title:lobby" in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_webex_probe_state_detects_in_meeting_from_iframe(self, monkeypatch):
+        provider = WebexProvider()
+        page = FakePage(url="https://company.webex.com/meet/test", title="")
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _: FakeFrame({'[data-test="grid-layout"]': 1}))
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.IN_MEETING
+        assert '[data-test="grid-layout"]' in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_zoom_probe_state_detects_meeting_end(self):
+        provider = ZoomProvider()
+        page = FakePage({'text="Meeting has ended"': 1}, url="https://zoom.us/wc/test")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.ENDED
+        assert snapshot.error_code == "MEETING_ENDED"

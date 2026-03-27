@@ -1,3 +1,4 @@
+import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -99,8 +100,11 @@ def build_result_update_fields(result: "RecordingResult") -> dict:
     """
     fields = {
         "completed_at": result.end_time,
+        "attempt_no": getattr(result, "attempt_no", 1),
         "error_code": result.error_code,
         "error_message": result.error_message,
+        "failure_stage": getattr(result, "failure_stage", None),
+        "last_ffmpeg_exit_code": getattr(result, "ffmpeg_exit_code", None),
     }
 
     if result.joined_at:
@@ -125,5 +129,9 @@ def build_result_update_fields(result: "RecordingResult") -> dict:
 
     if result.end_reason:
         fields["end_reason"] = result.end_reason
+
+    runtime_summary = getattr(result, "runtime_summary", None)
+    if isinstance(runtime_summary, dict):
+        fields["runtime_summary_json"] = json.dumps(runtime_summary, ensure_ascii=False)
 
     return fields

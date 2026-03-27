@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from playwright.async_api import Page
 
-from providers.base import BaseProvider, JoinResult
+from providers.base import BaseProvider, MeetingState, MeetingStateSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -293,149 +293,130 @@ class ZoomProvider(BaseProvider):
 
         return False
 
-    async def wait_until_joined(self, page: Page, timeout_sec: int = 60, password: str | None = None) -> JoinResult:
-        """Wait until successfully joined the Zoom meeting.
+    async def probe_state(self, page: Page) -> MeetingStateSnapshot:
+        """Probe the current Zoom meeting state."""
+        lobby_selectors = [
+            'text="Please wait"',
+            'text="等待"',
+            'text="Waiting Room"',
+            'text="等候室"',
+            'text="host will let you in"',
+            'text="主持人將會讓您加入"',
+            '[data-testid="waiting-room"]',
+        ]
+        in_meeting_selectors = [
+            "#wc-footer",
+            '[data-testid="meeting-controls"]',
+            'button[aria-label*="Mute" i]',
+            'button[aria-label*="Stop Video" i]',
+            "#wc-container-left",
+            ".meeting-app",
+            '[data-testid="participants-btn"]',
+        ]
+        ended_selectors = [
+            'text="Meeting has ended"',
+            'text="會議已結束"',
+            'text="The host has ended this meeting"',
+            'text="主持人已結束此會議"',
+            'text="You have been removed"',
+            'text="您已被移除"',
+            '[data-testid="meeting-ended"]',
+        ]
+        error_selectors = [
+            ('text="Invalid meeting ID"', "MEETING_NOT_FOUND", "無效的會議 ID"),
+            ('text="無效的會議 ID"', "MEETING_NOT_FOUND", "無效的會議 ID"),
+            ('text="This meeting has been locked"', "MEETING_LOCKED", "此會議已鎖定"),
+            ('text="此會議已鎖定"', "MEETING_LOCKED", "此會議已鎖定"),
+            ('text="Meeting not started"', "MEETING_NOT_STARTED", "會議尚未開始"),
+            ('text="會議尚未開始"', "MEETING_NOT_STARTED", "會議尚未開始"),
+        ]
+        prejoin_selectors = [
+            "#inputname",
+            'input[name="inputName"]',
+            "#joinBtn",
+            '[data-testid="join-btn"]',
+        ]
+        password_selectors = [
+            "#inputpasscode",
+            'input[type="password"]',
+            'input[placeholder*="passcode" i]',
+        ]
 
-        Args:
-            page: Playwright page instance
-            timeout_sec: Maximum time to wait
-            password: Optional password to apply if prompted
+        matched_in_meeting = []
+        for selector in in_meeting_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_in_meeting.append(selector)
+        if matched_in_meeting:
+            return MeetingStateSnapshot(
+                state=MeetingState.IN_MEETING,
+                reason="Detected Zoom in-meeting UI",
+                evidence={"matched_selectors": matched_in_meeting, "url": page.url},
+            )
 
-        Returns:
-            JoinResult with success status
-        """
-        logger.info(f"Waiting to join Zoom meeting (timeout={timeout_sec}s)")
+        matched_ended = []
+        for selector in ended_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_ended.append(selector)
+        if matched_ended:
+            return MeetingStateSnapshot(
+                state=MeetingState.ENDED,
+                reason="Detected Zoom meeting ended UI",
+                evidence={"matched_selectors": matched_ended, "url": page.url},
+                error_code="MEETING_ENDED",
+                error_message="Meeting ended before recording could continue",
+            )
 
-        start_time = asyncio.get_event_loop().time()
-        check_interval = 2
-
-        while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > timeout_sec:
-                return JoinResult(
-                    success=False,
-                    error_code="timeout",
-                    error_message=f"Timeout after {timeout_sec}s waiting to join",
+        for selector, error_code, error_message in error_selectors:
+            if await page.locator(selector).count() > 0:
+                return MeetingStateSnapshot(
+                    state=MeetingState.ERROR,
+                    reason=f"Detected Zoom error selector: {selector}",
+                    evidence={"matched_selectors": [selector], "url": page.url},
+                    error_code=error_code,
+                    error_message=error_message,
                 )
 
-            # Check for password prompt
-            if password:
-                password_prompt = page.locator('input[type="password"], input[placeholder*="passcode" i]')
-                if await password_prompt.count() > 0:
-                    logger.info("Password prompt detected")
-                    if await self.apply_password(page, password):
-                        await asyncio.sleep(2)
-                        continue
+        matched_lobby = []
+        for selector in lobby_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_lobby.append(selector)
+        if matched_lobby:
+            return MeetingStateSnapshot(
+                state=MeetingState.LOBBY,
+                reason="Detected Zoom waiting room UI",
+                evidence={"matched_selectors": matched_lobby, "url": page.url},
+            )
 
-            # Check for waiting room / lobby
-            lobby_indicators = [
-                'text="Please wait"',
-                'text="等待"',
-                'text="Waiting Room"',
-                'text="等候室"',
-                'text="host will let you in"',
-                'text="主持人將會讓您加入"',
-                '[data-testid="waiting-room"]',
-            ]
+        matched_password = []
+        for selector in password_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_password.append(selector)
+        if matched_password:
+            return MeetingStateSnapshot(
+                state=MeetingState.ERROR,
+                reason="Zoom password prompt detected",
+                evidence={"matched_selectors": matched_password, "password_prompt": True, "url": page.url},
+                error_code="PASSWORD_REQUIRED",
+                error_message="需要密碼",
+            )
 
-            for selector in lobby_indicators:
-                try:
-                    if await page.locator(selector).count() > 0:
-                        logger.info("In Zoom waiting room")
-                        return JoinResult(success=False, in_lobby=True)
-                except Exception:
-                    continue
+        matched_prejoin = []
+        for selector in prejoin_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_prejoin.append(selector)
+        if matched_prejoin:
+            return MeetingStateSnapshot(
+                state=MeetingState.PREJOIN,
+                reason="Detected Zoom prejoin UI",
+                evidence={"matched_selectors": matched_prejoin, "url": page.url},
+            )
 
-            # Check for success - in meeting indicators
-            in_meeting_indicators = [
-                "#wc-footer",  # Web client footer
-                '[data-testid="meeting-controls"]',
-                'button[aria-label*="Mute" i]',
-                'button[aria-label*="Stop Video" i]',
-                "#wc-container-left",  # Participant panel
-                ".meeting-app",
-                '[data-testid="participants-btn"]',
-            ]
-
-            for selector in in_meeting_indicators:
-                try:
-                    if await page.locator(selector).count() > 0:
-                        logger.info(f"Successfully joined meeting (detected: {selector})")
-                        return JoinResult(success=True)
-                except Exception:
-                    continue
-
-            # Check for errors
-            error_indicators = [
-                'text="Meeting has ended"',
-                'text="會議已結束"',
-                'text="Invalid meeting ID"',
-                'text="無效的會議 ID"',
-                'text="This meeting has been locked"',
-                'text="此會議已鎖定"',
-                'text="Meeting not started"',
-                'text="會議尚未開始"',
-            ]
-
-            for selector in error_indicators:
-                try:
-                    element = page.locator(selector)
-                    if await element.count() > 0:
-                        error_text = await element.first.text_content()
-                        logger.error(f"Meeting error: {error_text}")
-                        return JoinResult(
-                            success=False,
-                            error_code="meeting_error",
-                            error_message=error_text,
-                        )
-                except Exception:
-                    continue
-
-            await asyncio.sleep(check_interval)
-
-    async def wait_in_lobby(self, page: Page, max_wait_sec: int = 900) -> bool:
-        """Wait in Zoom waiting room until admitted.
-
-        Args:
-            page: Playwright page instance
-            max_wait_sec: Maximum wait time (default 15 minutes)
-
-        Returns:
-            True if admitted, False if timeout
-        """
-        logger.info(f"Waiting in Zoom lobby (max wait: {max_wait_sec}s)")
-
-        start_time = asyncio.get_event_loop().time()
-        check_interval = 5
-
-        while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > max_wait_sec:
-                logger.warning("Lobby timeout")
-                return False
-
-            # Check if we're now in the meeting
-            in_meeting_indicators = [
-                "#wc-footer",
-                'button[aria-label*="Mute" i]',
-                'button[aria-label*="Stop Video" i]',
-                '[data-testid="meeting-controls"]',
-            ]
-
-            for selector in in_meeting_indicators:
-                try:
-                    if await page.locator(selector).count() > 0:
-                        logger.info("Admitted from waiting room")
-                        return True
-                except Exception:
-                    continue
-
-            # Check if meeting ended while waiting
-            if await self.detect_meeting_end(page):
-                logger.warning("Meeting ended while in waiting room")
-                return False
-
-            await asyncio.sleep(check_interval)
+        return MeetingStateSnapshot(
+            state=MeetingState.JOINING,
+            reason="Waiting for Zoom to transition to the next state",
+            confidence=0.5,
+            evidence={"url": page.url},
+        )
 
     async def set_layout(self, page: Page, preset: str = "speaker") -> bool:
         """Attempt to set Zoom video layout.
@@ -468,45 +449,5 @@ class ZoomProvider(BaseProvider):
                     return True
         except Exception as e:
             logger.debug(f"Could not set layout: {e}")
-
-        return False
-
-    async def detect_meeting_end(self, page: Page) -> bool:
-        """Check if Zoom meeting has ended.
-
-        Args:
-            page: Playwright page instance
-
-        Returns:
-            True if meeting ended
-        """
-        end_indicators = [
-            'text="Meeting has ended"',
-            'text="會議已結束"',
-            'text="The host has ended this meeting"',
-            'text="主持人已結束此會議"',
-            'text="You have been removed"',
-            'text="您已被移除"',
-            'text="Meeting ended"',
-            '[data-testid="meeting-ended"]',
-        ]
-
-        for selector in end_indicators:
-            try:
-                if await page.locator(selector).count() > 0:
-                    logger.info(f"Meeting end detected: {selector}")
-                    return True
-            except Exception:
-                continue
-
-        # Check page title for end indicators
-        try:
-            title = await page.title()
-            title_lower = title.lower()
-            if "ended" in title_lower or "結束" in title:
-                logger.info(f"Meeting end detected from title: {title}")
-                return True
-        except Exception:
-            pass
 
         return False
