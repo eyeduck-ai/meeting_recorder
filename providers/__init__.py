@@ -4,7 +4,7 @@ This module provides a registry-based provider system for different meeting plat
 New providers can be registered using `register_provider()`.
 """
 
-from providers.base import BaseProvider, DiagnosticData, JoinResult
+from providers.base import BaseProvider, DiagnosticData, JoinResult, MeetingState, MeetingStateSnapshot
 from providers.jitsi import JitsiProvider
 from providers.webex import WebexProvider
 from providers.zoom import ZoomProvider
@@ -61,6 +61,8 @@ __all__ = [
     "BaseProvider",
     "JoinResult",
     "DiagnosticData",
+    "MeetingState",
+    "MeetingStateSnapshot",
     "JitsiProvider",
     "WebexProvider",
     "ZoomProvider",

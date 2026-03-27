@@ -2,9 +2,12 @@
 
 import re
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 
 from database.models import JobStatus
+from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
 from recording.worker import RecordingJob, RecordingWorker
 
 
@@ -113,6 +116,26 @@ class TestRecordingJob:
         assert job.password == "secret123"
         assert job.lobby_wait_sec == 600
 
+    def test_create_preserves_explicit_job_id_and_attempt(self):
+        """Retry jobs should keep the same logical job_id and carry attempt metadata."""
+        mock_settings = Mock()
+        mock_settings.recordings_dir = Path("/recordings")
+        mock_settings.lobby_wait_sec = 900
+
+        with patch("recording.worker.get_settings", return_value=mock_settings):
+            job = RecordingJob.create(
+                provider="jitsi",
+                meeting_code="test-room",
+                display_name="Bot",
+                duration_sec=60,
+                job_id="fixed1234",
+                attempt_no=3,
+            )
+
+        assert job.job_id == "fixed1234"
+        assert job.attempt_no == 3
+        assert "fixed1234" in str(job.output_dir)
+
     def test_create_default_lobby_wait(self):
         """Should use settings default for lobby_wait_sec."""
         mock_settings = Mock()
@@ -189,3 +212,58 @@ class TestRecordingWorker:
         worker._update_status(JobStatus.RECORDING)
 
         assert worker._status == JobStatus.RECORDING
+
+
+class TestVirtualEnvironment:
+    """Tests for virtual environment lifecycle behavior."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_xvfb_only_targets_owned_process_and_display_lock(self, monkeypatch):
+        """Cleanup should stay scoped to the owned Xvfb process and the current display lock pid."""
+        env = VirtualEnvironment(config=VirtualEnvironmentConfig(display_num=99))
+        env._xvfb_process = Mock()
+        env._xvfb_process.pid = 5678
+        env._xvfb_process.poll.return_value = None
+
+        terminate_owned = AsyncMock()
+        terminate_stale = AsyncMock()
+        cleanup_artifacts = Mock()
+
+        monkeypatch.setattr(env, "_terminate_owned_process", terminate_owned)
+        monkeypatch.setattr(env, "_terminate_stale_display_pid", terminate_stale)
+        monkeypatch.setattr(env, "_cleanup_display_artifacts", cleanup_artifacts)
+        monkeypatch.setattr(env, "_read_display_lock_pid", lambda: 1234)
+        monkeypatch.setattr("recording.virtual_env.subprocess.run", Mock(side_effect=AssertionError("unexpected run")))
+
+        await env._cleanup_xvfb()
+
+        terminate_owned.assert_awaited_once()
+        terminate_stale.assert_awaited_once_with(1234)
+        cleanup_artifacts.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_setup_pulse_audio_verifies_sink_without_modifying_it(self, monkeypatch):
+        """Audio setup should verify the sink and monitor source, then start keepalive."""
+        env = VirtualEnvironment(config=VirtualEnvironmentConfig(pulse_sink_name="virtual_speaker"))
+        commands = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd == ["pactl", "info"]:
+                return Mock(returncode=0, stdout="Server Name: PulseAudio")
+            if cmd == ["pactl", "list", "sinks", "short"]:
+                return Mock(returncode=0, stdout="0\tvirtual_speaker\tmodule-null-sink.c")
+            if cmd == ["pactl", "list", "sources", "short"]:
+                return Mock(returncode=0, stdout="0\tvirtual_speaker.monitor\tmodule-null-sink.c")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        start_keepalive = AsyncMock()
+
+        monkeypatch.setattr("recording.virtual_env.subprocess.run", fake_run)
+        monkeypatch.setattr(env, "_start_audio_keepalive", start_keepalive)
+
+        await env._setup_pulse_audio()
+
+        start_keepalive.assert_awaited_once_with()
+        assert ["pactl", "load-module", "module-null-sink"] not in [cmd[:3] for cmd in commands if len(cmd) >= 3]
+        assert ["pactl", "set-default-sink", "virtual_speaker"] not in commands

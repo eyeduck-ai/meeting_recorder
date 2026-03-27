@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import subprocess
 from dataclasses import dataclass, field
 
@@ -95,80 +96,137 @@ class VirtualEnvironment:
         # Stop audio keepalive process
         if self._audio_keepalive_process:
             try:
-                self._audio_keepalive_process.terminate()
-                try:
-                    self._audio_keepalive_process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    self._audio_keepalive_process.kill()
-                    self._audio_keepalive_process.wait()
+                await self._terminate_owned_process(
+                    self._audio_keepalive_process,
+                    name="audio keepalive",
+                    timeout=2,
+                )
                 logger.debug("Audio keepalive process stopped")
             except Exception as e:
                 logger.debug(f"Error stopping audio keepalive: {e}")
             finally:
                 self._audio_keepalive_process = None
 
-        # Always stop Xvfb since we always start a fresh one
         if self._xvfb_process:
             try:
-                self._xvfb_process.terminate()
-                try:
-                    self._xvfb_process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self._xvfb_process.kill()
-                    self._xvfb_process.wait()
+                await self._terminate_owned_process(
+                    self._xvfb_process,
+                    name="Xvfb",
+                    timeout=5,
+                )
                 logger.info("Xvfb stopped")
             except Exception as e:
                 logger.warning(f"Error stopping Xvfb: {e}")
             finally:
                 self._xvfb_process = None
 
+        self._cleanup_display_artifacts()
         self._started = False
         self._xvfb_owned = False
         logger.info("Virtual environment stopped")
 
-    async def _cleanup_xvfb(self) -> None:
-        """Kill existing Xvfb processes and clean up lock/socket files.
+    async def _terminate_owned_process(
+        self,
+        process: subprocess.Popen | None,
+        *,
+        name: str,
+        timeout: int,
+    ) -> None:
+        """Terminate a process group that was started by this runtime."""
+        if not process or process.poll() is not None:
+            return
 
-        Order matters: kill browser processes first (they hold display
-        connections), then kill Xvfb, wait for exit, then remove files.
-        """
-        # Step 0: Kill orphaned browser processes using our display
-        # Chromium/Chrome child processes hold display connections and
-        # can prevent Xvfb from fully releasing the socket.
-        for proc_pattern in ["chromium", "chrome", "playwright"]:
-            try:
-                subprocess.run(
-                    ["pkill", "-9", "-f", proc_pattern],
-                    capture_output=True,
-                    timeout=5,
-                )
-            except Exception:
-                pass
-
-        # Step 1: Kill existing Xvfb processes on our display
         try:
-            subprocess.run(
-                ["pkill", "-f", f"Xvfb {self.display}"],
-                capture_output=True,
-                timeout=5,
-            )
-            await asyncio.sleep(0.5)
-        except Exception as e:
-            logger.debug(f"No existing Xvfb to kill: {e}")
+            if hasattr(os, "killpg"):
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            else:
+                process.terminate()
+        except ProcessLookupError:
+            return
 
-        # Step 1b: Force-kill ALL Xvfb processes (fallback for orphaned ones)
         try:
-            subprocess.run(
-                ["pkill", "-9", "Xvfb"],
-                capture_output=True,
-                timeout=5,
-            )
-            await asyncio.sleep(0.5)
-        except Exception:
+            process.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
             pass
 
-        # Step 2: Remove lock file AFTER process is killed
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            return
+
+        process.wait()
+
+    def _is_pid_running(self, pid: int) -> bool:
+        """Return whether a pid is currently alive."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _read_display_lock_pid(self) -> int | None:
+        """Read the X lock file pid for this display, if present."""
         lock_file = f"/tmp/.X{self.config.display_num}-lock"
+        if not os.path.exists(lock_file):
+            return None
+
+        try:
+            with open(lock_file, encoding="utf-8", errors="ignore") as fh:
+                raw = fh.read().strip()
+        except OSError as e:
+            logger.debug(f"Failed to read X lock file {lock_file}: {e}")
+            return None
+
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if not digits:
+            return None
+
+        try:
+            return int(digits)
+        except ValueError:
+            return None
+
+    async def _terminate_stale_display_pid(self, pid: int) -> None:
+        """Terminate a non-owned Xvfb pid that still holds our display."""
+        if not self._is_pid_running(pid):
+            return
+
+        logger.warning(f"Stopping stale Xvfb pid {pid} for display {self.display}")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+        for _ in range(20):
+            if not self._is_pid_running(pid):
+                return
+            await asyncio.sleep(0.1)
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+
+        for _ in range(20):
+            if not self._is_pid_running(pid):
+                return
+            await asyncio.sleep(0.1)
+
+    def _cleanup_display_artifacts(self) -> None:
+        """Remove stale lock/socket artifacts for our display."""
+        stale_pid = self._read_display_lock_pid()
+        if stale_pid and self._is_pid_running(stale_pid):
+            return
+
+        lock_file = f"/tmp/.X{self.config.display_num}-lock"
+        socket_path = f"/tmp/.X11-unix/X{self.config.display_num}"
+
         if os.path.exists(lock_file):
             logger.warning(f"Removing stale lock file: {lock_file}")
             try:
@@ -176,13 +234,26 @@ class VirtualEnvironment:
             except OSError as e:
                 logger.warning(f"Failed to remove lock file: {e}")
 
-        # Step 3: Remove socket file
-        socket_path = f"/tmp/.X11-unix/X{self.config.display_num}"
         if os.path.exists(socket_path):
             try:
                 os.remove(socket_path)
             except OSError as e:
                 logger.debug(f"Failed to remove socket file: {e}")
+
+    async def _cleanup_xvfb(self) -> None:
+        """Clean up only the Xvfb process and display artifacts owned by this display."""
+        if self._xvfb_process and self._xvfb_process.poll() is None:
+            await self._terminate_owned_process(
+                self._xvfb_process,
+                name="Xvfb",
+                timeout=5,
+            )
+
+        stale_pid = self._read_display_lock_pid()
+        if stale_pid and (not self._xvfb_process or stale_pid != self._xvfb_process.pid):
+            await self._terminate_stale_display_pid(stale_pid)
+
+        self._cleanup_display_artifacts()
 
     async def _start_xvfb(self) -> None:
         """Start Xvfb virtual display server with retry logic.
@@ -277,7 +348,7 @@ class VirtualEnvironment:
 
         Works with both PipeWire (via pipewire-pulse) and PulseAudio.
         The audio server should already be running from the Docker entrypoint.
-        This method ensures the virtual sink is configured correctly.
+        This method verifies the sink exists for this job and starts keepalive.
         """
         try:
             # Check if audio server is running (works for both PipeWire and PulseAudio)
@@ -298,38 +369,26 @@ class VirtualEnvironment:
             else:
                 logger.info("Using PulseAudio audio server")
 
-            # Check if virtual sink exists
-            result = subprocess.run(
+            sink_result = subprocess.run(
                 ["pactl", "list", "sinks", "short"],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
 
-            if self.config.pulse_sink_name not in result.stdout:
-                # Create virtual sink (works for both PipeWire and PulseAudio)
-                logger.info(f"Creating virtual audio sink: {self.config.pulse_sink_name}")
-                subprocess.run(
-                    [
-                        "pactl",
-                        "load-module",
-                        "module-null-sink",
-                        f"sink_name={self.config.pulse_sink_name}",
-                        f"sink_properties=device.description={self.config.pulse_sink_name}",
-                        "rate=48000",
-                        "channels=2",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    timeout=5,
-                )
+            if self.config.pulse_sink_name not in sink_result.stdout:
+                logger.warning(f"Virtual audio sink not ready: {self.config.pulse_sink_name}")
+                return
 
-            # Set as default sink
-            subprocess.run(
-                ["pactl", "set-default-sink", self.config.pulse_sink_name],
+            source_result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
                 capture_output=True,
+                text=True,
                 timeout=5,
             )
+            if self.pulse_monitor not in source_result.stdout:
+                logger.warning(f"Virtual audio monitor source not ready: {self.pulse_monitor}")
+                return
 
             # Start audio keepalive process to prevent PipeWire from suspending the sink
             # PipeWire suspends idle sinks which causes FFmpeg to stall

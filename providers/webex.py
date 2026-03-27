@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 from playwright.async_api import FrameLocator, Page
 
 from config.settings import get_settings
-from providers.base import BaseProvider, JoinResult
+from providers.base import BaseProvider, MeetingState, MeetingStateSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -345,211 +345,150 @@ class WebexProvider(BaseProvider):
 
         return False
 
-    async def wait_until_joined(self, page: Page, timeout_sec: int = 60, password: str | None = None) -> JoinResult:
-        """Wait until successfully joined the Webex meeting.
+    async def probe_state(self, page: Page) -> MeetingStateSnapshot:
+        """Probe the current Webex meeting state."""
+        try:
+            page_title = await page.title()
+        except Exception:
+            page_title = ""
+        title_lower = page_title.lower()
 
-        Uses priority-based state detection: detects ALL possible states simultaneously
-        via page title AND iframe elements, then returns based on priority.
-        Priority order: in_meeting > error > lobby
-        This prevents blocking on lobby detection when meetings go directly to joined state.
+        iframe = None
+        iframe_error = None
+        try:
+            iframe = self._get_webex_iframe(page)
+        except Exception as exc:
+            iframe_error = str(exc)
 
-        Args:
-            page: Playwright page instance
-            timeout_sec: Maximum time to wait
-            password: Optional password to apply if prompted
+        in_meeting_selectors = [
+            '[data-test="grid-layout"]',
+            '[data-test="participants-toggle-button"]',
+            '[data-test="in-meeting-chat-toggle-button"]',
+            '[data-test="mc-share"]',
+            '[data-test="raise-hand-button"]',
+            '[data-test="more-menu-button"]',
+            '[data-test$="-video-pane-container"]',
+        ]
+        lobby_selectors = [
+            '[data-test="call_lobby_content"]',
+            '[data-test="local_stream"]',
+            '[data-test="pin-self-view-button"]',
+        ]
+        ended_selectors = [
+            ':text("Meeting has ended")',
+            ':text("會議已結束")',
+            ':text("The host ended the meeting")',
+            ':text("主持人已結束會議")',
+            ':text("Meeting unavailable")',
+        ]
+        error_selectors = [
+            '[data-test*="error"]',
+            '[class*="error-dialog"]',
+            '[class*="meeting-ended"]',
+            '[data-test="meeting-ended"]',
+        ]
+        prejoin_selectors = [
+            '[data-test="Name (required)"]',
+            '[data-test="Email (required)"]',
+            '[data-test="join-button"]',
+        ]
+        password_selectors = [
+            '[data-test*="password" i]',
+            'input[type="password"]',
+            'input[placeholder*="password" i]',
+        ]
 
-        Returns:
-            JoinResult with success status
-        """
-        logger.info(f"Waiting to join Webex meeting (timeout={timeout_sec}s)")
+        matched_in_meeting = []
+        matched_lobby = []
+        matched_ended = []
+        matched_error = []
+        matched_prejoin = []
+        matched_password = []
 
-        start_time = asyncio.get_event_loop().time()
-        end_time = start_time + timeout_sec
-        password_attempted = False
+        if iframe:
+            for selector in in_meeting_selectors:
+                if await iframe.locator(selector).count() > 0:
+                    matched_in_meeting.append(selector)
+            for selector in lobby_selectors:
+                if await iframe.locator(selector).count() > 0:
+                    matched_lobby.append(selector)
+            for selector in ended_selectors:
+                if await iframe.locator(selector).count() > 0:
+                    matched_ended.append(selector)
+            for selector in error_selectors:
+                if await iframe.locator(selector).count() > 0:
+                    matched_error.append(selector)
+            for selector in prejoin_selectors:
+                if await iframe.locator(selector).count() > 0:
+                    matched_prejoin.append(selector)
+            for selector in password_selectors:
+                if await iframe.locator(selector).count() > 0:
+                    matched_password.append(selector)
 
-        while asyncio.get_event_loop().time() < end_time:
-            try:
-                iframe = self._get_webex_iframe(page)
+        if "in meeting" in title_lower or "在會議中" in page_title:
+            matched_in_meeting.append("title:in_meeting")
+        if "in lobby" in title_lower or "lobby" in title_lower or "大廳" in page_title:
+            matched_lobby.append("title:lobby")
 
-                # ============================================================
-                # PHASE 1: Detect ALL possible states simultaneously
-                # ============================================================
+        if matched_in_meeting:
+            return MeetingStateSnapshot(
+                state=MeetingState.IN_MEETING,
+                reason="Detected Webex in-meeting UI",
+                evidence={"matched_selectors": matched_in_meeting, "title": page_title, "url": page.url},
+            )
 
-                is_in_meeting = False
-                is_in_lobby = False
-                error_result = None
+        if matched_ended:
+            return MeetingStateSnapshot(
+                state=MeetingState.ENDED,
+                reason="Detected Webex meeting ended UI",
+                evidence={"matched_selectors": matched_ended, "title": page_title, "url": page.url},
+                error_code="MEETING_ENDED",
+                error_message="Meeting ended before recording could continue",
+            )
 
-                # --- Title-based detection (most reliable) ---
-                page_title = await page.title()
-                title_lower = page_title.lower()
+        if matched_error:
+            return MeetingStateSnapshot(
+                state=MeetingState.ERROR,
+                reason="Detected Webex error UI",
+                evidence={"matched_selectors": matched_error, "title": page_title, "url": page.url},
+                error_code="MEETING_ERROR",
+                error_message="Meeting error detected",
+            )
 
-                # Title: in meeting (English + Chinese)
-                if "in meeting" in title_lower or "在會議中" in page_title:
-                    is_in_meeting = True
+        if matched_lobby:
+            return MeetingStateSnapshot(
+                state=MeetingState.LOBBY,
+                reason="Detected Webex lobby UI",
+                evidence={"matched_selectors": matched_lobby, "title": page_title, "url": page.url},
+            )
 
-                # Title: in lobby (English + Chinese)
-                if "in lobby" in title_lower or "lobby" in title_lower or "大廳" in page_title:
-                    is_in_lobby = True
+        if matched_password:
+            return MeetingStateSnapshot(
+                state=MeetingState.ERROR,
+                reason="Webex password prompt detected",
+                evidence={
+                    "matched_selectors": matched_password,
+                    "password_prompt": True,
+                    "title": page_title,
+                    "url": page.url,
+                },
+                error_code="PASSWORD_REQUIRED",
+                error_message="需要密碼",
+            )
 
-                # --- iframe element-based detection (fallback) ---
-                # IN-MEETING ONLY indicators (verified from HTML comparison)
-                in_meeting_only_selectors = [
-                    '[data-test="grid-layout"]',
-                    '[data-test="participants-toggle-button"]',
-                    '[data-test="in-meeting-chat-toggle-button"]',
-                    '[data-test="mc-share"]',
-                    '[data-test="raise-hand-button"]',
-                    '[data-test="more-menu-button"]',
-                ]
-                for selector in in_meeting_only_selectors:
-                    if await iframe.locator(selector).count() > 0:
-                        is_in_meeting = True
-                        break
+        if matched_prejoin:
+            return MeetingStateSnapshot(
+                state=MeetingState.PREJOIN,
+                reason="Detected Webex prejoin UI",
+                evidence={"matched_selectors": matched_prejoin, "title": page_title, "url": page.url},
+            )
 
-                # Video pane containers (in-meeting only fallback)
-                if not is_in_meeting:
-                    video_panes = await iframe.locator('[data-test$="-video-pane-container"]').count()
-                    if video_panes >= 1:
-                        is_in_meeting = True
-
-                # LOBBY ONLY indicators
-                lobby_only_selectors = [
-                    '[data-test="call_lobby_content"]',
-                    '[data-test="local_stream"]',
-                    '[data-test="pin-self-view-button"]',
-                ]
-                for selector in lobby_only_selectors:
-                    if await iframe.locator(selector).count() > 0:
-                        is_in_lobby = True
-                        break
-
-                # ERROR indicators
-                error_selectors = [
-                    '[data-test*="error"]',
-                    '[class*="error-dialog"]',
-                    '[class*="meeting-ended"]',
-                    '[data-test="meeting-ended"]',
-                ]
-                for selector in error_selectors:
-                    if await iframe.locator(selector).count() > 0:
-                        error_result = ("MEETING_ERROR", "Meeting error detected")
-                        break
-
-                # ============================================================
-                # PHASE 2: Return based on priority (in_meeting > error > lobby)
-                # ============================================================
-
-                # Priority 1: In meeting (highest - immediately return success)
-                if is_in_meeting:
-                    logger.info("Successfully joined Webex meeting")
-                    return JoinResult(success=True, in_lobby=False)
-
-                # Priority 2: Error (return error, but check for password first)
-                if error_result:
-                    error_code, error_msg = error_result
-                    logger.error(f"Webex error detected: {error_msg}")
-                    return JoinResult(
-                        success=False,
-                        in_lobby=False,
-                        error_code=error_code,
-                        error_message=error_msg,
-                    )
-
-                # Priority 3: In lobby (return lobby status)
-                if is_in_lobby:
-                    logger.info("Detected Webex lobby")
-                    return JoinResult(success=False, in_lobby=True)
-
-                # Handle password prompt (if neither in meeting nor lobby detected)
-                if password and not password_attempted:
-                    password_input = iframe.locator('input[type="password"]:visible')
-                    if await password_input.count() > 0:
-                        if await self.apply_password(page, password):
-                            password_attempted = True
-                            await asyncio.sleep(2)
-                            continue
-
-            except Exception as e:
-                logger.debug(f"Error checking meeting status: {e}")
-
-            # None of the states detected yet, continue waiting
-            await asyncio.sleep(1)
-
-        logger.error("Timeout waiting to join Webex meeting")
-        return JoinResult(
-            success=False,
-            in_lobby=False,
-            error_code="JOIN_TIMEOUT",
-            error_message=f"Timeout after {timeout_sec} seconds",
+        return MeetingStateSnapshot(
+            state=MeetingState.JOINING,
+            reason="Waiting for Webex to transition to the next state",
+            confidence=0.5,
+            evidence={"title": page_title, "url": page.url, "iframe_error": iframe_error},
         )
-
-    async def wait_in_lobby(self, page: Page, max_wait_sec: int = 900) -> bool:
-        """Wait in Webex lobby until admitted.
-
-        Args:
-            page: Playwright page instance
-            max_wait_sec: Maximum wait time (default 15 minutes)
-
-        Returns:
-            True if admitted, False if timeout
-        """
-        logger.info(f"Waiting in Webex lobby (max={max_wait_sec}s)")
-
-        start_time = asyncio.get_event_loop().time()
-        end_time = start_time + max_wait_sec
-        check_interval = 5
-
-        while asyncio.get_event_loop().time() < end_time:
-            try:
-                iframe = self._get_webex_iframe(page)
-
-                # Check if now in meeting
-                meeting_indicators = [
-                    '[data-test="participants-toggle-button"]',
-                    '[data-test="leave-button"]',
-                    '[class*="meeting-container"]',
-                ]
-
-                for indicator in meeting_indicators:
-                    if await iframe.locator(indicator).count() > 0:
-                        logger.info("Admitted from Webex lobby")
-                        return True
-
-                # Check if rejected
-                rejected_indicators = [
-                    ':text("rejected")',
-                    ':text("denied")',
-                    ':text("removed")',
-                    ':text("拒絕")',
-                ]
-
-                for indicator in rejected_indicators:
-                    if await iframe.locator(indicator).count() > 0:
-                        logger.error("Rejected from Webex lobby")
-                        return False
-
-                # Check if meeting ended
-                ended_indicators = [
-                    ':text("Meeting has ended")',
-                    ':text("會議已結束")',
-                ]
-
-                for indicator in ended_indicators:
-                    if await iframe.locator(indicator).count() > 0:
-                        logger.info("Meeting ended while in lobby")
-                        return False
-
-            except Exception as e:
-                logger.debug(f"Error checking lobby status: {e}")
-
-            elapsed = int(asyncio.get_event_loop().time() - start_time)
-            if elapsed % 60 == 0 and elapsed > 0:
-                logger.info(f"Still waiting in Webex lobby... ({elapsed}s elapsed)")
-
-            await asyncio.sleep(check_interval)
-
-        logger.error(f"Webex lobby timeout after {max_wait_sec}s")
-        return False
 
     async def set_layout(self, page: Page, preset: str = "speaker") -> bool:
         """Attempt to set Webex video layout.
@@ -586,60 +525,3 @@ class WebexProvider(BaseProvider):
         except Exception as e:
             logger.warning(f"Could not set Webex layout: {e}")
             return False
-
-    async def detect_meeting_end(self, page: Page) -> bool:
-        """Check if Webex meeting has ended.
-
-        Args:
-            page: Playwright page instance
-
-        Returns:
-            True if meeting ended
-        """
-        try:
-            iframe = self._get_webex_iframe(page)
-
-            end_indicators = [
-                ':text("Meeting has ended")',
-                ':text("會議已結束")',
-                ':text("You have left the meeting")',
-                ':text("已離開會議")',
-                ':text("disconnected")',
-                ':text("連線已中斷")',
-                ':text("The host ended the meeting")',
-                ':text("主持人已結束會議")',
-                ':text("Meeting unavailable")',
-            ]
-
-            for indicator in end_indicators:
-                if await iframe.locator(indicator).count() > 0:
-                    logger.info("Webex meeting end detected: text indicator")
-                    return True
-
-            # Check if video elements are gone within iframe
-            try:
-                video_count = await iframe.locator("video").count()
-                if video_count == 0:
-                    # Double-check after brief wait
-                    await asyncio.sleep(2)
-                    video_count = await iframe.locator("video").count()
-                    if video_count == 0:
-                        logger.info("No video elements in Webex iframe - meeting may have ended")
-                        return True
-            except Exception:
-                pass  # iframe might be gone
-
-        except Exception as e:
-            # If iframe is gone, meeting probably ended
-            logger.debug(f"Error checking meeting end (iframe may be gone): {e}")
-            # Check if we're still on Webex - if not, meeting definitely ended
-            if "webex.com" not in page.url:
-                return True
-
-        # Check URL change
-        url = page.url
-        if "webex.com" not in url:
-            logger.info("Navigated away from Webex")
-            return True
-
-        return False

@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 from playwright.async_api import Page
 
 from config.settings import get_settings
-from providers.base import BaseProvider, JoinResult
+from providers.base import BaseProvider, MeetingState, MeetingStateSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -177,186 +177,125 @@ class JitsiProvider(BaseProvider):
 
         return False
 
-    async def wait_until_joined(self, page: Page, timeout_sec: int = 60, password: str | None = None) -> JoinResult:
-        """Wait until successfully joined the meeting.
+    async def probe_state(self, page: Page) -> MeetingStateSnapshot:
+        """Probe the current Jitsi meeting state."""
+        in_meeting_selectors = [
+            "#filmstripLocalVideo",
+            "#remoteVideos",
+            ".details-container",
+        ]
+        ended_indicators = [
+            'text="meeting has ended"',
+            'text="會議已結束"',
+            'text="You have been disconnected"',
+            'text="連線已中斷"',
+            'text="Conference not found"',
+            'text="會議不存在"',
+        ]
+        error_indicators = [
+            ('text="Meeting not found"', "MEETING_NOT_FOUND", "會議不存在"),
+            ('text="會議不存在"', "MEETING_NOT_FOUND", "會議不存在"),
+            ('text="Password required"', "PASSWORD_REQUIRED", "需要密碼"),
+            ('text="需要密碼"', "PASSWORD_REQUIRED", "需要密碼"),
+            ('text="Wrong password"', "PASSWORD_INCORRECT", "密碼錯誤"),
+            ('text="密碼錯誤"', "PASSWORD_INCORRECT", "密碼錯誤"),
+            ('text="Invalid password"', "PASSWORD_INCORRECT", "密碼錯誤"),
+        ]
+        lobby_selectors = [
+            ".lobby-screen",
+            'text="Waiting for the host"',
+            'text="等待主持人"',
+            'text="You are in the waiting room"',
+            'text="Asking to join meeting"',
+        ]
+        prejoin_selectors = [
+            '[data-testid="prejoin.joinMeeting"]',
+            'input[data-testid="prejoin.input"]',
+        ]
+        password_selectors = [
+            'input[name="lockKey"]',
+            'input[type="password"]',
+        ]
 
-        Uses priority-based state detection: detects ALL possible states simultaneously,
-        then returns based on priority (in_meeting > error > lobby).
-        This prevents blocking on lobby detection when meetings go directly to joined state.
+        matched_in_meeting = []
+        for selector in in_meeting_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_in_meeting.append(selector)
+        if matched_in_meeting:
+            return MeetingStateSnapshot(
+                state=MeetingState.IN_MEETING,
+                reason="Detected in-meeting Jitsi UI",
+                evidence={"matched_selectors": matched_in_meeting, "url": page.url},
+            )
 
-        Args:
-            page: Playwright page instance
-            timeout_sec: Maximum time to wait
-            password: Optional password to apply if prompted
+        matched_ended = []
+        for selector in ended_indicators:
+            if await page.locator(selector).count() > 0:
+                matched_ended.append(selector)
+        if matched_ended:
+            return MeetingStateSnapshot(
+                state=MeetingState.ENDED,
+                reason="Detected meeting ended indicator",
+                evidence={"matched_selectors": matched_ended, "url": page.url},
+                error_code="MEETING_ENDED",
+                error_message="Meeting ended before recording could continue",
+            )
 
-        Returns:
-            JoinResult with success status
-        """
-        logger.info(f"Waiting to join meeting (timeout={timeout_sec}s)")
-
-        start_time = asyncio.get_event_loop().time()
-        end_time = start_time + timeout_sec
-        password_attempted = False
-
-        while asyncio.get_event_loop().time() < end_time:
-            # ============================================================
-            # PHASE 1: Detect ALL possible states simultaneously
-            # ============================================================
-
-            # Check in-meeting indicators (highest priority)
-            # These elements ONLY appear when successfully joined:
-            # - #filmstripLocalVideo: local video filmstrip (most reliable)
-            # - #remoteVideos: remote video filmstrip
-            # - .details-container: meeting details bar (timer, subject name)
-            in_meeting_indicators = page.locator("#filmstripLocalVideo,#remoteVideos,.details-container")
-            is_in_meeting = await in_meeting_indicators.count() > 0
-
-            # Check error indicators
-            error_result = None
-            error_indicators = [
-                ('text="Meeting not found"', "MEETING_NOT_FOUND", "會議不存在"),
-                ('text="會議不存在"', "MEETING_NOT_FOUND", "會議不存在"),
-                ('text="Password required"', "PASSWORD_REQUIRED", "需要密碼"),
-                ('text="需要密碼"', "PASSWORD_REQUIRED", "需要密碼"),
-                ('text="Wrong password"', "PASSWORD_INCORRECT", "密碼錯誤"),
-                ('text="密碼錯誤"', "PASSWORD_INCORRECT", "密碼錯誤"),
-                ('text="Invalid password"', "PASSWORD_INCORRECT", "密碼錯誤"),
-            ]
-            for indicator, error_code, error_msg in error_indicators:
-                if await page.locator(indicator).count() > 0:
-                    error_result = (error_code, error_msg)
-                    break
-
-            # Check lobby indicators (lowest priority - may not exist in Jitsi)
-            # .lobby-screen is the primary indicator
-            is_in_lobby = False
-            lobby_screen = page.locator(".lobby-screen")
-            if await lobby_screen.count() > 0:
-                is_in_lobby = True
-            else:
-                # Fallback lobby checks
-                lobby_indicators = [
-                    'text="Waiting for the host"',
-                    'text="等待主持人"',
-                    'text="You are in the waiting room"',
-                    'text="Asking to join meeting"',
-                ]
-                for indicator in lobby_indicators:
-                    if await page.locator(indicator).count() > 0:
-                        is_in_lobby = True
-                        break
-
-            # ============================================================
-            # PHASE 2: Return based on priority (in_meeting > error > lobby)
-            # ============================================================
-
-            # Priority 1: In meeting (highest - immediately return success)
-            if is_in_meeting:
-                logger.info("Successfully joined meeting")
-                return JoinResult(success=True, in_lobby=False)
-
-            # Priority 2: Error (return error, but password dialog may be handled)
-            if error_result:
-                error_code, error_msg = error_result
-                # Special case: handle password dialog if password is provided
-                if error_code == "PASSWORD_REQUIRED" and password and not password_attempted:
-                    password_dialog = page.locator('input[name="lockKey"], input[type="password"]:visible')
-                    if await password_dialog.count() > 0:
-                        if await self.apply_password(page, password):
-                            password_attempted = True
-                            await asyncio.sleep(2)
-                            continue
-                logger.error(f"Join error: {error_msg}")
-                return JoinResult(
-                    success=False,
-                    in_lobby=False,
+        for selector, error_code, error_message in error_indicators:
+            if await page.locator(selector).count() > 0:
+                return MeetingStateSnapshot(
+                    state=MeetingState.ERROR,
+                    reason=f"Detected error selector: {selector}",
+                    evidence={
+                        "matched_selectors": [selector],
+                        "url": page.url,
+                        "password_prompt": error_code.startswith("PASSWORD"),
+                    },
                     error_code=error_code,
-                    error_message=error_msg,
+                    error_message=error_message,
                 )
 
-            # Priority 3: In lobby (return lobby status)
-            if is_in_lobby:
-                logger.info("Detected lobby: waiting for moderator")
-                return JoinResult(success=False, in_lobby=True)
+        matched_lobby = []
+        for selector in lobby_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_lobby.append(selector)
+        if matched_lobby:
+            return MeetingStateSnapshot(
+                state=MeetingState.LOBBY,
+                reason="Detected Jitsi lobby UI",
+                evidence={"matched_selectors": matched_lobby, "url": page.url},
+            )
 
-            # None of the states detected yet, continue waiting
-            await asyncio.sleep(1)
+        matched_prejoin = []
+        for selector in prejoin_selectors:
+            if await page.locator(selector).count() > 0:
+                matched_prejoin.append(selector)
+        if matched_prejoin:
+            return MeetingStateSnapshot(
+                state=MeetingState.PREJOIN,
+                reason="Detected Jitsi prejoin UI",
+                evidence={"matched_selectors": matched_prejoin, "url": page.url},
+            )
 
-        logger.error("Timeout waiting to join meeting")
-        return JoinResult(
-            success=False,
-            in_lobby=False,
-            error_code="JOIN_TIMEOUT",
-            error_message=f"Timeout after {timeout_sec} seconds",
+        password_prompt = []
+        for selector in password_selectors:
+            if await page.locator(selector).count() > 0:
+                password_prompt.append(selector)
+        if password_prompt:
+            return MeetingStateSnapshot(
+                state=MeetingState.ERROR,
+                reason="Password dialog detected",
+                evidence={"matched_selectors": password_prompt, "password_prompt": True, "url": page.url},
+                error_code="PASSWORD_REQUIRED",
+                error_message="需要密碼",
+            )
+
+        return MeetingStateSnapshot(
+            state=MeetingState.JOINING,
+            reason="Waiting for Jitsi to transition to the next state",
+            confidence=0.5,
+            evidence={"url": page.url},
         )
-
-    async def wait_in_lobby(self, page: Page, max_wait_sec: int = 900) -> bool:
-        """Wait in lobby until admitted.
-
-        Args:
-            page: Playwright page instance
-            max_wait_sec: Maximum wait time (default 15 minutes)
-
-        Returns:
-            True if admitted, False if timeout
-        """
-        logger.info(f"Waiting in lobby (max={max_wait_sec}s)")
-
-        start_time = asyncio.get_event_loop().time()
-        end_time = start_time + max_wait_sec
-        check_interval = 5  # Check every 5 seconds
-
-        while asyncio.get_event_loop().time() < end_time:
-            # Check if still in lobby (must NOT be in lobby to proceed)
-            # .lobby-screen is the primary lobby indicator
-            lobby_screen = page.locator(".lobby-screen")
-            is_in_lobby = await lobby_screen.count() > 0
-
-            if not is_in_lobby:
-                # Fallback lobby checks
-                lobby_indicators = [
-                    'text="Waiting for the host"',
-                    'text="等待主持人"',
-                    'text="You are in the waiting room"',
-                    'text="Asking to join meeting"',
-                ]
-                for indicator in lobby_indicators:
-                    if await page.locator(indicator).count() > 0:
-                        is_in_lobby = True
-                        break
-
-            # Check if now in meeting using RELIABLE indicators
-            # These elements ONLY appear when successfully joined:
-            # - #filmstripLocalVideo: local video filmstrip (most reliable)
-            # - #remoteVideos: remote video filmstrip
-            # - .details-container: meeting details bar (timer, subject name)
-            in_meeting = page.locator("#filmstripLocalVideo,#remoteVideos,.details-container")
-            is_in_meeting = await in_meeting.count() > 0
-
-            # Must be in meeting AND not in lobby to be truly admitted
-            if is_in_meeting and not is_in_lobby:
-                logger.info("Admitted from lobby")
-                return True
-
-            # Check if rejected
-            rejected_indicators = [
-                'text="rejected"',
-                'text="denied"',
-                'text="拒絕"',
-            ]
-            for indicator in rejected_indicators:
-                if await page.locator(indicator).count() > 0:
-                    logger.error("Rejected from lobby")
-                    return False
-
-            elapsed = int(asyncio.get_event_loop().time() - start_time)
-            if elapsed % 60 == 0 and elapsed > 0:  # Log every minute
-                logger.info(f"Still waiting in lobby... ({elapsed}s elapsed)")
-
-            await asyncio.sleep(check_interval)
-
-        logger.error(f"Lobby timeout after {max_wait_sec}s")
-        return False
 
     async def set_layout(self, page: Page, preset: str = "speaker") -> bool:
         """Attempt to set speaker view layout.
@@ -416,60 +355,3 @@ class JitsiProvider(BaseProvider):
         except Exception as e:
             logger.warning(f"Could not set layout: {e}")
             return False
-
-    async def detect_meeting_end(self, page: Page) -> bool:
-        """Check if meeting has ended.
-
-        Args:
-            page: Playwright page instance
-
-        Returns:
-            True if meeting ended
-        """
-        try:
-            # Check text indicators for meeting end
-            end_indicators = [
-                'text="meeting has ended"',
-                'text="會議已結束"',
-                'text="You have been disconnected"',
-                'text="連線已中斷"',
-                'text="kicked"',
-                'text="Conference not found"',
-                'text="會議不存在"',
-            ]
-
-            for indicator in end_indicators:
-                if await page.locator(indicator).count() > 0:
-                    logger.info("Meeting end detected: text indicator found")
-                    return True
-
-            # Check if page navigated away from meeting
-            url = page.url
-            if "meet.jit.si" in url and "/" not in url.split("meet.jit.si")[1].strip("/"):
-                logger.info("Navigated away from meeting")
-                return True
-
-            # Check if video elements are gone (meeting may have ended)
-            video_count = await page.locator("video").count()
-            if video_count == 0:
-                # Double-check: wait a moment and check again to avoid false positives
-                await asyncio.sleep(2)
-                video_count = await page.locator("video").count()
-                if video_count == 0:
-                    logger.info("No video elements found - meeting may have ended")
-                    return True
-
-            # Check for "You are alone" indicator (host left)
-            alone_indicators = [
-                'text="You are the only one in the meeting"',
-                'text="你是會議中唯一的人"',
-            ]
-            for indicator in alone_indicators:
-                if await page.locator(indicator).count() > 0:
-                    logger.debug("Only participant remaining in meeting")
-                    # Don't end yet - host might return
-
-        except Exception as e:
-            logger.debug(f"Error in detect_meeting_end: {e}")
-
-        return False

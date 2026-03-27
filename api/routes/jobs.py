@@ -1,6 +1,6 @@
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -12,18 +12,10 @@ from database.models import (
 from database.models import (
     RecordingJob as RecordingJobModel,
 )
-from database.session import JobRepository, build_result_update_fields
-from recording.worker import (
-    RecordingJob,
-    get_worker,
-)
-from telegram_bot.notifications import (
-    notify_recording_completed,
-    notify_recording_failed,
-    notify_recording_started,
-)
+from database.session import JobRepository
+from recording.worker import get_worker
+from scheduling.job_runner import get_job_runner
 from uploading.progress import get_latest_progress, get_progress
-from utils.timezone import utc_now
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -61,6 +53,8 @@ class JobResponse(BaseModel):
     meeting_code: str
     display_name: str
     duration_sec: int
+    attempt_no: int = 1
+    retry_count: int = 0
     created_at: str
     started_at: str | None = None
     joined_at: str | None = None
@@ -71,6 +65,8 @@ class JobResponse(BaseModel):
     duration_actual_sec: float | None = None
     error_code: str | None = None
     error_message: str | None = None
+    failure_stage: str | None = None
+    runtime_summary: dict | None = None
     diagnostics: DiagnosticInfo | None = None
 
 
@@ -92,6 +88,8 @@ def _model_to_response(job: RecordingJobModel) -> JobResponse:
         meeting_code=job.meeting_code,
         display_name=job.display_name,
         duration_sec=job.duration_sec,
+        attempt_no=job.attempt_no,
+        retry_count=job.retry_count,
         created_at=job.created_at.isoformat() if job.created_at else "",
         started_at=job.started_at.isoformat() if job.started_at else None,
         joined_at=job.joined_at.isoformat() if job.joined_at else None,
@@ -102,72 +100,15 @@ def _model_to_response(job: RecordingJobModel) -> JobResponse:
         duration_actual_sec=job.duration_actual_sec,
         error_code=job.error_code,
         error_message=job.error_message,
+        failure_stage=job.failure_stage,
+        runtime_summary=job.runtime_summary,
         diagnostics=diagnostics,
     )
-
-
-async def _run_recording(job: RecordingJob, db_job_id: int) -> None:
-    """Background task to run recording."""
-    import asyncio
-
-    from database.models import get_session_local
-
-    worker = get_worker()
-    SessionLocal = get_session_local()
-
-    def on_status_change(job_id: str, status: JobStatus):
-        """Update status in database and send notifications."""
-        session = SessionLocal()
-        try:
-            repo = JobRepository(session)
-            update_fields = {"status": status.value}
-
-            # Add timestamps for specific statuses
-            if status == JobStatus.STARTING:
-                update_fields["started_at"] = utc_now()
-            elif status == JobStatus.RECORDING:
-                update_fields["recording_started_at"] = utc_now()
-
-            repo.update_status(job_id, status.value, **{k: v for k, v in update_fields.items() if k != "status"})
-            session.commit()
-
-            # Send start notification when recording begins
-            if status == JobStatus.RECORDING:
-                db_job = repo.get_by_job_id(job_id)
-                if db_job:
-                    asyncio.create_task(notify_recording_started(db_job))
-        finally:
-            session.close()
-
-    worker.set_status_callback(on_status_change)
-
-    # Run recording
-    result = await worker.record(job)
-
-    # Update database with final result
-    session = SessionLocal()
-    try:
-        repo = JobRepository(session)
-        update_fields = build_result_update_fields(result)
-
-        repo.update_status(job.job_id, result.status.value, **update_fields)
-        session.commit()
-
-        # Send completion/failure notification
-        db_job = repo.get_by_job_id(job.job_id)
-        if db_job:
-            if result.status == JobStatus.SUCCEEDED:
-                await notify_recording_completed(db_job)
-            elif result.status in (JobStatus.FAILED, JobStatus.CANCELED):
-                await notify_recording_failed(db_job)
-    finally:
-        session.close()
 
 
 @router.post("/record", response_model=JobResponse)
 async def start_recording(
     request: RecordRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """Start a new recording job.
@@ -175,17 +116,14 @@ async def start_recording(
     This endpoint starts a recording job in the background and returns immediately.
     Use GET /jobs/{job_id} to check the job status.
     """
-    worker = get_worker()
-
-    # Check if worker is busy
-    if worker.is_busy:
+    runner = get_job_runner()
+    if runner.is_busy:
         raise HTTPException(
             status_code=409,
             detail="Worker is busy with another recording. Only one recording at a time is supported.",
         )
 
-    # Create job
-    job = RecordingJob.create(
+    job_id = await runner.run_immediate(
         provider=request.provider,
         meeting_code=request.meeting_code,
         display_name=request.display_name,
@@ -194,24 +132,16 @@ async def start_recording(
         password=request.password,
         lobby_wait_sec=request.lobby_wait_sec,
     )
+    if not job_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Worker is busy with another recording. Only one recording at a time is supported.",
+        )
 
-    # Store in database
     repo = JobRepository(db)
-    db_job = repo.create(
-        job_id=job.job_id,
-        provider=job.provider,
-        meeting_code=job.meeting_code,
-        display_name=job.display_name,
-        base_url=job.base_url,
-        duration_sec=job.duration_sec,
-        lobby_wait_sec=job.lobby_wait_sec,
-        status=JobStatus.QUEUED.value,
-    )
-    db.commit()
-
-    # Start recording in background
-    background_tasks.add_task(_run_recording, job, db_job.id)
-
+    db_job = repo.get_by_job_id(job_id)
+    if not db_job:
+        raise HTTPException(status_code=500, detail="Failed to create recording job")
     return _model_to_response(db_job)
 
 
