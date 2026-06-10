@@ -7,6 +7,7 @@ import pytest
 from providers.base import MeetingState
 from providers.jitsi import JitsiProvider
 from providers.webex import WebexProvider
+from providers.zoom import ZoomProvider
 from tests.fixture_pages import FixturePage
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "providers"
@@ -130,6 +131,56 @@ class TestWebexProviderFixtures:
         page = load_fixture("webex", "ended", "page.html", title="Meeting", url="https://company.webex.com/test")
         iframe = load_fixture("webex", "ended", "iframe.html")
         monkeypatch.setattr(provider, "_get_webex_iframe", lambda _page: iframe)
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.ENDED
+
+
+class TestZoomProviderFixtures:
+    """Regression tests for Zoom probe_state selectors."""
+
+    @pytest.mark.asyncio
+    async def test_prejoin_fixture(self):
+        provider = ZoomProvider()
+        page = load_fixture("zoom", "prejoin", title="Zoom Meeting", url="https://zoom.us/wc/join/123")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.PREJOIN
+
+    @pytest.mark.asyncio
+    async def test_lobby_fixture(self):
+        provider = ZoomProvider()
+        page = load_fixture("zoom", "lobby", title="Zoom Meeting", url="https://zoom.us/wc/join/123")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.LOBBY
+
+    @pytest.mark.asyncio
+    async def test_in_meeting_fixture(self):
+        provider = ZoomProvider()
+        page = load_fixture("zoom", "in_meeting", title="Zoom Meeting", url="https://zoom.us/wc/123/start")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.IN_MEETING
+
+    @pytest.mark.asyncio
+    async def test_password_fixture(self):
+        provider = ZoomProvider()
+        page = load_fixture("zoom", "password", title="Zoom Meeting", url="https://zoom.us/wc/join/123")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.ERROR
+        assert snapshot.error_code == "PASSWORD_REQUIRED"
+
+    @pytest.mark.asyncio
+    async def test_ended_fixture(self):
+        provider = ZoomProvider()
+        page = load_fixture("zoom", "ended", title="Zoom Meeting", url="https://zoom.us/wc/123/leave")
 
         snapshot = await provider.probe_state(page)
 

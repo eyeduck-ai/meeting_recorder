@@ -20,6 +20,7 @@ class ProviderType(StrEnum):
 
     JITSI = "jitsi"
     WEBEX = "webex"
+    ZOOM = "zoom"
 
 
 class ScheduleType(StrEnum):

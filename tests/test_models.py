@@ -17,6 +17,7 @@ class TestEnums:
         """ProviderType should have expected values."""
         assert ProviderType.JITSI.value == "jitsi"
         assert ProviderType.WEBEX.value == "webex"
+        assert ProviderType.ZOOM.value == "zoom"
 
     def test_schedule_type_values(self):
         """ScheduleType should have expected values."""

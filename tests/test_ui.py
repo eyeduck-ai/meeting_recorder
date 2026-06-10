@@ -77,3 +77,13 @@ def test_protected_detection_logs_page_requires_auth_and_renders(client, fake_se
 
     assert response.status_code == 200
     assert "Detection Logs" in response.text
+
+
+def test_meeting_form_exposes_zoom_provider(client, fake_settings):
+    """Meeting form should expose Zoom as a supported provider with Zoom-specific helper text."""
+    response = client.get("/meetings/new", headers={"X-API-Key": fake_settings.auth_password})
+
+    assert response.status_code == 200
+    assert 'option value="zoom"' in response.text
+    assert "Meeting URL / ID" in response.text
+    assert "Full Zoom invite link is recommended" in response.text

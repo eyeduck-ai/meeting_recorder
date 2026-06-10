@@ -197,6 +197,13 @@ class RecordingSession:
             probe_callback=lambda snapshot: self.record_provider_state(snapshot, stage),
         )
 
+    async def probe_provider_state(self, stage: str) -> None:
+        """Record one provider state snapshot without using it as an end signal."""
+        if not self.page or not self.provider:
+            raise RuntimeError("Runtime not prepared")
+        snapshot = await self.provider.probe_state(self.page)
+        self.record_provider_state(snapshot, stage)
+
     def process_returncode(self) -> int | None:
         """Return the FFmpeg process return code if FFmpeg has exited."""
         if not self.ffmpeg:

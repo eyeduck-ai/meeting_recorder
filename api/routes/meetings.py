@@ -27,6 +27,7 @@ class MeetingUpdate(BaseModel):
     """Request to update a meeting."""
 
     name: str | None = None
+    provider: Literal["jitsi", "webex", "zoom"] | None = None
     meeting_code: str | None = None
     site_base_url: str | None = None
     join_url: str | None = None

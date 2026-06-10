@@ -15,7 +15,8 @@ class ZoomProvider(BaseProvider):
     """Provider for Zoom Meetings (Guest Join via Browser).
 
     Zoom requires special handling to bypass the desktop app download prompt
-    and join via web browser. This is achieved by adding `?zc=0` parameter.
+    and join via web browser. We use the `/wc/join/{meeting_id}` web client
+    path when possible and keep `zc=0` as a fallback hint.
     """
 
     @property
@@ -30,20 +31,25 @@ class ZoomProvider(BaseProvider):
             base_url: Base URL (e.g., https://zoom.us)
 
         Returns:
-            Full meeting URL for guest join with zc=0 to skip client download
+            Full meeting URL for guest join through the Zoom web client.
         """
-        # If it's already a full URL, parse and add zc=0
+        web_client_params = {"fromPWA": ["1"], "zc": ["0"]}
+
+        # If it's already a full URL, convert Zoom launch URLs to the web
+        # client path and preserve passcode/query parameters.
         if meeting_code.startswith("http://") or meeting_code.startswith("https://"):
             parsed = urlparse(meeting_code)
             query_params = parse_qs(parsed.query)
+            query_params.update(web_client_params)
 
-            # Add zc=0 to skip Zoom client download
-            query_params["zc"] = ["0"]
+            path_parts = [part for part in parsed.path.split("/") if part]
+            if len(path_parts) >= 2 and path_parts[0] == "j":
+                parsed = parsed._replace(path=f"/wc/join/{path_parts[1]}")
+            elif len(path_parts) >= 3 and path_parts[0] == "wc" and path_parts[1] == "join":
+                parsed = parsed._replace(path=f"/wc/join/{path_parts[2]}")
 
-            # Rebuild URL with updated query
             new_query = urlencode(query_params, doseq=True)
-            new_url = parsed._replace(query=new_query).geturl()
-            return new_url
+            return parsed._replace(query=new_query).geturl()
 
         # Build URL from meeting code
         base = base_url or "https://zoom.us"
@@ -54,10 +60,10 @@ class ZoomProvider(BaseProvider):
         if meeting_code.replace(" ", "").replace("-", "").isdigit():
             # Numeric meeting ID
             clean_id = meeting_code.replace(" ", "").replace("-", "")
-            return urljoin(base, f"j/{clean_id}?zc=0")
+            return urljoin(base, f"wc/join/{clean_id}?fromPWA=1&zc=0")
         else:
             # Personal meeting link
-            return urljoin(base, f"j/{meeting_code}?zc=0")
+            return urljoin(base, f"j/{meeting_code}?fromPWA=1&zc=0")
 
     async def prejoin(
         self,
@@ -77,69 +83,35 @@ class ZoomProvider(BaseProvider):
         # Wait for page to load
         await asyncio.sleep(3)
 
-        # Handle cookie consent if present
-        try:
-            cookie_btn = page.locator('button:has-text("Accept"), button:has-text("接受")')
-            if await cookie_btn.count() > 0:
-                await cookie_btn.first.click()
-                logger.info("Accepted cookie consent")
-                await asyncio.sleep(0.5)
-        except Exception:
-            pass
+        # Handle cookie consent if present. Zoom's cookie prompt can cover
+        # the browser-join button and prevent the click from reaching it.
+        await self._accept_cookie_consent(page)
 
-        # Look for "Join from Your Browser" link/button
-        # Zoom often shows this as a fallback option
-        browser_join_selectors = [
-            'a:has-text("Join from Your Browser")',
-            'a:has-text("從您的瀏覽器加入")',
-            'a:has-text("join from your browser")',
-            '[data-testid="join-from-browser-link"]',
-            'a.joinWindowBtn:has-text("browser")',
-            # Fallback: look for any link mentioning browser
-            'a[href*="wc/join"]',
-        ]
-
-        browser_join_clicked = False
-        for selector in browser_join_selectors:
-            try:
-                btn = page.locator(selector)
-                if await btn.count() > 0:
-                    await btn.first.click()
-                    logger.info(f"Clicked 'Join from Browser' using: {selector}")
-                    browser_join_clicked = True
-                    await asyncio.sleep(3)
-                    break
-            except Exception:
-                continue
-
-        if not browser_join_clicked:
-            logger.info("No 'Join from Browser' button found, assuming already on web client")
-
-        # Wait for the web client to load
-        await asyncio.sleep(2)
-
-        # Fill in display name
         name_selectors = [
+            "#input-for-name",
             "#inputname",
             'input[name="inputName"]',
             'input[placeholder*="name" i]',
             'input[placeholder*="名稱" i]',
             'input[aria-label*="name" i]',
             '[data-testid="input-name"]',
+            'input[type="text"]',
         ]
 
-        name_filled = False
-        for selector in name_selectors:
-            try:
-                name_input = page.locator(selector)
-                if await name_input.count() > 0:
-                    await name_input.first.click()
-                    await name_input.first.fill(display_name)
-                    logger.info(f"Display name filled using: {selector}")
-                    name_filled = True
-                    break
-            except Exception:
-                continue
+        if not await self._has_any_selector(page, name_selectors):
+            await self._click_browser_join(page)
+
+        await asyncio.sleep(2)
+
+        if not await self._has_any_selector(page, name_selectors) and "/wc/" not in page.url:
+            web_client_url = self.build_join_url(page.url)
+            if web_client_url != page.url:
+                logger.info(f"Navigating directly to Zoom web client: {web_client_url}")
+                await page.goto(web_client_url, wait_until="domcontentloaded")
+                await asyncio.sleep(5)
+
+        # Fill in display name
+        name_filled = await self._fill_display_name(page, name_selectors, display_name)
 
         if not name_filled:
             logger.warning("Could not find display name input")
@@ -156,18 +128,150 @@ class ZoomProvider(BaseProvider):
             ]
 
             for selector in password_selectors:
-                try:
-                    password_input = page.locator(selector)
-                    if await password_input.count() > 0:
-                        await password_input.fill(password)
-                        logger.info(f"Password filled using: {selector}")
-                        break
-                except Exception:
-                    continue
+                for target in self._targets(page):
+                    try:
+                        password_input = target.locator(selector)
+                        if await password_input.count() > 0:
+                            await password_input.first.fill(password)
+                            logger.info(f"Password filled using: {selector}")
+                            break
+                    except Exception:
+                        continue
 
         # Disable video/audio if possible (before joining)
         # Look for mute toggles on prejoin page
         await self._disable_media(page)
+
+    async def _accept_cookie_consent(self, page: Page) -> None:
+        """Accept Zoom/OneTrust cookie consent if it is blocking the page."""
+        cookie_selectors = [
+            "#onetrust-accept-btn-handler",
+            'button:has-text("Accept Cookies")',
+            'button:has-text("ACCEPT COOKIES")',
+            'button:has-text("Accept")',
+            'button:has-text("接受")',
+            'button[aria-label*="Accept" i]',
+            '[id*="onetrust-accept"]',
+        ]
+        for selector in cookie_selectors:
+            try:
+                cookie_btn = page.locator(selector)
+                if await cookie_btn.count() > 0:
+                    try:
+                        await cookie_btn.first.click(timeout=3000)
+                    except Exception:
+                        await cookie_btn.first.click(timeout=3000, force=True)
+                    logger.info(f"Accepted cookie consent using: {selector}")
+                    await self._wait_until_hidden(page, ["#onetrust-banner-sdk", ".onetrust-pc-dark-filter"])
+                    break
+            except Exception:
+                continue
+
+    async def _click_browser_join(self, page: Page) -> bool:
+        """Click Zoom's browser-join fallback on launch pages."""
+        # Look for "Join from Your Browser" link/button
+        # Zoom often shows this as a fallback option
+        browser_join_selectors = [
+            'button:has-text("Join from browser")',
+            'button:has-text("Join from Browser")',
+            '[role="button"]:has-text("Join from browser")',
+            'a:has-text("Join from Your Browser")',
+            'a:has-text("從您的瀏覽器加入")',
+            'a:has-text("join from your browser")',
+            '[data-testid="join-from-browser-link"]',
+            'a.joinWindowBtn:has-text("browser")',
+            'button:has-text("瀏覽器")',
+            # Fallback: look for any link mentioning browser
+            'a[href*="wc/join"]',
+        ]
+
+        for selector in browser_join_selectors:
+            try:
+                btn = page.locator(selector)
+                if await btn.count() > 0:
+                    try:
+                        await btn.first.click(timeout=3000)
+                    except Exception:
+                        await btn.first.click(timeout=3000, force=True)
+                    logger.info(f"Clicked 'Join from Browser' using: {selector}")
+                    await asyncio.sleep(5)
+                    return True
+            except Exception:
+                continue
+
+        logger.info("No 'Join from Browser' button found, assuming already on web client")
+        return False
+
+    async def _has_any_selector(self, page: Page, selectors: list[str]) -> bool:
+        """Return True when any selector is present on the page."""
+        for target in self._targets(page):
+            for selector in selectors:
+                try:
+                    if await target.locator(selector).count() > 0:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    def _targets(self, page: Page) -> list:
+        """Return the page plus any child frames that may contain Zoom's PWA UI."""
+        targets = [page]
+        for frame in getattr(page, "frames", []) or []:
+            if frame not in targets:
+                targets.append(frame)
+        return targets
+
+    async def _click_first(self, page: Page, selectors: list[str], description: str) -> bool:
+        """Click the first visible element matching any selector in page or frame."""
+        for target in self._targets(page):
+            for selector in selectors:
+                try:
+                    locator = target.locator(selector)
+                    count = await locator.count()
+                    for index in range(count):
+                        element = locator.nth(index)
+                        if not await element.is_visible():
+                            continue
+                        try:
+                            await element.click(timeout=3000)
+                        except Exception:
+                            await element.click(timeout=3000, force=True)
+                        logger.info(f"Clicked {description} using: {selector}")
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    async def _fill_display_name(self, page: Page, selectors: list[str], display_name: str) -> bool:
+        """Wait for and fill the Zoom display-name field."""
+        for _ in range(20):
+            for target in self._targets(page):
+                for selector in selectors:
+                    try:
+                        name_input = target.locator(selector)
+                        count = await name_input.count()
+                        for index in range(count):
+                            element = name_input.nth(index)
+                            if not await element.is_visible():
+                                continue
+                            await element.click(timeout=3000)
+                            await element.fill(display_name, timeout=3000)
+                            logger.info(f"Display name filled using: {selector}")
+                            return True
+                    except Exception:
+                        continue
+            await asyncio.sleep(1)
+        return False
+
+    async def _wait_until_hidden(self, page: Page, selectors: list[str]) -> None:
+        """Best-effort wait for blocking overlays to disappear."""
+        for selector in selectors:
+            try:
+                overlay = page.locator(selector)
+                if await overlay.count() > 0:
+                    await overlay.first.wait_for(state="hidden", timeout=3000)
+            except Exception:
+                continue
 
     async def _disable_media(self, page: Page) -> None:
         """Attempt to disable video and audio on prejoin page."""
@@ -180,15 +284,9 @@ class ZoomProvider(BaseProvider):
         ]
 
         for selector in video_off_selectors:
-            try:
-                btn = page.locator(selector)
-                if await btn.count() > 0:
-                    await btn.first.click()
-                    logger.info(f"Disabled video using: {selector}")
-                    await asyncio.sleep(0.3)
-                    break
-            except Exception:
-                continue
+            if await self._click_first(page, [selector], "video toggle"):
+                await asyncio.sleep(0.3)
+                break
 
         # Audio off toggle
         audio_off_selectors = [
@@ -199,15 +297,9 @@ class ZoomProvider(BaseProvider):
         ]
 
         for selector in audio_off_selectors:
-            try:
-                btn = page.locator(selector)
-                if await btn.count() > 0:
-                    await btn.first.click()
-                    logger.info(f"Disabled audio using: {selector}")
-                    await asyncio.sleep(0.3)
-                    break
-            except Exception:
-                continue
+            if await self._click_first(page, [selector], "audio toggle"):
+                await asyncio.sleep(0.3)
+                break
 
     async def click_join(self, page: Page) -> None:
         """Click the join meeting button.
@@ -218,25 +310,25 @@ class ZoomProvider(BaseProvider):
         logger.info("Clicking Zoom join button")
 
         join_selectors = [
-            'button:has-text("Join")',
-            'button:has-text("加入")',
-            'button:has-text("Join Meeting")',
-            'button:has-text("加入會議")',
             "#joinBtn",
             '[data-testid="join-btn"]',
             "button.join-btn",
+            "button.preview-join-button",
+            ".preview-join-button",
+            'button:has-text("Join Meeting")',
+            'button:has-text("加入會議")',
             'button[type="submit"]',
         ]
+        if "/wc/" in page.url:
+            join_selectors.extend(
+                [
+                    'button:has-text("Join")',
+                    'button:has-text("加入")',
+                ]
+            )
 
-        for selector in join_selectors:
-            try:
-                btn = page.locator(selector)
-                if await btn.count() > 0:
-                    await btn.first.click()
-                    logger.info(f"Clicked join button using: {selector}")
-                    return
-            except Exception:
-                continue
+        if await self._click_first(page, join_selectors, "join button"):
+            return
 
         logger.warning("Could not find join button")
 
@@ -263,34 +355,30 @@ class ZoomProvider(BaseProvider):
         ]
 
         for selector in password_selectors:
-            try:
-                password_input = page.locator(selector)
-                if await password_input.count() > 0:
-                    await password_input.fill(password)
-                    logger.info("Password filled in dialog")
+            for target in self._targets(page):
+                try:
+                    password_input = target.locator(selector)
+                    if await password_input.count() > 0:
+                        await password_input.first.fill(password)
+                        logger.info("Password filled in dialog")
 
-                    # Find and click submit button
-                    submit_selectors = [
-                        'button:has-text("Join")',
-                        'button:has-text("加入")',
-                        'button:has-text("Submit")',
-                        'button:has-text("OK")',
-                        'button[type="submit"]',
-                    ]
+                        # Find and click submit button
+                        submit_selectors = [
+                            'button:has-text("Join")',
+                            'button:has-text("加入")',
+                            'button:has-text("Submit")',
+                            'button:has-text("OK")',
+                            'button[type="submit"]',
+                        ]
 
-                    for btn_selector in submit_selectors:
-                        btn = page.locator(btn_selector)
-                        if await btn.count() > 0:
-                            await btn.first.click()
-                            logger.info("Password submitted")
+                        if await self._click_first(page, submit_selectors, "password submit button"):
                             return True
 
-                    # Try pressing Enter
-                    await password_input.press("Enter")
-                    return True
-            except Exception:
-                continue
-
+                        # Try pressing Enter
+                        await password_input.first.press("Enter")
+                        return True
+                except Exception:
+                    continue
         return False
 
     async def probe_state(self, page: Page) -> MeetingStateSnapshot:
@@ -307,8 +395,6 @@ class ZoomProvider(BaseProvider):
         in_meeting_selectors = [
             "#wc-footer",
             '[data-testid="meeting-controls"]',
-            'button[aria-label*="Mute" i]',
-            'button[aria-label*="Stop Video" i]',
             "#wc-container-left",
             ".meeting-app",
             '[data-testid="participants-btn"]',
@@ -331,10 +417,16 @@ class ZoomProvider(BaseProvider):
             ('text="會議尚未開始"', "MEETING_NOT_STARTED", "會議尚未開始"),
         ]
         prejoin_selectors = [
+            "#input-for-name",
             "#inputname",
             'input[name="inputName"]',
             "#joinBtn",
             '[data-testid="join-btn"]',
+            "button.preview-join-button",
+            'text="Enter Meeting Info"',
+            'text="Your Name"',
+            'button:has-text("Join from browser")',
+            'button:has-text("Join from Zoom Workplace app")',
         ]
         password_selectors = [
             "#inputpasscode",
@@ -344,7 +436,7 @@ class ZoomProvider(BaseProvider):
 
         matched_in_meeting = []
         for selector in in_meeting_selectors:
-            if await page.locator(selector).count() > 0:
+            if await self._has_any_selector(page, [selector]):
                 matched_in_meeting.append(selector)
         if matched_in_meeting:
             return MeetingStateSnapshot(
@@ -355,7 +447,7 @@ class ZoomProvider(BaseProvider):
 
         matched_ended = []
         for selector in ended_selectors:
-            if await page.locator(selector).count() > 0:
+            if await self._has_any_selector(page, [selector]):
                 matched_ended.append(selector)
         if matched_ended:
             return MeetingStateSnapshot(
@@ -367,7 +459,7 @@ class ZoomProvider(BaseProvider):
             )
 
         for selector, error_code, error_message in error_selectors:
-            if await page.locator(selector).count() > 0:
+            if await self._has_any_selector(page, [selector]):
                 return MeetingStateSnapshot(
                     state=MeetingState.ERROR,
                     reason=f"Detected Zoom error selector: {selector}",
@@ -378,7 +470,7 @@ class ZoomProvider(BaseProvider):
 
         matched_lobby = []
         for selector in lobby_selectors:
-            if await page.locator(selector).count() > 0:
+            if await self._has_any_selector(page, [selector]):
                 matched_lobby.append(selector)
         if matched_lobby:
             return MeetingStateSnapshot(
@@ -389,7 +481,7 @@ class ZoomProvider(BaseProvider):
 
         matched_password = []
         for selector in password_selectors:
-            if await page.locator(selector).count() > 0:
+            if await self._has_any_selector(page, [selector]):
                 matched_password.append(selector)
         if matched_password:
             return MeetingStateSnapshot(
@@ -402,7 +494,7 @@ class ZoomProvider(BaseProvider):
 
         matched_prejoin = []
         for selector in prejoin_selectors:
-            if await page.locator(selector).count() > 0:
+            if await self._has_any_selector(page, [selector]):
                 matched_prejoin.append(selector)
         if matched_prejoin:
             return MeetingStateSnapshot(

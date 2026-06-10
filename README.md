@@ -6,7 +6,7 @@
 
 ## 支援能力
 
-- 會議平台：Jitsi Meet、Cisco Webex
+- 會議平台：Jitsi Meet、Cisco Webex、Zoom
 - 排程模式：單次排程、CRON 週期排程、手動立即觸發
 - 錄製控制：大廳等待、提前加入、自動偵測會議結束、手動停止/提前完成
 - 整合能力：Telegram Bot 通知與管理、YouTube Device Flow 授權與上傳

@@ -163,6 +163,43 @@ class TestJobRunner:
             session.close()
 
     @pytest.mark.asyncio
+    async def test_manual_schedule_trigger_deadline_uses_trigger_time(self, session_local, monkeypatch):
+        """Manual schedule triggers should record for duration_sec even when the planned start is in the future."""
+        runner = JobRunner()
+        retry_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(runner, "_run_recording_with_retry", retry_mock)
+
+        session = session_local()
+        try:
+            meeting = Meeting(
+                name="Future Manual Trigger",
+                provider="zoom",
+                meeting_code="https://zoom.us/j/123456789",
+                default_display_name="Recorder Bot",
+            )
+            schedule = Schedule(
+                meeting=meeting,
+                schedule_type="once",
+                start_time=utc_now() + timedelta(days=1),
+                duration_sec=180,
+                enabled=True,
+            )
+            session.add(meeting)
+            session.add(schedule)
+            session.commit()
+            schedule_id = schedule.id
+        finally:
+            session.close()
+
+        before = utc_now()
+        await runner._execute_schedule(schedule_id, manual_trigger=True)
+        after = utc_now()
+
+        retry_mock.assert_awaited_once()
+        deadline = retry_mock.await_args.kwargs["meeting_end_time"]
+        assert before + timedelta(seconds=180) <= deadline <= after + timedelta(seconds=180)
+
+    @pytest.mark.asyncio
     async def test_retry_keeps_same_job_id_and_single_db_row(self, session_local, monkeypatch):
         """Retryable failures should reuse one logical job_id and update the same recording_jobs row."""
         runner = JobRunner()

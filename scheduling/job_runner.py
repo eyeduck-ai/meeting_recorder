@@ -64,7 +64,7 @@ class JobRunner:
         self._upload_lock = asyncio.Lock()
         self._notification_lock = asyncio.Lock()
         self._current_schedule_id: int | None = None
-        self._queue: list[int] = []
+        self._queue: list[tuple[int, bool]] = []
 
     @property
     def is_busy(self) -> bool:
@@ -78,36 +78,38 @@ class JobRunner:
     def queue_length(self) -> int:
         return len(self._queue)
 
-    def queue_schedule(self, schedule_id: int) -> bool:
+    def queue_schedule(self, schedule_id: int, manual_trigger: bool = False) -> bool:
         """Queue a schedule to run."""
-        if schedule_id in self._queue:
+        if any(queued_id == schedule_id for queued_id, _manual_trigger in self._queue):
             logger.warning(f"Schedule {schedule_id} already in queue")
             return False
 
-        asyncio.create_task(self._run_schedule_when_available(schedule_id))
+        asyncio.create_task(self._run_schedule_when_available(schedule_id, manual_trigger=manual_trigger))
         return True
 
-    async def _run_schedule_when_available(self, schedule_id: int) -> None:
+    async def _run_schedule_when_available(self, schedule_id: int, manual_trigger: bool = False) -> None:
         """Acquire the lock and run a scheduled job."""
         if self._lock.locked():
             logger.info(f"Schedule {schedule_id} waiting in queue (queue length: {len(self._queue)})")
-            self._queue.append(schedule_id)
+            self._queue.append((schedule_id, manual_trigger))
 
         upload_request = None
         async with self._lock:
-            if schedule_id in self._queue:
-                self._queue.remove(schedule_id)
+            for index, (queued_id, _manual_trigger) in enumerate(self._queue):
+                if queued_id == schedule_id:
+                    self._queue.pop(index)
+                    break
 
             self._current_schedule_id = schedule_id
             try:
-                upload_request = await self._execute_schedule(schedule_id)
+                upload_request = await self._execute_schedule(schedule_id, manual_trigger=manual_trigger)
             finally:
                 self._current_schedule_id = None
 
         if upload_request:
             asyncio.create_task(self._run_upload_task(upload_request))
 
-    async def _execute_schedule(self, schedule_id: int) -> UploadRequest | None:
+    async def _execute_schedule(self, schedule_id: int, *, manual_trigger: bool = False) -> UploadRequest | None:
         """Execute a scheduled recording."""
         logger.info(f"Executing schedule {schedule_id}")
         SessionLocal = get_session_local()
@@ -126,7 +128,7 @@ class JobRunner:
                 logger.error(f"Meeting not found for schedule {schedule_id}")
                 return None
 
-            deadline_at = self._get_fixed_deadline_at(schedule)
+            deadline_at = self._get_fixed_deadline_at(schedule, manual_trigger=manual_trigger)
             if deadline_at:
                 logger.info(f"Fixed duration deadline for schedule {schedule_id}: {deadline_at.isoformat()}")
             meeting_end_time = deadline_at or (utc_now() + timedelta(seconds=schedule.duration_sec))
@@ -288,13 +290,16 @@ class JobRunner:
         error_str = str(error_message)
         return any(pattern in error_str for pattern in RETRYABLE_ERRORS)
 
-    def _get_fixed_deadline_at(self, schedule: Schedule) -> datetime | None:
+    def _get_fixed_deadline_at(self, schedule: Schedule, *, manual_trigger: bool = False) -> datetime | None:
         """Calculate the fixed deadline for a schedule."""
         duration_mode = (
             schedule.duration_mode.value if hasattr(schedule.duration_mode, "value") else schedule.duration_mode
         )
         if duration_mode != "fixed":
             return None
+
+        if manual_trigger:
+            return utc_now() + timedelta(seconds=schedule.duration_sec)
 
         start_time = None
         schedule_type_value = (

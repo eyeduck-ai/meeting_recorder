@@ -101,16 +101,9 @@ uv run ruff format --check .
 
 ### Provider 支援現況
 
-- 對外文件與 UI 主力支援：Jitsi、Webex
-- `providers/zoom.py`、測試、部分 API 型別已存在 Zoom 痕跡
-- 但 Zoom 尚未被完整整合到 UI 與 README 的對外承諾中
-
-若要正式宣告 Zoom 支援，必須同步處理：
-
-- `README.md`
-- `docs/development.md`
-- `web/templates/meetings/form.html`
-- 測試與對外 API 描述
+- 對外文件、UI、API 型別與 provider registry 正式支援：Jitsi、Webex、Zoom
+- Zoom 建議使用完整邀請連結作為 meeting code；URL 內的 `pwd` 參數會被保留，並由 Zoom provider 加上 `zc=0` 走瀏覽器加入流程
+- 若新增或移除 provider，必須同步處理 `README.md`、`docs/development.md`、`AGENTS.md`、UI、測試與對外 API 描述
 
 ### 錄製環境限制
 

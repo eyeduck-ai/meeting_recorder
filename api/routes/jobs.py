@@ -26,7 +26,7 @@ init_db()
 class RecordRequest(BaseModel):
     """Request to start a recording."""
 
-    provider: Literal["jitsi", "webex"] = "jitsi"
+    provider: Literal["jitsi", "webex", "zoom"] = "jitsi"
     meeting_code: str = Field(..., min_length=1, description="Meeting room code or full URL")
     display_name: str = Field(default="Recorder Bot", description="Display name in meeting")
     duration_sec: int = Field(default=3600, ge=60, le=14400, description="Recording duration in seconds")

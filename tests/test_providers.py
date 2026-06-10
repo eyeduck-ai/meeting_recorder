@@ -111,29 +111,33 @@ class TestZoomProvider:
     """Tests for ZoomProvider."""
 
     def test_build_join_url_full_url(self):
-        """Full URL should have zc=0 added."""
+        """Full Zoom launch URL should be converted to the web client."""
         provider = ZoomProvider()
         input_url = "https://zoom.us/j/123456789"
         url = provider.build_join_url(input_url)
 
-        assert "123456789" in url
+        assert "zoom.us/wc/join/123456789" in url
+        assert "fromPWA=1" in url
         assert "zc=0" in url
 
     def test_build_join_url_with_existing_params(self):
-        """URL with existing params should preserve them and add zc=0."""
+        """URL with existing params should preserve them and add web-client params."""
         provider = ZoomProvider()
         input_url = "https://zoom.us/j/123456789?pwd=abc123"
         url = provider.build_join_url(input_url)
 
+        assert "zoom.us/wc/join/123456789" in url
         assert "pwd=abc123" in url
+        assert "fromPWA=1" in url
         assert "zc=0" in url
 
     def test_build_join_url_meeting_number(self):
-        """Numeric meeting ID should generate proper URL."""
+        """Numeric meeting ID should generate a web-client URL."""
         provider = ZoomProvider()
         url = provider.build_join_url("123456789")
 
-        assert "zoom.us/j/123456789" in url
+        assert "zoom.us/wc/join/123456789" in url
+        assert "fromPWA=1" in url
         assert "zc=0" in url
 
     def test_build_join_url_meeting_number_with_dashes(self):
@@ -358,3 +362,25 @@ class TestProviderProbeState:
 
         assert snapshot.state == MeetingState.ENDED
         assert snapshot.error_code == "MEETING_ENDED"
+
+    @pytest.mark.asyncio
+    async def test_zoom_probe_state_checks_pwa_child_frames(self):
+        provider = ZoomProvider()
+        page = FakePage(url="https://app.zoom.us/wc/123/join")
+        page.frames = [FakeFrame({"#input-for-name": 1})]
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.PREJOIN
+        assert "#input-for-name" in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_zoom_probe_state_detects_in_meeting_from_child_frame(self):
+        provider = ZoomProvider()
+        page = FakePage(url="https://app.zoom.us/wc/123/join")
+        page.frames = [FakeFrame({".meeting-app": 1})]
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.IN_MEETING
+        assert ".meeting-app" in snapshot.evidence["matched_selectors"]

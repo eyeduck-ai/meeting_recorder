@@ -264,5 +264,5 @@ async def trigger_schedule(schedule_id: int, db: Session = Depends(get_db)):
             detail="Worker is busy. Job will be queued.",
         )
 
-    runner.queue_schedule(schedule_id)
+    runner.queue_schedule(schedule_id, manual_trigger=True)
     return {"message": "Schedule triggered", "id": schedule_id}

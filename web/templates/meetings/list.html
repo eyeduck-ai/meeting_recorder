@@ -32,6 +32,9 @@
                     {% elif meeting.provider == 'webex' %}
                     <span
                         class="badge badge-sm badge-warning badge-outline rounded uppercase font-bold text-[10px]">Webex</span>
+                    {% elif meeting.provider == 'zoom' %}
+                    <span
+                        class="badge badge-sm badge-success badge-outline rounded uppercase font-bold text-[10px]">Zoom</span>
                     {% else %}
                     <span class="badge badge-sm badge-ghost badge-outline rounded uppercase font-bold text-[10px]">{{
                         meeting.provider }}</span>
@@ -76,6 +79,9 @@
                             {% elif meeting.provider == 'webex' %}
                             <span
                                 class="badge badge-warning badge-outline font-bold text-xs uppercase rounded">Webex</span>
+                            {% elif meeting.provider == 'zoom' %}
+                            <span
+                                class="badge badge-success badge-outline font-bold text-xs uppercase rounded">Zoom</span>
                             {% else %}
                             <span class="badge badge-ghost badge-outline font-bold text-xs uppercase rounded">{{
                                 meeting.provider }}</span>

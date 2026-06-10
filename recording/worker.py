@@ -274,6 +274,10 @@ class RecordingWorker:
                 )
 
             session.begin_stage("monitor_recording")
+            try:
+                await session.probe_provider_state("monitor_recording")
+            except Exception as e:
+                logger.warning(f"Failed to record provider state at recording start: {e}")
             result.end_reason, result.ffmpeg_exit_code = await self._monitor_recording(
                 session=session,
                 job=job,

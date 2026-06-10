@@ -125,6 +125,7 @@ uv run uvicorn api.main:app --reload
 - CRON 使用標準五欄位格式，scheduler 內部會把 weekday 轉成 APScheduler 格式
 - scheduler 會在啟動時從 DB 載入已啟用排程
 - scheduler 也會同步 `next_run_at`，並在特定情境做 catch-up 判斷
+- 手動 trigger schedule 時，fixed duration 從觸發當下起算；APScheduler 自動觸發才使用 schedule 原始時間窗
 
 ### 自動偵測結束
 
@@ -140,11 +141,9 @@ uv run uvicorn api.main:app --reload
 
 ### Provider 現況
 
-- UI 與對外文件主力支援：Jitsi、Webex
-- 程式碼與測試中已有 Zoom provider 與 API 型別痕跡
-- 但 UI 表單與 README 尚未把 Zoom 視為完整對外支援能力
-
-若未來要正式宣告 Zoom 支援，需同步更新 README、UI、測試與 agent 文件。
+- UI、API、文件與 provider registry 正式支援：Jitsi、Webex、Zoom
+- Zoom 建議使用完整邀請連結做 `meeting_code`，包含 URL 內的 `pwd` 參數時可由 provider 保留並帶入加入流程
+- 若未來新增或移除 provider，需同步更新 README、UI、API 型別、測試與 agent 文件
 
 ## API 與功能面概觀
 

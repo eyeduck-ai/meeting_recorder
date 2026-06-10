@@ -53,14 +53,14 @@ class SchedulerService:
 
     def __init__(self):
         self._scheduler: AsyncIOScheduler | None = None
-        self._job_callback: Callable[[int], None] | None = None
+        self._job_callback: Callable[..., None] | None = None
         self._started = False
 
     @property
     def is_running(self) -> bool:
         return self._started and self._scheduler is not None
 
-    def set_job_callback(self, callback: Callable[[int], None]) -> None:
+    def set_job_callback(self, callback: Callable[..., None]) -> None:
         """Set callback to be called when a scheduled job triggers.
 
         Args:
@@ -458,7 +458,7 @@ class SchedulerService:
         # Call the registered callback
         if self._job_callback:
             try:
-                result = self._job_callback(schedule_id)
+                result = self._job_callback(schedule_id, manual_trigger=True)
                 return result
             except Exception as e:
                 logger.error(f"Job callback error for schedule {schedule_id}: {e}")
