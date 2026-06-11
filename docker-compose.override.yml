@@ -1,10 +1,15 @@
 # Docker Compose - Development Override
 # 此檔案會自動被 `docker compose up` 載入
 # 用於本地開發：從 Dockerfile 建構映像
+#
+# 建議透過 `python -m scripts.dev_compose ...` 啟動，以自動隔離
+# project name、host ports 與 image tag，避免替換正式 recorder。
+
+name: ${COMPOSE_PROJECT_NAME:-meeting-recorder-dev}
 
 services:
   app:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: meeting-recorder:dev
+    image: ${MEETING_RECORDER_IMAGE:-meeting-recorder:dev-local}

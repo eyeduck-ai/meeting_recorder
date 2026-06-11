@@ -8,6 +8,9 @@
 #   export COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
 #   docker compose up -d
 
+name: ${COMPOSE_PROJECT_NAME:-meeting-recorder-prod}
+
 services:
   app:
-    image: ${DOCKER_IMAGE:-ghcr.io/eyeduck-ai/meeting_recorder:latest}
+    container_name: ${MEETING_RECORDER_CONTAINER_NAME:-meeting-recorder}
+    image: ${MEETING_RECORDER_IMAGE:-ghcr.io/eyeduck-ai/meeting_recorder:latest}

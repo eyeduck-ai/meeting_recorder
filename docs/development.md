@@ -32,21 +32,37 @@ agent 規則與文件同步要求請看根目錄 [AGENTS.md](../AGENTS.md)。
 
 ### Docker 開發模式
 
-跨平台開發最穩定的方式是 Docker。`docker-compose.override.yml` 會在 `docker compose up` 時自動載入，使用本地 `docker/Dockerfile` 建置映像。
+跨平台開發最穩定的方式是 Docker。dev/test runtime 必須和正式 recorder 隔離，避免替換已部署的 container。
 
 ```bash
 cp .env.example .env
-docker compose up --build -d
-docker compose logs -f app
+python -m scripts.dev_compose up --build -d
+docker compose -p meeting-recorder-dev-<workspace-hash> logs -f app
 ```
+
+`scripts.dev_compose` 會自動設定：
+
+- `COMPOSE_PROJECT_NAME=meeting-recorder-dev-<workspace-hash>`
+- `APP_PORT=8001`
+- `VNC_PORT=5901`
+- `MEETING_RECORDER_IMAGE=meeting-recorder:dev-<workspace-hash>`
+
+它也會檢查 Docker labels、working directory、host ports 與 image tag；若會碰到正式 recorder，就會拒絕執行。
 
 相關 Compose 檔案：
 
 | 檔案 | 角色 |
 | --- | --- |
 | `docker-compose.yml` | 共用設定、volume、port、env |
-| `docker-compose.override.yml` | 本地原始碼建置 |
+| `docker-compose.override.yml` | 本地原始碼建置，建議透過 `scripts.dev_compose` 使用 |
+| `docker-compose.deploy.yml` | 從原始碼正式部署，使用 production runtime identity |
 | `docker-compose.prod.yml` | 使用 GHCR 已發布映像 |
+
+正式部署從原始碼建置時使用：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
+```
 
 ### 本地原始碼開發
 

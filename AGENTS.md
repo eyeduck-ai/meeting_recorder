@@ -51,7 +51,7 @@ README 面向使用者與部署者；本檔面向 agent 與 contributor。
 
 ```bash
 cp .env.example .env
-docker compose up --build -d
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
 docker compose logs -f app
 ```
 
@@ -60,6 +60,14 @@ docker compose logs -f app
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
+
+本地測試、smoke test、live validation 不得使用裸 `docker compose up --build -d`，也不得重用 production 的 `container_name`、project name、ports 或 image tag。請使用隔離 wrapper：
+
+```bash
+python -m scripts.dev_compose up --build -d
+```
+
+預設 dev/test 使用 workspace 專屬 `COMPOSE_PROJECT_NAME`、`MEETING_RECORDER_IMAGE`，以及 `APP_PORT=8001`、`VNC_PORT=5901`。
 
 ### 本地開發
 

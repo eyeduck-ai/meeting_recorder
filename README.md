@@ -54,10 +54,21 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 若你要從目前原始碼自行建置：
 
 ```bash
-docker compose up --build -d
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
 ```
 
 啟動後開啟 [http://localhost:8000](http://localhost:8000)。
+
+### 本地測試與 live validation
+
+不要用裸 `docker compose up --build -d` 在其他 worktree 做測試；那可能替換已部署的 recorder。
+本地測試請使用隔離 wrapper，預設會使用獨立 project、`APP_PORT=8001`、`VNC_PORT=5901` 與 workspace 專屬 image tag：
+
+```bash
+python -m scripts.dev_compose up --build -d
+```
+
+測試服務啟動後開啟 [http://localhost:8001](http://localhost:8001)。
 
 ## 首次設定建議
 

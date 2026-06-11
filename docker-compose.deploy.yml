@@ -1,0 +1,15 @@
+# Docker Compose - Source Deploy Override
+# 用於正式部署：從目前原始碼建置，但使用 production runtime identity。
+#
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
+
+name: ${COMPOSE_PROJECT_NAME:-meeting-recorder-prod}
+
+services:
+  app:
+    container_name: ${MEETING_RECORDER_CONTAINER_NAME:-meeting-recorder}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: ${MEETING_RECORDER_IMAGE:-meeting-recorder:deploy}
