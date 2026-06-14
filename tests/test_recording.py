@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+import recording.session as session_module
 from database.models import JobStatus
+from recording.session import RecordingSession
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
 from recording.worker import RecordingJob, RecordingWorker
 
@@ -152,6 +154,24 @@ class TestRecordingJob:
 
         assert job.lobby_wait_sec == 1200
 
+    def test_create_with_resolution_override(self):
+        """Should keep explicit runtime resolution overrides on the job."""
+        mock_settings = Mock()
+        mock_settings.recordings_dir = Path("/recordings")
+        mock_settings.lobby_wait_sec = 900
+
+        with patch("recording.worker.get_settings", return_value=mock_settings):
+            job = RecordingJob.create(
+                provider="jitsi",
+                meeting_code="test-room",
+                display_name="Bot",
+                duration_sec=60,
+                resolution_w=1280,
+                resolution_h=720,
+            )
+
+        assert job.resolution == (1280, 720)
+
 
 class TestRecordingWorker:
     """Tests for RecordingWorker class."""
@@ -212,6 +232,97 @@ class TestRecordingWorker:
         worker._update_status(JobStatus.RECORDING)
 
         assert worker._status == JobStatus.RECORDING
+
+
+class TestRecordingSession:
+    """Tests for recording session runtime configuration."""
+
+    @pytest.mark.asyncio
+    async def test_uses_job_resolution_for_runtime_and_capture(self, monkeypatch, tmp_path):
+        """Virtual display, browser viewport, and FFmpeg should use job resolution."""
+        captured = {}
+
+        class FakeVirtualEnvironment:
+            def __init__(self, config):
+                captured["virtual_env_config"] = config
+                self.display = ":99"
+                self.pulse_monitor = "virtual.monitor"
+
+            async def start(self):
+                return {"DISPLAY": self.display}
+
+        class FakePage:
+            async def add_init_script(self, _script):
+                return None
+
+            def on(self, _event, _callback):
+                return None
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowser:
+            async def new_context(self, *, viewport, permissions):
+                captured["viewport"] = viewport
+                captured["permissions"] = permissions
+                return FakeContext()
+
+        class FakeChromium:
+            async def launch(self, *, headless, args, env):
+                captured["launch_args"] = args
+                captured["launch_env"] = env
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightManager:
+            async def start(self):
+                return FakePlaywright()
+
+        class FakeFFmpegPipeline:
+            def __init__(self, **kwargs):
+                captured["ffmpeg_kwargs"] = kwargs
+                self.is_recording = False
+
+            async def start(self):
+                captured["ffmpeg_started"] = True
+
+        settings = Mock()
+        settings.diagnostics_dir = tmp_path / "diagnostics"
+        settings.resolution_w = 1920
+        settings.resolution_h = 1080
+
+        monkeypatch.setattr(session_module, "get_settings", lambda: settings)
+        monkeypatch.setattr(session_module, "get_provider", lambda _provider: object())
+        monkeypatch.setattr(session_module, "VirtualEnvironment", FakeVirtualEnvironment)
+        monkeypatch.setattr(session_module, "async_playwright", lambda: FakePlaywrightManager())
+        monkeypatch.setattr(session_module, "FFmpegPipeline", FakeFFmpegPipeline)
+
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job123",
+            resolution_w=1366,
+            resolution_h=768,
+            diagnostics_dir=tmp_path / "diagnostics" / "job123",
+        )
+        session = RecordingSession(job)
+
+        await session.prepare_runtime()
+        await session.start_capture()
+
+        assert captured["virtual_env_config"].width == 1366
+        assert captured["virtual_env_config"].height == 768
+        assert "--window-size=1366,768" in captured["launch_args"]
+        assert captured["viewport"] == {"width": 1366, "height": 768}
+        assert captured["ffmpeg_kwargs"]["width"] == 1366
+        assert captured["ffmpeg_kwargs"]["height"] == 768
+        assert captured["ffmpeg_started"] is True
 
 
 class TestVirtualEnvironment:

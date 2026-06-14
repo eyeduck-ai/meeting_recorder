@@ -7,8 +7,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database.models import AppSettings, get_db
+from database.models import AppSettings
+from database.session import get_db
 from services.recording_manager import get_recording_manager
+from services.secrets import mask_secret, preserve_masked_secret
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
@@ -113,9 +115,8 @@ async def get_notification_config(db: Session = Depends(get_db)):
 
     if record:
         config = json.loads(record.value)
-        # Mask password
-        if config.get("smtp_password"):
-            config["smtp_password"] = "********"
+        config["smtp_password"] = mask_secret(config.get("smtp_password"))
+        config["webhook_secret"] = mask_secret(config.get("webhook_secret"))
     else:
         config = {
             "smtp_enabled": False,
@@ -145,17 +146,21 @@ async def save_notification_config(
 
     config_dict = config.model_dump()
 
-    # Preserve existing password if masked
-    if config_dict.get("smtp_password") == "********" and existing_record:
-        existing_config = json.loads(existing_record.value)
-        config_dict["smtp_password"] = existing_config.get("smtp_password", "")
-
-    config_json = json.dumps(config_dict)
+    # Preserve existing secrets if masked.
+    existing_config = json.loads(existing_record.value) if existing_record else {}
+    config_dict["smtp_password"] = preserve_masked_secret(
+        config_dict.get("smtp_password"), existing_config.get("smtp_password", "")
+    )
+    config_dict["webhook_secret"] = preserve_masked_secret(
+        config_dict.get("webhook_secret"), existing_config.get("webhook_secret", "")
+    )
 
     if existing_record:
+        config_json = json.dumps(config_dict)
         existing_record.value = config_json
         existing_record.updated_at = utc_now()
     else:
+        config_json = json.dumps(config_dict)
         record = AppSettings(key="notification_config", value=config_json)
         db.add(record)
 

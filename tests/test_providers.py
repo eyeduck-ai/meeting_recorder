@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -217,11 +218,45 @@ class TestDiagnosticData:
 class FakeLocator:
     """Minimal async locator stub for provider probe tests."""
 
-    def __init__(self, count: int = 0):
+    def __init__(self, count: int = 0, visible: bool | None = None):
         self._count = count
+        self._visible = count > 0 if visible is None else visible
+        self.clicked = False
+        self.filled_value = None
+        self.pressed_key = None
+        self.wait_for_calls = []
 
     async def count(self) -> int:
         return self._count
+
+    @property
+    def first(self):
+        return self
+
+    def nth(self, _index: int):
+        return self
+
+    async def wait_for(self, *, state: str = "visible", timeout: int = 3000):
+        self.wait_for_calls.append({"state": state, "timeout": timeout})
+        if self._count <= 0:
+            raise TimeoutError("selector not found")
+        if state == "visible" and not self._visible:
+            raise TimeoutError("selector not visible")
+
+    async def is_visible(self) -> bool:
+        return self._visible
+
+    async def click(self, *_args, **_kwargs):
+        self.clicked = True
+
+    async def fill(self, value: str, *_args, **_kwargs):
+        self.filled_value = value
+
+    async def press(self, key: str):
+        self.pressed_key = key
+
+    async def get_attribute(self, _name: str):
+        return None
 
 
 class FakePage:
@@ -231,11 +266,14 @@ class FakePage:
         self, counts: dict[str, int] | None = None, *, url: str = "https://example.test/room", title: str = ""
     ):
         self._counts = counts or {}
+        self._locators = {}
         self.url = url
         self._title = title
 
     def locator(self, selector: str) -> FakeLocator:
-        return FakeLocator(self._counts.get(selector, 0))
+        if selector not in self._locators:
+            self._locators[selector] = FakeLocator(self._counts.get(selector, 0))
+        return self._locators[selector]
 
     async def title(self) -> str:
         return self._title
@@ -246,9 +284,12 @@ class FakeFrame:
 
     def __init__(self, counts: dict[str, int] | None = None):
         self._counts = counts or {}
+        self._locators = {}
 
     def locator(self, selector: str) -> FakeLocator:
-        return FakeLocator(self._counts.get(selector, 0))
+        if selector not in self._locators:
+            self._locators[selector] = FakeLocator(self._counts.get(selector, 0))
+        return self._locators[selector]
 
 
 class SequenceProvider(BaseProvider):
@@ -305,6 +346,119 @@ class TestProviderStateMachine:
 
         assert result == JoinResult(success=True)
         assert provider.password_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_wait_for_page_idle_uses_bounded_playwright_wait(self):
+        provider = SequenceProvider([])
+        page = FakePage()
+        page.wait_for_load_state = AsyncMock()
+
+        result = await provider.wait_for_page_idle(page, timeout_ms=1234, fallback_sec=0.1, reason="test")
+
+        assert result is True
+        page.wait_for_load_state.assert_awaited_once_with("networkidle", timeout=1234)
+
+    @pytest.mark.asyncio
+    async def test_wait_for_page_idle_uses_short_fallback_sleep(self, monkeypatch):
+        provider = SequenceProvider([])
+        page = FakePage()
+        page.wait_for_load_state = AsyncMock(side_effect=TimeoutError("not idle"))
+        fallback_sleep = AsyncMock()
+        monkeypatch.setattr("providers.base.asyncio.sleep", fallback_sleep)
+
+        result = await provider.wait_for_page_idle(page, timeout_ms=1, fallback_sec=0.25, reason="test")
+
+        assert result is False
+        fallback_sleep.assert_awaited_once_with(0.25)
+
+    @pytest.mark.asyncio
+    async def test_wait_for_any_selector_returns_match_without_fallback_sleep(self, monkeypatch):
+        provider = SequenceProvider([])
+        page = FakePage({"#ready": 1})
+        fallback_sleep = AsyncMock()
+        monkeypatch.setattr("providers.base.asyncio.sleep", fallback_sleep)
+
+        match = await provider.wait_for_any_selector(
+            page,
+            ["#missing", "#ready"],
+            timeout_ms=100,
+            fallback_sec=0.25,
+            reason="test selector",
+        )
+
+        assert match is not None
+        assert match.selector == "#ready"
+        fallback_sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_any_selector_uses_bounded_fallback_when_missing(self, monkeypatch):
+        provider = SequenceProvider([])
+        page = FakePage()
+        fallback_sleep = AsyncMock()
+        monkeypatch.setattr("providers.base.asyncio.sleep", fallback_sleep)
+
+        match = await provider.wait_for_any_selector(
+            page,
+            ["#missing"],
+            timeout_ms=100,
+            fallback_sec=0.25,
+            reason="test selector",
+        )
+
+        assert match is None
+        fallback_sleep.assert_awaited_once_with(0.25)
+
+
+class TestProviderBoundedWaitRegressions:
+    """Provider wait paths should use bounded helpers instead of direct sleeps."""
+
+    def test_provider_modules_do_not_use_direct_asyncio_sleep(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        for provider_file in ("providers/jitsi.py", "providers/webex.py", "providers/zoom.py"):
+            source = (repo_root / provider_file).read_text(encoding="utf-8")
+            assert "asyncio.sleep" not in source
+
+    @pytest.mark.asyncio
+    async def test_jitsi_password_dialog_uses_bounded_selector_wait(self):
+        provider = JitsiProvider()
+        page = FakePage(
+            {
+                'input[name="lockKey"]': 1,
+                'button:has-text("OK")': 1,
+            }
+        )
+
+        result = await provider.apply_password(page, "secret")
+
+        assert result is True
+        assert page.locator('input[name="lockKey"]').filled_value == "secret"
+        assert page.locator('button:has-text("OK")').clicked is True
+
+    @pytest.mark.asyncio
+    async def test_webex_password_dialog_uses_bounded_selector_wait(self, monkeypatch):
+        provider = WebexProvider()
+        iframe = FakeFrame(
+            {
+                'input[type="password"]': 1,
+                '[data-test="submit-button"], button:has-text("OK"), button:has-text("Submit")': 1,
+            }
+        )
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _page: iframe)
+
+        result = await provider.apply_password(FakePage(), "secret")
+
+        assert result is True
+        assert iframe.locator('input[type="password"]').filled_value == "secret"
+
+    @pytest.mark.asyncio
+    async def test_zoom_display_name_waits_for_selector_before_fill(self):
+        provider = ZoomProvider()
+        page = FakePage({"#input-for-name": 1})
+
+        result = await provider._fill_display_name(page, ["#input-for-name"], "Recorder")
+
+        assert result is True
+        assert page.locator("#input-for-name").filled_value == "Recorder"
 
 
 class TestProviderProbeState:

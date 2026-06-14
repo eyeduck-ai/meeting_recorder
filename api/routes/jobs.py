@@ -1,38 +1,38 @@
-from typing import Literal
-
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
+from api.runtime import get_app_job_service, get_app_worker
 from database.models import (
     JobStatus,
-    get_db,
-    init_db,
 )
 from database.models import (
     RecordingJob as RecordingJobModel,
 )
-from database.session import JobRepository
-from recording.worker import get_worker
-from scheduling.job_runner import get_job_runner
+from database.session import JobRepository, get_db
+from providers import list_providers, validate_provider_name
+from services.errors import ConflictError, ServiceError
+from services.job_service import ImmediateRecordingData
 from uploading.progress import get_latest_progress, get_progress
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
-
-# Initialize database on module load
-init_db()
 
 
 class RecordRequest(BaseModel):
     """Request to start a recording."""
 
-    provider: Literal["jitsi", "webex", "zoom"] = "jitsi"
+    provider: str = Field(default="jitsi", description="Meeting provider", json_schema_extra={"enum": list_providers()})
     meeting_code: str = Field(..., min_length=1, description="Meeting room code or full URL")
     display_name: str = Field(default="Recorder Bot", description="Display name in meeting")
     duration_sec: int = Field(default=3600, ge=60, le=14400, description="Recording duration in seconds")
     base_url: str | None = Field(default=None, description="Custom base URL for provider")
     password: str | None = Field(default=None, description="Meeting password if required")
-    lobby_wait_sec: int = Field(default=900, ge=0, le=1800, description="Max lobby wait time")
+    lobby_wait_sec: int | None = Field(default=None, ge=0, le=1800, description="Max lobby wait time")
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        return validate_provider_name(value)
 
 
 class DiagnosticInfo(BaseModel):
@@ -109,6 +109,7 @@ def _model_to_response(job: RecordingJobModel) -> JobResponse:
 @router.post("/record", response_model=JobResponse)
 async def start_recording(
     request: RecordRequest,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
     """Start a new recording job.
@@ -116,39 +117,30 @@ async def start_recording(
     This endpoint starts a recording job in the background and returns immediately.
     Use GET /jobs/{job_id} to check the job status.
     """
-    runner = get_job_runner()
-    if runner.is_busy:
-        raise HTTPException(
-            status_code=409,
-            detail="Worker is busy with another recording. Only one recording at a time is supported.",
+    try:
+        db_job = await get_app_job_service(http_request).start_immediate_recording(
+            db,
+            ImmediateRecordingData(
+                provider=request.provider,
+                meeting_code=request.meeting_code,
+                display_name=request.display_name,
+                duration_sec=request.duration_sec,
+                base_url=request.base_url,
+                password=request.password,
+                lobby_wait_sec=request.lobby_wait_sec,
+            ),
         )
-
-    job_id = await runner.run_immediate(
-        provider=request.provider,
-        meeting_code=request.meeting_code,
-        display_name=request.display_name,
-        duration_sec=request.duration_sec,
-        base_url=request.base_url,
-        password=request.password,
-        lobby_wait_sec=request.lobby_wait_sec,
-    )
-    if not job_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Worker is busy with another recording. Only one recording at a time is supported.",
-        )
-
-    repo = JobRepository(db)
-    db_job = repo.get_by_job_id(job_id)
-    if not db_job:
-        raise HTTPException(status_code=500, detail="Failed to create recording job")
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return _model_to_response(db_job)
 
 
 @router.get("/current")
-async def get_current_recording(db: Session = Depends(get_db)):
+async def get_current_recording(http_request: Request, db: Session = Depends(get_db)):
     """Get currently active recording status for dashboard."""
-    worker = get_worker()
+    worker = get_app_worker(http_request)
 
     # Check if worker is busy
     if not worker.is_busy or not worker._current_job:
@@ -252,7 +244,7 @@ async def get_job(job_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{job_id}/stop")
-async def stop_job(job_id: str, db: Session = Depends(get_db)):
+async def stop_job(job_id: str, http_request: Request, db: Session = Depends(get_db)):
     """Request to stop a running job."""
     repo = JobRepository(db)
     job = repo.get_by_job_id(job_id)
@@ -272,7 +264,7 @@ async def stop_job(job_id: str, db: Session = Depends(get_db)):
             detail=f"Job is already in terminal state: {job.status}",
         )
 
-    worker = get_worker()
+    worker = get_app_worker(http_request)
     if not worker.is_busy or not worker._current_job or worker._current_job.job_id != job_id:
         raise HTTPException(
             status_code=400,
@@ -287,7 +279,7 @@ async def stop_job(job_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{job_id}/finish")
-async def finish_job(job_id: str, db: Session = Depends(get_db)):
+async def finish_job(job_id: str, http_request: Request, db: Session = Depends(get_db)):
     """Request to finish a running job early (success path)."""
     repo = JobRepository(db)
     job = repo.get_by_job_id(job_id)
@@ -306,7 +298,7 @@ async def finish_job(job_id: str, db: Session = Depends(get_db)):
             detail=f"Job is already in terminal state: {job.status}",
         )
 
-    worker = get_worker()
+    worker = get_app_worker(http_request)
     if not worker.is_busy or not worker._current_job or worker._current_job.job_id != job_id:
         raise HTTPException(
             status_code=400,

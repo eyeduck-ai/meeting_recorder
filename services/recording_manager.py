@@ -2,22 +2,78 @@
 
 import asyncio
 import logging
+import os
 import shutil
+import stat
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from config.settings import get_settings
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
+
+VIDEO_EXTENSIONS = (".mkv", ".mp4", ".webm", ".avi")
+
+
+@dataclass(frozen=True)
+class RecordingFileEntry:
+    """Filesystem metadata for one recording video discovered in a scan."""
+
+    path: Path
+    stat_result: os.stat_result
+    thumbnail_path: Path
+
+    @property
+    def size_bytes(self) -> int:
+        return self.stat_result.st_size
+
+    @property
+    def created_timestamp(self) -> float:
+        return self.stat_result.st_ctime
+
+    @property
+    def modified_timestamp(self) -> float:
+        return self.stat_result.st_mtime
 
 
 class RecordingManager:
     """Manages recordings: thumbnails, cleanup, and disk monitoring."""
 
-    def __init__(self, recordings_dir: str = "recordings"):
+    def __init__(self, recordings_dir: str | Path = "recordings"):
         self.recordings_dir = Path(recordings_dir)
         self.thumbnails_dir = self.recordings_dir / "thumbnails"
         self.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+
+    def _scan_recording_entries(self) -> list[RecordingFileEntry]:
+        """Return video entries from a single filesystem scan."""
+        if not self.recordings_dir.exists():
+            return []
+
+        entries: list[RecordingFileEntry] = []
+        for path in self.recordings_dir.rglob("*"):
+            if path.suffix.lower() not in VIDEO_EXTENSIONS or self.thumbnails_dir in path.parents:
+                continue
+            try:
+                stat_result = path.stat()
+            except OSError:
+                logger.debug("Skipping recording file that disappeared during scan: %s", path)
+                continue
+            if not stat.S_ISREG(stat_result.st_mode):
+                continue
+            entries.append(
+                RecordingFileEntry(
+                    path=path,
+                    stat_result=stat_result,
+                    thumbnail_path=self.thumbnails_dir / f"{path.stem}.jpg",
+                )
+            )
+        return entries
+
+    def _iter_video_files(self) -> list[Path]:
+        """Return video files under the recordings directory, including job subdirectories."""
+        return [entry.path for entry in self._scan_recording_entries()]
 
     async def generate_thumbnail(
         self,
@@ -111,14 +167,11 @@ class RecordingManager:
         if not self.recordings_dir.exists():
             return result
 
-        # Find all video files
-        video_extensions = [".mkv", ".mp4", ".webm", ".avi"]
-        videos = []
-        for ext in video_extensions:
-            videos.extend(self.recordings_dir.glob(f"*{ext}"))
+        # Find all video files, including job subdirectories.
+        entries = self._scan_recording_entries()
 
         # Sort by modification time (newest first)
-        videos.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        entries.sort(key=lambda entry: entry.modified_timestamp, reverse=True)
 
         # Calculate cutoff date
         cutoff_date = utc_now() - timedelta(days=max_age_days)
@@ -126,13 +179,12 @@ class RecordingManager:
 
         to_delete = []
 
-        for i, video in enumerate(videos):
+        for i, entry in enumerate(entries):
             should_delete = False
             reason = ""
 
             # Check age
-            mtime = video.stat().st_mtime
-            if mtime < cutoff_timestamp:
+            if entry.modified_timestamp < cutoff_timestamp:
                 should_delete = True
                 reason = f"older than {max_age_days} days"
 
@@ -142,20 +194,20 @@ class RecordingManager:
                 reason = f"exceeds max count of {max_count}"
 
             if should_delete:
-                to_delete.append((video, reason))
+                to_delete.append((entry, reason))
 
         # Delete files
-        for video, reason in to_delete:
+        for entry, reason in to_delete:
+            video = entry.path
             try:
-                file_size = video.stat().st_size
+                file_size = entry.size_bytes
 
                 if not dry_run:
                     video.unlink()
 
                     # Also delete thumbnail if exists
-                    thumbnail = self.thumbnails_dir / f"{video.stem}.jpg"
-                    if thumbnail.exists():
-                        thumbnail.unlink()
+                    if entry.thumbnail_path.exists():
+                        entry.thumbnail_path.unlink()
 
                 result["deleted_files"].append(
                     {
@@ -204,15 +256,9 @@ class RecordingManager:
         # Calculate recordings size
         recordings_bytes = 0
         recordings_count = 0
-        video_extensions = [".mkv", ".mp4", ".webm", ".avi"]
-
-        for ext in video_extensions:
-            for video in self.recordings_dir.glob(f"*{ext}"):
-                try:
-                    recordings_bytes += video.stat().st_size
-                    recordings_count += 1
-                except OSError:
-                    pass
+        for entry in self._scan_recording_entries():
+            recordings_bytes += entry.size_bytes
+            recordings_count += 1
 
         return {
             "path": str(self.recordings_dir),
@@ -291,41 +337,38 @@ class RecordingManager:
         if not self.recordings_dir.exists():
             return []
 
-        video_extensions = [".mkv", ".mp4", ".webm", ".avi"]
-        videos = []
-
-        for ext in video_extensions:
-            videos.extend(self.recordings_dir.glob(f"*{ext}"))
+        entries = self._scan_recording_entries()
 
         # Sort
         if order_by == "newest":
-            videos.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            entries.sort(key=lambda entry: entry.modified_timestamp, reverse=True)
         elif order_by == "oldest":
-            videos.sort(key=lambda f: f.stat().st_mtime)
+            entries.sort(key=lambda entry: entry.modified_timestamp)
         elif order_by == "largest":
-            videos.sort(key=lambda f: f.stat().st_size, reverse=True)
+            entries.sort(key=lambda entry: entry.size_bytes, reverse=True)
         elif order_by == "smallest":
-            videos.sort(key=lambda f: f.stat().st_size)
+            entries.sort(key=lambda entry: entry.size_bytes)
 
         # Paginate
-        videos = videos[offset : offset + limit]
+        entries = entries[offset : offset + limit]
 
         # Build result
         result = []
-        for video in videos:
-            stat = video.stat()
-            thumbnail = self.thumbnails_dir / f"{video.stem}.jpg"
+        for entry in entries:
+            video = entry.path
+            has_thumbnail = entry.thumbnail_path.exists()
 
             result.append(
                 {
                     "filename": video.name,
                     "path": str(video),
-                    "size_bytes": stat.st_size,
-                    "size_mb": stat.st_size / (1024 * 1024),
-                    "created_at": datetime.fromtimestamp(stat.st_ctime, tz=UTC).isoformat(),
-                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-                    "has_thumbnail": thumbnail.exists(),
-                    "thumbnail_path": str(thumbnail) if thumbnail.exists() else None,
+                    "relative_path": str(video.relative_to(self.recordings_dir)),
+                    "size_bytes": entry.size_bytes,
+                    "size_mb": entry.size_bytes / (1024 * 1024),
+                    "created_at": datetime.fromtimestamp(entry.created_timestamp, tz=UTC).isoformat(),
+                    "modified_at": datetime.fromtimestamp(entry.modified_timestamp, tz=UTC).isoformat(),
+                    "has_thumbnail": has_thumbnail,
+                    "thumbnail_path": str(entry.thumbnail_path) if has_thumbnail else None,
                 }
             )
 
@@ -336,9 +379,12 @@ class RecordingManager:
 _recording_manager: RecordingManager | None = None
 
 
-def get_recording_manager(recordings_dir: str = "recordings") -> RecordingManager:
+def get_recording_manager(recordings_dir: str | Path | None = None) -> RecordingManager:
     """Get or create recording manager instance."""
     global _recording_manager
-    if _recording_manager is None:
-        _recording_manager = RecordingManager(recordings_dir)
+    if recordings_dir is None:
+        recordings_dir = get_settings().recordings_dir
+    resolved_dir = Path(recordings_dir)
+    if _recording_manager is None or _recording_manager.recordings_dir != resolved_dir:
+        _recording_manager = RecordingManager(resolved_dir)
     return _recording_manager

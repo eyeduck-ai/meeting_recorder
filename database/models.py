@@ -2,17 +2,16 @@ import json
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from config.settings import get_settings
+from database.base import Base
+from database.migrations import run_schema_migrations as _run_schema_migrations  # noqa: F401
+from database.session import get_db as get_db
+from database.session import get_engine as get_engine
+from database.session import get_session_local as get_session_local
+from database.session import init_db as init_db
 from utils.timezone import utc_now
-
-
-class Base(DeclarativeBase):
-    """Base class for all models."""
-
-    pass
 
 
 class ProviderType(StrEnum):
@@ -101,7 +100,7 @@ class Meeting(Base):
     site_base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     meeting_code: Mapped[str] = mapped_column(String(255), nullable=False)
     join_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    password_encrypted: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    meeting_password_plaintext: Mapped[str | None] = mapped_column("password_encrypted", String(512), nullable=True)
 
     # Default identity
     default_display_name: Mapped[str] = mapped_column(String(255), default="Recorder Bot")
@@ -125,12 +124,18 @@ class Meeting(Base):
             "site_base_url": self.site_base_url,
             "meeting_code": self.meeting_code,
             "join_url": self.join_url,
+            "has_password": self.has_password,
             "default_display_name": self.default_display_name,
             "default_guest_name": self.default_guest_name,
             "default_guest_email": self.default_guest_email,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+    @property
+    def has_password(self) -> bool:
+        """Return whether the meeting has a stored password."""
+        return bool(self.meeting_password_plaintext)
 
 
 class Schedule(Base):
@@ -182,6 +187,9 @@ class Schedule(Base):
     # Status
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Metadata
@@ -215,6 +223,9 @@ class Schedule(Base):
             "dry_run": self.dry_run,
             "enabled": self.enabled,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
+            "last_triggered_at": self.last_triggered_at.isoformat() if self.last_triggered_at else None,
+            "last_started_at": self.last_started_at.isoformat() if self.last_started_at else None,
+            "last_completed_at": self.last_completed_at.isoformat() if self.last_completed_at else None,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -246,7 +257,7 @@ class RecordingJob(Base):
     meeting_code: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    meeting_password_plaintext: Mapped[str | None] = mapped_column("password_hash", String(255), nullable=True)
 
     # Timing
     duration_sec: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -435,71 +446,3 @@ class DetectionLog(Base):
             "was_accurate": self.was_accurate,
             "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
         }
-
-
-# Database engine and session
-_engine = None
-_SessionLocal = None
-
-
-def get_engine():
-    """Get or create database engine."""
-    global _engine
-    if _engine is None:
-        settings = get_settings()
-        _engine = create_engine(
-            settings.database_url,
-            connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
-        )
-    return _engine
-
-
-def get_session_local():
-    """Get session factory."""
-    global _SessionLocal
-    if _SessionLocal is None:
-        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
-    return _SessionLocal
-
-
-def init_db():
-    """Initialize database tables."""
-    engine = get_engine()
-    Base.metadata.create_all(bind=engine)
-    _run_schema_migrations(engine)
-
-
-def get_db():
-    """Dependency for getting database session."""
-    SessionLocal = get_session_local()
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def _has_column(connection, table_name: str, column_name: str) -> bool:
-    """Check whether a SQLite table contains a column."""
-    rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
-    return any(row[1] == column_name for row in rows)
-
-
-def _ensure_column(connection, table_name: str, column_name: str, ddl: str) -> None:
-    """Add a column if it does not already exist."""
-    if not _has_column(connection, table_name, column_name):
-        connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
-
-
-def _run_schema_migrations(engine) -> None:
-    """Apply idempotent schema migrations for existing SQLite databases."""
-    if engine.dialect.name != "sqlite":
-        return
-
-    with engine.begin() as connection:
-        _ensure_column(connection, "recording_jobs", "attempt_no", "INTEGER NOT NULL DEFAULT 1")
-        _ensure_column(connection, "recording_jobs", "retry_count", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(connection, "recording_jobs", "failure_stage", "VARCHAR(64)")
-        _ensure_column(connection, "recording_jobs", "last_ffmpeg_exit_code", "INTEGER")
-        _ensure_column(connection, "recording_jobs", "runtime_summary_json", "TEXT")
-        _ensure_column(connection, "detection_logs", "attempt_no", "INTEGER NOT NULL DEFAULT 1")

@@ -23,22 +23,12 @@
         <!-- Mobile List (unchanged) -->
         <div class="md:hidden">
             {% for meeting in meetings %}
+            {% set provider = providers.get(meeting.provider) %}
             <div class="p-4 border-b border-[#2f3336] last:border-0 hover:bg-[#1d1f23] transition-colors">
                 <div class="flex justify-between items-center mb-2">
                     <div class="font-bold text-white text-lg">{{ meeting.name }}</div>
-                    {% if meeting.provider == 'jitsi' %}
                     <span
-                        class="badge badge-sm badge-info badge-outline rounded uppercase font-bold text-[10px]">Jitsi</span>
-                    {% elif meeting.provider == 'webex' %}
-                    <span
-                        class="badge badge-sm badge-warning badge-outline rounded uppercase font-bold text-[10px]">Webex</span>
-                    {% elif meeting.provider == 'zoom' %}
-                    <span
-                        class="badge badge-sm badge-success badge-outline rounded uppercase font-bold text-[10px]">Zoom</span>
-                    {% else %}
-                    <span class="badge badge-sm badge-ghost badge-outline rounded uppercase font-bold text-[10px]">{{
-                        meeting.provider }}</span>
-                    {% endif %}
+                        class="badge badge-sm {{ provider.badge_class if provider else 'badge-ghost' }} badge-outline rounded uppercase font-bold text-[10px]">{{ provider.label if provider else meeting.provider }}</span>
                 </div>
 
                 <div class="text-sm text-gray-500 font-mono mb-3 truncate">{{ meeting.meeting_code }}</div>
@@ -70,22 +60,12 @@
                 </thead>
                 <tbody>
                     {% for meeting in meetings %}
+                    {% set provider = providers.get(meeting.provider) %}
                     <tr class="hover:bg-[#1d1f23] border-b border-[#2f3336] last:border-0 transition-colors">
                         <td class="font-bold text-white pl-6">{{ meeting.name }}</td>
                         <td>
-                            {% if meeting.provider == 'jitsi' %}
                             <span
-                                class="badge badge-info badge-outline font-bold text-xs uppercase rounded">Jitsi</span>
-                            {% elif meeting.provider == 'webex' %}
-                            <span
-                                class="badge badge-warning badge-outline font-bold text-xs uppercase rounded">Webex</span>
-                            {% elif meeting.provider == 'zoom' %}
-                            <span
-                                class="badge badge-success badge-outline font-bold text-xs uppercase rounded">Zoom</span>
-                            {% else %}
-                            <span class="badge badge-ghost badge-outline font-bold text-xs uppercase rounded">{{
-                                meeting.provider }}</span>
-                            {% endif %}
+                                class="badge {{ provider.badge_class if provider else 'badge-ghost' }} badge-outline font-bold text-xs uppercase rounded">{{ provider.label if provider else meeting.provider }}</span>
                         </td>
                         <td class="text-gray-400 font-mono text-sm">{{ meeting.meeting_code }}</td>
                         <td class="text-gray-400 text-sm">{{ meeting.default_display_name or '-' }}</td>

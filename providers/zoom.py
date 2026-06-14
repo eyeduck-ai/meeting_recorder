@@ -1,6 +1,5 @@
 """Zoom Meeting Provider for Guest Join."""
 
-import asyncio
 import logging
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
@@ -80,8 +79,8 @@ class ZoomProvider(BaseProvider):
         """
         logger.info(f"Handling Zoom prejoin page, display_name={display_name}")
 
-        # Wait for page to load
-        await asyncio.sleep(3)
+        # Prefer bounded Playwright readiness over fixed startup sleep.
+        await self.wait_for_page_idle(page, timeout_ms=3000, fallback_sec=0.5, reason="Zoom prejoin page")
 
         # Handle cookie consent if present. Zoom's cookie prompt can cover
         # the browser-join button and prevent the click from reaching it.
@@ -97,18 +96,39 @@ class ZoomProvider(BaseProvider):
             '[data-testid="input-name"]',
             'input[type="text"]',
         ]
+        password_selectors = [
+            "#inputpasscode",
+            'input[type="password"]',
+            'input[name="password"]',
+            'input[placeholder*="password" i]',
+            'input[placeholder*="密碼" i]',
+            'input[placeholder*="passcode" i]',
+        ]
+        join_ready_selectors = [
+            "#joinBtn",
+            '[data-testid="join-btn"]',
+            "button.preview-join-button",
+            'button:has-text("Join")',
+            'button:has-text("加入")',
+        ]
 
         if not await self._has_any_selector(page, name_selectors):
             await self._click_browser_join(page)
 
-        await asyncio.sleep(2)
+        await self.wait_for_condition(
+            lambda: self._has_any_selector(page, name_selectors + password_selectors + join_ready_selectors)
+            or "/wc/" in page.url,
+            timeout_ms=3000,
+            fallback_sec=0.2,
+            reason="Zoom browser join controls",
+        )
 
         if not await self._has_any_selector(page, name_selectors) and "/wc/" not in page.url:
             web_client_url = self.build_join_url(page.url)
             if web_client_url != page.url:
                 logger.info(f"Navigating directly to Zoom web client: {web_client_url}")
                 await page.goto(web_client_url, wait_until="domcontentloaded")
-                await asyncio.sleep(5)
+                await self.wait_for_page_idle(page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom web client")
 
         # Fill in display name
         name_filled = await self._fill_display_name(page, name_selectors, display_name)
@@ -118,15 +138,6 @@ class ZoomProvider(BaseProvider):
 
         # Handle password if provided and password field is visible
         if password:
-            password_selectors = [
-                "#inputpasscode",
-                'input[type="password"]',
-                'input[name="password"]',
-                'input[placeholder*="password" i]',
-                'input[placeholder*="密碼" i]',
-                'input[placeholder*="passcode" i]',
-            ]
-
             for selector in password_selectors:
                 for target in self._targets(page):
                     try:
@@ -194,7 +205,9 @@ class ZoomProvider(BaseProvider):
                     except Exception:
                         await btn.first.click(timeout=3000, force=True)
                     logger.info(f"Clicked 'Join from Browser' using: {selector}")
-                    await asyncio.sleep(5)
+                    await self.wait_for_page_idle(
+                        page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom browser join transition"
+                    )
                     return True
             except Exception:
                 continue
@@ -244,34 +257,39 @@ class ZoomProvider(BaseProvider):
 
     async def _fill_display_name(self, page: Page, selectors: list[str], display_name: str) -> bool:
         """Wait for and fill the Zoom display-name field."""
-        for _ in range(20):
-            for target in self._targets(page):
-                for selector in selectors:
-                    try:
-                        name_input = target.locator(selector)
-                        count = await name_input.count()
-                        for index in range(count):
-                            element = name_input.nth(index)
-                            if not await element.is_visible():
-                                continue
-                            await element.click(timeout=3000)
-                            await element.fill(display_name, timeout=3000)
-                            logger.info(f"Display name filled using: {selector}")
-                            return True
-                    except Exception:
-                        continue
-            await asyncio.sleep(1)
+        match = await self.wait_for_any_selector(
+            self._targets(page),
+            selectors,
+            timeout_ms=10000,
+            reason="Zoom display-name field",
+        )
+        if not match:
+            return False
+
+        try:
+            name_input = match.target.locator(match.selector)
+            count = await name_input.count()
+            for index in range(count):
+                element = name_input.nth(index)
+                if not await element.is_visible():
+                    continue
+                await element.click(timeout=3000)
+                await element.fill(display_name, timeout=3000)
+                logger.info(f"Display name filled using: {match.selector}")
+                return True
+        except Exception:
+            return False
         return False
 
     async def _wait_until_hidden(self, page: Page, selectors: list[str]) -> None:
         """Best-effort wait for blocking overlays to disappear."""
-        for selector in selectors:
-            try:
-                overlay = page.locator(selector)
-                if await overlay.count() > 0:
-                    await overlay.first.wait_for(state="hidden", timeout=3000)
-            except Exception:
-                continue
+        await self.wait_until_selectors_hidden(
+            page,
+            selectors,
+            timeout_ms=3000,
+            fallback_sec=0.2,
+            reason="Zoom blocking overlays hidden",
+        )
 
     async def _disable_media(self, page: Page) -> None:
         """Attempt to disable video and audio on prejoin page."""
@@ -285,7 +303,7 @@ class ZoomProvider(BaseProvider):
 
         for selector in video_off_selectors:
             if await self._click_first(page, [selector], "video toggle"):
-                await asyncio.sleep(0.3)
+                await self.short_ui_settle(fallback_sec=0.2, reason="Zoom video toggle")
                 break
 
         # Audio off toggle
@@ -298,7 +316,7 @@ class ZoomProvider(BaseProvider):
 
         for selector in audio_off_selectors:
             if await self._click_first(page, [selector], "audio toggle"):
-                await asyncio.sleep(0.3)
+                await self.short_ui_settle(fallback_sec=0.2, reason="Zoom audio toggle")
                 break
 
     async def click_join(self, page: Page) -> None:
@@ -344,8 +362,6 @@ class ZoomProvider(BaseProvider):
         """
         logger.info("Checking for Zoom password dialog")
 
-        await asyncio.sleep(1)
-
         password_selectors = [
             "#inputpasscode",
             'input[type="password"]',
@@ -354,6 +370,12 @@ class ZoomProvider(BaseProvider):
             'input[placeholder*="密碼" i]',
         ]
 
+        await self.wait_for_any_selector(
+            self._targets(page),
+            password_selectors,
+            timeout_ms=1500,
+            reason="Zoom password dialog",
+        )
         for selector in password_selectors:
             for target in self._targets(page):
                 try:
@@ -528,15 +550,23 @@ class ZoomProvider(BaseProvider):
             view_btn = page.locator('button[aria-label*="View" i], button:has-text("View"), button:has-text("檢視")')
             if await view_btn.count() > 0:
                 await view_btn.first.click()
-                await asyncio.sleep(0.5)
 
                 if preset == "speaker":
-                    speaker_option = page.locator('text="Speaker View", text="演講者檢視", [aria-label*="Speaker" i]')
+                    option_selector = 'text="Speaker View", text="演講者檢視", [aria-label*="Speaker" i]'
                 else:
-                    speaker_option = page.locator('text="Gallery View", text="畫廊檢視", [aria-label*="Gallery" i]')
+                    option_selector = 'text="Gallery View", text="畫廊檢視", [aria-label*="Gallery" i]'
 
-                if await speaker_option.count() > 0:
-                    await speaker_option.first.click()
+                option_match = await self.wait_for_any_selector(
+                    page,
+                    [option_selector],
+                    state="attached",
+                    timeout_ms=1000,
+                    fallback_sec=0.2,
+                    reason="Zoom layout option",
+                )
+                if option_match:
+                    speaker_option = self._first_locator(option_match.target.locator(option_match.selector))
+                    await speaker_option.click()
                     logger.info(f"Layout set to {preset}")
                     return True
         except Exception as e:

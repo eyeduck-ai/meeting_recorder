@@ -19,8 +19,10 @@ class RecordingSession:
     def __init__(self, job):
         self.job = job
         self.settings = get_settings()
+        self.resolution_w = getattr(job, "resolution_w", self.settings.resolution_w)
+        self.resolution_h = getattr(job, "resolution_h", self.settings.resolution_h)
         self.output_file = job.output_dir / f"recording_{job.job_id}.mkv"
-        self.diagnostics_dir = self.settings.diagnostics_dir / job.job_id
+        self.diagnostics_dir = getattr(job, "diagnostics_dir", None) or (self.settings.diagnostics_dir / job.job_id)
         self.provider_state_path = self.diagnostics_dir / "provider_state.jsonl"
         self.runtime_path = self.diagnostics_dir / "runtime.json"
 
@@ -75,8 +77,8 @@ class RecordingSession:
 
         self.virtual_env = VirtualEnvironment(
             config=VirtualEnvironmentConfig(
-                width=self.settings.resolution_w,
-                height=self.settings.resolution_h,
+                width=self.resolution_w,
+                height=self.resolution_h,
             )
         )
         env_vars = await self.virtual_env.start()
@@ -88,7 +90,7 @@ class RecordingSession:
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                f"--window-size={self.settings.resolution_w},{self.settings.resolution_h}",
+                f"--window-size={self.resolution_w},{self.resolution_h}",
                 "--window-position=0,0",
                 "--autoplay-policy=no-user-gesture-required",
                 "--hide-scrollbars",
@@ -98,7 +100,7 @@ class RecordingSession:
             env={**env_vars},
         )
         self.context = await self.browser.new_context(
-            viewport={"width": self.settings.resolution_w, "height": self.settings.resolution_h},
+            viewport={"width": self.resolution_w, "height": self.resolution_h},
             permissions=["microphone"],
         )
         self.page = await self.context.new_page()
@@ -174,8 +176,8 @@ class RecordingSession:
             output_path=self.output_file,
             display=self.virtual_env.display,
             audio_source=self.virtual_env.pulse_monitor,
-            width=self.settings.resolution_w,
-            height=self.settings.resolution_h,
+            width=self.resolution_w,
+            height=self.resolution_h,
             log_path=self.diagnostics_dir / "ffmpeg.log",
         )
         await self.ffmpeg.start()

@@ -1,8 +1,14 @@
+import ast
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
-from telegram_bot.conversations import _parse_duration_minutes, _validate_duration_minutes
-from telegram_bot.handlers import _is_schedule_visible
+import pytest
+
+import telegram_bot.handlers as handlers_module
+from scheduling.job_runner import QueueScheduleResult
+from telegram_bot.conversation_common import _parse_duration_minutes, _validate_duration_minutes
+from telegram_bot.handlers import _is_schedule_visible, schedule_action_callback
 from telegram_bot.notifications import _build_status_message
 from utils.timezone import utc_now
 
@@ -32,12 +38,38 @@ def test_parse_duration_minutes_supports_multiple_formats():
 
 def test_validate_duration_minutes_respects_bounds(monkeypatch):
     monkeypatch.setattr(
-        "telegram_bot.conversations.get_settings",
+        "telegram_bot.conversation_common.get_settings",
         lambda: SimpleNamespace(max_recording_sec=7200),
     )
     assert _validate_duration_minutes(0) == "時長必須大於 0 分鐘"
     assert _validate_duration_minutes(121) == "時長不能超過 120 分鐘"
     assert _validate_duration_minutes(120) is None
+
+
+def test_conversations_module_is_compatibility_reexport_only():
+    source = Path("telegram_bot/conversations.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    forbidden = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    assert not any(isinstance(node, forbidden) for node in tree.body)
+    assert "get_create_schedule_conversation" in source
+    assert "_parse_duration_minutes" in source
+
+
+def test_conversation_modules_only_share_common_helpers():
+    repo_root = Path(__file__).resolve().parents[1]
+    domain_modules = [
+        "telegram_bot/conversation_create_schedule.py",
+        "telegram_bot/conversation_edit_schedule.py",
+        "telegram_bot/conversation_create_meeting.py",
+    ]
+
+    for module_path in domain_modules:
+        source = (repo_root / module_path).read_text(encoding="utf-8")
+        assert "telegram_bot.conversation_common" in source
+        assert "telegram_bot.conversation_create_schedule" not in source
+        assert "telegram_bot.conversation_edit_schedule" not in source
+        assert "telegram_bot.conversation_create_meeting" not in source
 
 
 def test_is_schedule_visible_for_upcoming_and_ongoing_once():
@@ -94,3 +126,77 @@ def test_failed_notification_falls_back_to_error_message():
     message = _build_status_message(job, "failed")
     assert "原因：" in message
     assert "very long internal failure message for debug" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("queue_result", "expected_text"),
+    [
+        (
+            QueueScheduleResult(accepted=True, status="triggered", schedule_id=1),
+            "已觸發排程",
+        ),
+        (
+            QueueScheduleResult(accepted=True, status="queued", schedule_id=1, queue_position=2),
+            "已加入佇列",
+        ),
+        (
+            QueueScheduleResult(
+                accepted=False,
+                status="duplicate",
+                schedule_id=1,
+                reason="Schedule is already running or queued",
+            ),
+            "已在執行或佇列中",
+        ),
+    ],
+)
+async def test_schedule_action_trigger_messages(monkeypatch, queue_result, expected_text):
+    schedule = SimpleNamespace(id=1, meeting=SimpleNamespace(name="Trigger Meeting"), enabled=True)
+
+    class FakeDb:
+        def query(self, _model):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return schedule
+
+        def commit(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeService:
+        def trigger_schedule(self, _db, _schedule_id):
+            return queue_result
+
+    class FakeQuery:
+        def __init__(self):
+            self.data = "trigger:1"
+            self.message = SimpleNamespace(chat=SimpleNamespace(id=123))
+            self.edited_text = ""
+
+        async def answer(self, *_args, **_kwargs):
+            return None
+
+        async def edit_message_text(self, text):
+            self.edited_text = text
+
+    query = FakeQuery()
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_chat=SimpleNamespace(id=123),
+        effective_user=SimpleNamespace(username="tester", first_name="Test", last_name="User"),
+    )
+
+    monkeypatch.setattr(handlers_module, "get_db_session", lambda: FakeDb())
+    monkeypatch.setattr(handlers_module, "get_or_create_user", lambda *_args, **_kwargs: SimpleNamespace(approved=True))
+    monkeypatch.setattr(handlers_module, "get_schedule_service", lambda: FakeService())
+
+    await schedule_action_callback(update, SimpleNamespace())
+
+    assert expected_text in query.edited_text

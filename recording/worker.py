@@ -12,7 +12,9 @@ from database.models import ErrorCode, JobStatus
 from recording.detection import DetectionConfig, DetectionOrchestrator
 from recording.detectors import AudioSilenceDetector, create_default_detectors
 from recording.ffmpeg_pipeline import RecordingInfo
+from recording.monitor import RecordingMonitor
 from recording.session import RecordingSession
+from services.runtime_config import RuntimeRecordingConfig, get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -55,10 +57,19 @@ class RecordingJob:
     base_url: str | None = None
     password: str | None = None
     lobby_wait_sec: int = 900
+    resolution_w: int = 1920
+    resolution_h: int = 1080
+    diagnostics_dir: Path | None = None
+    ffmpeg_stall_timeout_sec: int = 120
+    ffmpeg_stall_grace_sec: int = 30
     duration_mode: str = "fixed"
     dry_run: bool = False
     min_duration_sec: int | None = None
     stillness_timeout_sec: int = 180
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return (self.resolution_w, self.resolution_h)
 
     @classmethod
     def create(
@@ -73,12 +84,18 @@ class RecordingJob:
         **kwargs,
     ) -> "RecordingJob":
         """Create a new recording job with generated ID."""
-        settings = get_settings()
+        runtime_config: RuntimeRecordingConfig | None = kwargs.get("runtime_config")
+        if runtime_config is None:
+            runtime_config = get_runtime_config_service(settings=get_settings()).get_recording_config(
+                lobby_wait_sec=kwargs.get("lobby_wait_sec"),
+                resolution_w=kwargs.get("resolution_w"),
+                resolution_h=kwargs.get("resolution_h"),
+            )
         resolved_job_id = job_id or str(uuid.uuid4())[:8]
         timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
 
         if output_dir is None:
-            output_dir = settings.recordings_dir / f"{timestamp}_{resolved_job_id}"
+            output_dir = runtime_config.recordings_dir / f"{timestamp}_{resolved_job_id}"
 
         return cls(
             job_id=resolved_job_id,
@@ -89,7 +106,12 @@ class RecordingJob:
             output_dir=output_dir,
             attempt_no=attempt_no,
             deadline_at=kwargs.get("deadline_at"),
-            lobby_wait_sec=kwargs.get("lobby_wait_sec", settings.lobby_wait_sec),
+            lobby_wait_sec=runtime_config.lobby_wait_sec,
+            resolution_w=runtime_config.resolution_w,
+            resolution_h=runtime_config.resolution_h,
+            diagnostics_dir=runtime_config.diagnostics_dir / resolved_job_id,
+            ffmpeg_stall_timeout_sec=runtime_config.ffmpeg_stall_timeout_sec,
+            ffmpeg_stall_grace_sec=runtime_config.ffmpeg_stall_grace_sec,
             base_url=kwargs.get("base_url"),
             password=kwargs.get("password"),
             duration_mode=kwargs.get("duration_mode", "fixed"),
@@ -130,7 +152,8 @@ class RecordingWorker:
 
     def _load_detection_config(self) -> DetectionConfig:
         """Load detection configuration from database."""
-        from database.models import AppSettings, get_session_local
+        from database.models import AppSettings
+        from database.session import get_session_local
 
         try:
             SessionLocal = get_session_local()
@@ -185,7 +208,6 @@ class RecordingWorker:
             start_time=utc_now(),
         )
 
-        settings = get_settings()
         job.output_dir.mkdir(parents=True, exist_ok=True)
 
         session = RecordingSession(job)
@@ -282,8 +304,8 @@ class RecordingWorker:
                 session=session,
                 job=job,
                 detection_orchestrator=detection_orchestrator,
-                ffmpeg_stall_timeout_sec=settings.ffmpeg_stall_timeout_sec,
-                ffmpeg_stall_grace_sec=settings.ffmpeg_stall_grace_sec,
+                ffmpeg_stall_timeout_sec=job.ffmpeg_stall_timeout_sec,
+                ffmpeg_stall_grace_sec=job.ffmpeg_stall_grace_sec,
             )
             session.end_stage("monitor_recording")
 
@@ -357,8 +379,9 @@ class RecordingWorker:
         finally:
             if detection_orchestrator is not None and detection_orchestrator.detection_log:
                 try:
-                    from database.models import DetectionLog, get_session_local
+                    from database.models import DetectionLog
                     from database.models import RecordingJob as DBJob
+                    from database.session import get_session_local
 
                     SessionLocal = get_session_local()
                     db_session = SessionLocal()
@@ -398,67 +421,16 @@ class RecordingWorker:
         ffmpeg_stall_grace_sec: int,
     ) -> tuple[str, int | None]:
         """Monitor the recording loop until it should stop."""
-        recording_start = asyncio.get_event_loop().time()
-        check_interval = 5
-        last_size = 0
-        last_growth_time = recording_start
-
-        effective_min_duration = job.min_duration_sec if job.min_duration_sec is not None else job.duration_sec
-        if effective_min_duration > job.duration_sec:
-            effective_min_duration = job.duration_sec
-        logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={job.duration_sec}s")
-
-        while True:
-            now = asyncio.get_event_loop().time()
-            elapsed = now - recording_start
-
-            if self._finish_requested:
-                logger.info("Finish requested, stopping recording early")
-                return "completed", session.process_returncode()
-
-            if session.process_returncode() is not None:
-                raise RuntimeError(f"FFmpeg exited early (code {session.process_returncode()})")
-
-            if ffmpeg_stall_timeout_sec > 0 and elapsed >= ffmpeg_stall_grace_sec and session.output_file.exists():
-                try:
-                    current_size = session.output_file.stat().st_size
-                except OSError:
-                    current_size = last_size
-
-                if current_size > last_size:
-                    last_size = current_size
-                    last_growth_time = now
-                elif (now - last_growth_time) >= ffmpeg_stall_timeout_sec:
-                    raise RuntimeError(f"FFmpeg output stalled for {ffmpeg_stall_timeout_sec}s")
-
-            if elapsed >= job.duration_sec:
-                logger.info(f"Duration reached ({job.duration_sec}s)")
-                return "completed", session.process_returncode()
-
-            if self._cancel_requested:
-                raise asyncio.CancelledError("Job cancelled")
-
-            if elapsed >= effective_min_duration:
-                if detection_orchestrator:
-                    should_end, results = await detection_orchestrator.check_all(session.page)
-                    if should_end:
-                        triggered = [r for r in results if r.detected]
-                        reasons = ", ".join(r.reason for r in triggered[:2])
-                        logger.info(f"Meeting ended detected after min_duration: {reasons}")
-                        return "auto_detected", session.process_returncode()
-                elif await session.detect_meeting_end("monitor_recording"):
-                    logger.info("Meeting ended")
-                    return "auto_detected", session.process_returncode()
-            else:
-                if int(elapsed) % 60 == 0 and int(elapsed) > 0:
-                    remaining_protection = effective_min_duration - elapsed
-                    logger.debug(f"Min duration protection: {remaining_protection:.0f}s remaining")
-
-            if int(elapsed) % 60 == 0 and int(elapsed) > 0:
-                remaining = job.duration_sec - elapsed
-                logger.info(f"Recording in progress... {elapsed:.0f}s elapsed, {remaining:.0f}s remaining")
-
-            await asyncio.sleep(check_interval)
+        monitor = RecordingMonitor(
+            session=session,
+            job=job,
+            detection_orchestrator=detection_orchestrator,
+            is_cancel_requested=lambda: self._cancel_requested,
+            is_finish_requested=lambda: self._finish_requested,
+            ffmpeg_stall_timeout_sec=ffmpeg_stall_timeout_sec,
+            ffmpeg_stall_grace_sec=ffmpeg_stall_grace_sec,
+        )
+        return await monitor.run()
 
 
 _worker_instance: RecordingWorker | None = None
@@ -470,3 +442,15 @@ def get_worker() -> RecordingWorker:
     if _worker_instance is None:
         _worker_instance = RecordingWorker()
     return _worker_instance
+
+
+def set_worker_instance(worker: RecordingWorker) -> None:
+    """Set the compatibility worker singleton."""
+    global _worker_instance
+    _worker_instance = worker
+
+
+def reset_worker_instance() -> None:
+    """Clear the compatibility worker singleton."""
+    global _worker_instance
+    _worker_instance = None

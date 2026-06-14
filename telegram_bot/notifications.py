@@ -5,7 +5,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from config.settings import get_settings
-from database.models import JobStatus, RecordingJob, TelegramUser, get_session_local
+from database.models import JobStatus, RecordingJob, TelegramUser
+from database.session import get_session_local
 from telegram_bot.bot import get_bot
 
 logger = logging.getLogger(__name__)

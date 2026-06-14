@@ -1,12 +1,17 @@
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from database.models import Meeting, Schedule, get_db
-from scheduling.scheduler import get_scheduler
+from api.runtime import get_app_schedule_service
+from database.models import Schedule
+from database.session import get_db
+from services.errors import NotFoundError, ValidationError
+from services.runtime_config import RuntimeConfigError
+from services.schedule_service import ScheduleCreateData
 
 router = APIRouter(prefix="/schedules", tags=["Schedules"])
 
@@ -19,10 +24,10 @@ class ScheduleCreate(BaseModel):
     start_time: datetime
     duration_sec: int = Field(default=4200, ge=60, le=14400)
     cron_expression: str | None = None
-    lobby_wait_sec: int = Field(default=900, ge=0, le=1800)
+    lobby_wait_sec: int | None = Field(default=None, ge=0, le=1800)
     layout_preset: str = "speaker"
-    resolution_w: int = 1920
-    resolution_h: int = 1080
+    resolution_w: int | None = Field(default=None, gt=0)
+    resolution_h: int | None = Field(default=None, gt=0)
     override_meeting_code: str | None = None
     override_display_name: str | None = None
     youtube_enabled: bool = False
@@ -37,8 +42,10 @@ class ScheduleUpdate(BaseModel):
     start_time: datetime | None = None
     duration_sec: int | None = None
     cron_expression: str | None = None
-    lobby_wait_sec: int | None = None
+    lobby_wait_sec: int | None = Field(default=None, ge=0, le=1800)
     layout_preset: str | None = None
+    resolution_w: int | None = Field(default=None, gt=0)
+    resolution_h: int | None = Field(default=None, gt=0)
     override_meeting_code: str | None = None
     override_display_name: str | None = None
     youtube_enabled: bool | None = None
@@ -66,6 +73,9 @@ class ScheduleResponse(BaseModel):
     youtube_privacy: str
     enabled: bool
     last_run_at: str | None
+    last_triggered_at: str | None
+    last_started_at: str | None
+    last_completed_at: str | None
     next_run_at: str | None
     created_at: str
     updated_at: str
@@ -90,6 +100,9 @@ def _to_response(schedule: Schedule) -> ScheduleResponse:
         youtube_privacy=schedule.youtube_privacy,
         enabled=schedule.enabled,
         last_run_at=schedule.last_run_at.isoformat() if schedule.last_run_at else None,
+        last_triggered_at=schedule.last_triggered_at.isoformat() if schedule.last_triggered_at else None,
+        last_started_at=schedule.last_started_at.isoformat() if schedule.last_started_at else None,
+        last_completed_at=schedule.last_completed_at.isoformat() if schedule.last_completed_at else None,
         next_run_at=schedule.next_run_at.isoformat() if schedule.next_run_at else None,
         created_at=schedule.created_at.isoformat() if schedule.created_at else "",
         updated_at=schedule.updated_at.isoformat() if schedule.updated_at else "",
@@ -97,45 +110,34 @@ def _to_response(schedule: Schedule) -> ScheduleResponse:
 
 
 @router.post("/", response_model=ScheduleResponse)
-async def create_schedule(request: ScheduleCreate, db: Session = Depends(get_db)):
+async def create_schedule(request: ScheduleCreate, http_request: Request, db: Session = Depends(get_db)):
     """Create a new schedule."""
-    # Verify meeting exists
-    meeting = db.query(Meeting).filter(Meeting.id == request.meeting_id).first()
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-
-    # Validate cron expression for cron schedules
-    if request.schedule_type == "cron" and not request.cron_expression:
-        raise HTTPException(
-            status_code=400,
-            detail="cron_expression is required for cron schedule type",
+    try:
+        schedule = get_app_schedule_service(http_request).create_schedule(
+            db,
+            ScheduleCreateData(
+                meeting_id=request.meeting_id,
+                schedule_type=request.schedule_type,
+                start_time=request.start_time,
+                duration_sec=request.duration_sec,
+                cron_expression=request.cron_expression,
+                lobby_wait_sec=request.lobby_wait_sec,
+                layout_preset=request.layout_preset,
+                resolution_w=request.resolution_w,
+                resolution_h=request.resolution_h,
+                override_meeting_code=request.override_meeting_code,
+                override_display_name=request.override_display_name,
+                youtube_enabled=request.youtube_enabled,
+                youtube_privacy=request.youtube_privacy,
+                enabled=request.enabled,
+            ),
         )
-
-    schedule = Schedule(
-        meeting_id=request.meeting_id,
-        schedule_type=request.schedule_type,
-        start_time=request.start_time,
-        duration_sec=request.duration_sec,
-        cron_expression=request.cron_expression,
-        lobby_wait_sec=request.lobby_wait_sec,
-        layout_preset=request.layout_preset,
-        resolution_w=request.resolution_w,
-        resolution_h=request.resolution_h,
-        override_meeting_code=request.override_meeting_code,
-        override_display_name=request.override_display_name,
-        youtube_enabled=request.youtube_enabled,
-        youtube_privacy=request.youtube_privacy,
-        enabled=request.enabled,
-    )
-    db.add(schedule)
-    db.commit()
-    db.refresh(schedule)
-
-    # Add to scheduler if enabled
-    if schedule.enabled:
-        scheduler = get_scheduler()
-        if scheduler.is_running:
-            scheduler.add_schedule(schedule)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return _to_response(schedule)
 
@@ -173,96 +175,79 @@ async def get_schedule(schedule_id: int, db: Session = Depends(get_db)):
 async def update_schedule(
     schedule_id: int,
     request: ScheduleUpdate,
+    http_request: Request,
     db: Session = Depends(get_db),
 ):
     """Update a schedule."""
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    update_data = request.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(schedule, field, value)
-
-    db.commit()
-    db.refresh(schedule)
-
-    # Update scheduler
-    scheduler = get_scheduler()
-    if scheduler.is_running:
-        scheduler.update_schedule(schedule)
+    try:
+        schedule = get_app_schedule_service(http_request).update_schedule(
+            db,
+            schedule_id,
+            request.model_dump(exclude_unset=True),
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeConfigError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return _to_response(schedule)
 
 
 @router.delete("/{schedule_id}")
-async def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
+async def delete_schedule(schedule_id: int, http_request: Request, db: Session = Depends(get_db)):
     """Delete a schedule."""
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    # Remove from scheduler
-    scheduler = get_scheduler()
-    if scheduler.is_running:
-        scheduler.remove_schedule(schedule_id)
-
-    db.delete(schedule)
-    db.commit()
+    try:
+        get_app_schedule_service(http_request).delete_schedule(db, schedule_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"message": "Schedule deleted", "id": schedule_id}
 
 
 @router.post("/{schedule_id}/enable")
-async def enable_schedule(schedule_id: int, db: Session = Depends(get_db)):
+async def enable_schedule(schedule_id: int, http_request: Request, db: Session = Depends(get_db)):
     """Enable a schedule."""
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    schedule.enabled = True
-    db.commit()
-    db.refresh(schedule)
-
-    scheduler = get_scheduler()
-    if scheduler.is_running:
-        scheduler.add_schedule(schedule)
+    try:
+        get_app_schedule_service(http_request).set_enabled(db, schedule_id, True)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return {"message": "Schedule enabled", "id": schedule_id}
 
 
 @router.post("/{schedule_id}/disable")
-async def disable_schedule(schedule_id: int, db: Session = Depends(get_db)):
+async def disable_schedule(schedule_id: int, http_request: Request, db: Session = Depends(get_db)):
     """Disable a schedule."""
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    schedule.enabled = False
-    db.commit()
-
-    scheduler = get_scheduler()
-    if scheduler.is_running:
-        scheduler.remove_schedule(schedule_id)
+    try:
+        get_app_schedule_service(http_request).set_enabled(db, schedule_id, False)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return {"message": "Schedule disabled", "id": schedule_id}
 
 
 @router.post("/{schedule_id}/trigger")
-async def trigger_schedule(schedule_id: int, db: Session = Depends(get_db)):
+async def trigger_schedule(schedule_id: int, http_request: Request, db: Session = Depends(get_db)):
     """Manually trigger a schedule to run now."""
-    schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    from scheduling.job_runner import get_job_runner
-
-    runner = get_job_runner()
-
-    if runner.is_busy:
+    try:
+        result = get_app_schedule_service(http_request).trigger_schedule(db, schedule_id, manual_trigger=True)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not result.accepted:
         raise HTTPException(
             status_code=409,
-            detail="Worker is busy. Job will be queued.",
+            detail=result.reason or "Schedule is already running or queued",
         )
 
-    runner.queue_schedule(schedule_id, manual_trigger=True)
-    return {"message": "Schedule triggered", "id": schedule_id}
+    status_code = 202 if result.status == "queued" else 200
+    message = "Schedule queued" if result.status == "queued" else "Schedule triggered"
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "message": message,
+            "id": schedule_id,
+            "status": result.status,
+            "queue_position": result.queue_position,
+        },
+    )

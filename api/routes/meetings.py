@@ -1,10 +1,12 @@
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from database.models import Meeting, get_db
+from database.models import Meeting
+from database.session import get_db
+from providers import list_providers, validate_provider_name
+from services.errors import NotFoundError
+from services.meeting_service import MeetingCreateData, get_meeting_service
 
 router = APIRouter(prefix="/meetings", tags=["Meetings"])
 
@@ -13,7 +15,7 @@ class MeetingCreate(BaseModel):
     """Request to create a meeting."""
 
     name: str = Field(..., min_length=1, max_length=255)
-    provider: Literal["jitsi", "webex", "zoom"] = "jitsi"
+    provider: str = Field(default="jitsi", description="Meeting provider", json_schema_extra={"enum": list_providers()})
     meeting_code: str = Field(..., min_length=1, max_length=255)
     site_base_url: str | None = None
     join_url: str | None = None
@@ -22,12 +24,17 @@ class MeetingCreate(BaseModel):
     default_guest_name: str | None = None
     default_guest_email: str | None = None
 
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        return validate_provider_name(value)
+
 
 class MeetingUpdate(BaseModel):
     """Request to update a meeting."""
 
     name: str | None = None
-    provider: Literal["jitsi", "webex", "zoom"] | None = None
+    provider: str | None = Field(default=None, json_schema_extra={"enum": list_providers()})
     meeting_code: str | None = None
     site_base_url: str | None = None
     join_url: str | None = None
@@ -35,6 +42,11 @@ class MeetingUpdate(BaseModel):
     default_display_name: str | None = None
     default_guest_name: str | None = None
     default_guest_email: str | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str | None) -> str | None:
+        return validate_provider_name(value) if value is not None else None
 
 
 class MeetingResponse(BaseModel):
@@ -46,6 +58,7 @@ class MeetingResponse(BaseModel):
     meeting_code: str
     site_base_url: str | None
     join_url: str | None
+    has_password: bool
     default_display_name: str
     default_guest_name: str | None
     default_guest_email: str | None
@@ -61,6 +74,7 @@ def _to_response(meeting: Meeting) -> MeetingResponse:
         meeting_code=meeting.meeting_code,
         site_base_url=meeting.site_base_url,
         join_url=meeting.join_url,
+        has_password=meeting.has_password,
         default_display_name=meeting.default_display_name,
         default_guest_name=meeting.default_guest_name,
         default_guest_email=meeting.default_guest_email,
@@ -72,20 +86,20 @@ def _to_response(meeting: Meeting) -> MeetingResponse:
 @router.post("/", response_model=MeetingResponse)
 async def create_meeting(request: MeetingCreate, db: Session = Depends(get_db)):
     """Create a new meeting configuration."""
-    meeting = Meeting(
-        name=request.name,
-        provider=request.provider,
-        meeting_code=request.meeting_code,
-        site_base_url=request.site_base_url,
-        join_url=request.join_url,
-        password_encrypted=request.password,
-        default_display_name=request.default_display_name,
-        default_guest_name=request.default_guest_name,
-        default_guest_email=request.default_guest_email,
+    meeting = get_meeting_service().create_meeting(
+        db,
+        MeetingCreateData(
+            name=request.name,
+            provider=request.provider,
+            meeting_code=request.meeting_code,
+            site_base_url=request.site_base_url,
+            join_url=request.join_url,
+            password=request.password,
+            default_display_name=request.default_display_name,
+            default_guest_name=request.default_guest_name,
+            default_guest_email=request.default_guest_email,
+        ),
     )
-    db.add(meeting)
-    db.commit()
-    db.refresh(meeting)
     return _to_response(meeting)
 
 
@@ -116,29 +130,22 @@ async def update_meeting(
     db: Session = Depends(get_db),
 ):
     """Update a meeting."""
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-
-    update_data = request.model_dump(exclude_unset=True)
-    # Map 'password' to 'password_encrypted' for DB column
-    if "password" in update_data:
-        update_data["password_encrypted"] = update_data.pop("password")
-    for field, value in update_data.items():
-        setattr(meeting, field, value)
-
-    db.commit()
-    db.refresh(meeting)
+    try:
+        meeting = get_meeting_service().update_meeting(
+            db,
+            meeting_id,
+            request.model_dump(exclude_unset=True),
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Meeting not found") from exc
     return _to_response(meeting)
 
 
 @router.delete("/{meeting_id}")
 async def delete_meeting(meeting_id: int, db: Session = Depends(get_db)):
     """Delete a meeting and all its schedules."""
-    meeting = db.query(Meeting).filter(Meeting.id == meeting_id).first()
-    if not meeting:
-        raise HTTPException(status_code=404, detail="Meeting not found")
-
-    db.delete(meeting)
-    db.commit()
+    try:
+        get_meeting_service().delete_meeting(db, meeting_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Meeting not found") from exc
     return {"message": "Meeting deleted", "id": meeting_id}

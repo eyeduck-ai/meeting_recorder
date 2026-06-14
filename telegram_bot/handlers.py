@@ -20,7 +20,8 @@ from database.models import (
     Schedule,
     TelegramUser,
 )
-from scheduling.scheduler import get_scheduler
+from services.errors import NotFoundError
+from services.schedule_service import get_schedule_service
 from telegram_bot import get_db_session
 from telegram_bot.keyboards import get_main_menu_keyboard, get_meetings_list_keyboard
 from utils.timezone import ensure_utc, to_local, utc_now
@@ -369,26 +370,26 @@ async def schedule_action_callback(update: Update, context: ContextTypes.DEFAULT
             return
 
         if action == "trigger":
-            scheduler = get_scheduler()
-            job_id = await scheduler.trigger_schedule(schedule_id)
-            if job_id:
+            result = get_schedule_service().trigger_schedule(db, schedule_id)
+            if result and result.accepted and result.status == "queued":
                 await query.edit_message_text(
-                    f"✅ 已觸發排程 #{schedule_id}\n會議: {schedule.meeting.name}\nJob: {job_id[:8]}..."
+                    f"✅ 已加入佇列 #{schedule_id}\n會議: {schedule.meeting.name}\n佇列位置: {result.queue_position}"
                 )
+            elif result and result.accepted:
+                await query.edit_message_text(f"✅ 已觸發排程 #{schedule_id}\n會議: {schedule.meeting.name}")
+            elif result and result.status == "duplicate":
+                await query.edit_message_text("此排程已在執行或佇列中")
             else:
                 await query.edit_message_text("觸發失敗，可能有其他錄製進行中")
 
         elif action == "toggle":
-            schedule.enabled = not schedule.enabled
-            db.commit()
-
-            scheduler = get_scheduler()
+            schedule = get_schedule_service().toggle_enabled(db, schedule_id)
             if schedule.enabled:
-                scheduler.add_schedule(schedule)
                 await query.edit_message_text(f"✅ 排程 #{schedule_id} 已啟用")
             else:
-                scheduler.remove_schedule(schedule_id)
                 await query.edit_message_text(f"⏸️ 排程 #{schedule_id} 已停用")
+    except NotFoundError:
+        await query.edit_message_text("排程不存在")
     except Exception as e:
         logger.error(f"Schedule action error: {e}")
         await query.edit_message_text(f"操作失敗: {e}")

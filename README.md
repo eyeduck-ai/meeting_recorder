@@ -37,11 +37,12 @@ mkdir -p data recordings diagnostics logs
 至少確認下列項目：
 
 - `AUTH_PASSWORD`: Web UI / API 密碼；留空代表不啟用密碼保護
+- `CORS_ALLOWED_ORIGINS`: 需要跨來源 browser client 呼叫 API 時才設定，使用逗號分隔明確 origins，不支援 `*`
 - `DATABASE_URL`: 預設為 `sqlite:///./data/app.db`
 - `TELEGRAM_BOT_TOKEN`: 要使用 Telegram Bot 時設定
 - `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`: 要使用 YouTube 上傳時設定
 
-其餘錄製與通知相關設定可先使用預設值。
+其餘錄製與通知相關設定可先使用預設值。Web UI 的設定頁可調整錄製解析度與 lobby 等待時間；這些值會套用到手動錄製與之後新建立的排程，既有排程會保留自己的錄製設定。
 
 ### 4. 啟動服務
 
@@ -98,6 +99,10 @@ python -m scripts.dev_compose up --build -d
 
 這些目錄都會掛載到容器外部，重新部署後仍會保留。
 
+### Secret 保存提醒
+
+會議密碼、通知 webhook secret 與 YouTube token 目前由本機 `.env`、SQLite DB 或 `data/youtube_token.json` 保存；Web UI/API 會遮罩顯示，但不是加密儲存。部署時請保護 `.env`、`data/` volume 與備份檔案的讀取權限。
+
 ## 日常操作
 
 查看容器狀態與日誌：
@@ -139,7 +144,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ## 文件導覽
 
 - [docs/development.md](docs/development.md)：給人看的開發與維護指南
-- [AGENTS.md](AGENTS.md)：給 agent 與 contributor 的唯一規格來源
+- [AGENTS.md](AGENTS.md)：給 AI agent 遵守的工作規則
+- [Plan.md](Plan.md)、[Task.md](Task.md)、[Lesson.md](Lesson.md)：維護者使用的改善追蹤文件
 
 ## License
 

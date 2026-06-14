@@ -8,16 +8,15 @@ from database.models import (
     ProviderType,
     ScheduleType,
 )
+from providers import list_providers
 
 
 class TestEnums:
     """Tests for model enums."""
 
     def test_provider_type_values(self):
-        """ProviderType should have expected values."""
-        assert ProviderType.JITSI.value == "jitsi"
-        assert ProviderType.WEBEX.value == "webex"
-        assert ProviderType.ZOOM.value == "zoom"
+        """ProviderType compatibility enum should match the provider registry."""
+        assert [provider.value for provider in ProviderType] == list_providers()
 
     def test_schedule_type_values(self):
         """ScheduleType should have expected values."""

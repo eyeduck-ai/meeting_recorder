@@ -118,22 +118,31 @@
                         <select name="resolution_preset" id="resolution_preset"
                             class="select select-bordered w-full bg-[#16181c] border-[#2f3336]"
                             onchange="toggleResolutionFields()">
-                            <option value="1080p" {% if not schedule or (schedule.resolution_w==1920) %}selected{% endif
+                            <option value="1080p" {% if (schedule and schedule.resolution_w==1920) or (not schedule and app_settings.resolution_w=='1920') %}selected{% endif
                                 %}>1080p</option>
-                            <option value="720p" {% if schedule and schedule.resolution_w==1280 %}selected{% endif %}>
+                            <option value="720p" {% if (schedule and schedule.resolution_w==1280) or (not schedule and app_settings.resolution_w=='1280') %}selected{% endif %}>
                                 720p</option>
-                            <option value="custom" {% if schedule and schedule.resolution_w not in [1920, 1280]
+                            <option value="custom" {% if (schedule and schedule.resolution_w not in [1920, 1280]) or (not schedule and app_settings.resolution_w not in ['1920', '1280'])
                                 %}selected{% endif %}>Custom</option>
                         </select>
                     </div>
 
                     <div id="custom-resolution-fields" class="hidden grid grid-cols-2 gap-4">
                         <input type="number" name="resolution_w" id="resolution_w"
-                            value="{{ schedule.resolution_w if schedule else 1920 }}"
+                            value="{{ schedule.resolution_w if schedule else app_settings.resolution_w }}"
                             class="input input-bordered bg-[#16181c] border-[#2f3336]" placeholder="W">
                         <input type="number" name="resolution_h" id="resolution_h"
-                            value="{{ schedule.resolution_h if schedule else 1080 }}"
+                            value="{{ schedule.resolution_h if schedule else app_settings.resolution_h }}"
                             class="input input-bordered bg-[#16181c] border-[#2f3336]" placeholder="H">
+                    </div>
+
+                    <div class="form-control w-full">
+                        <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Lobby Timeout
+                            (Seconds)</label>
+                        <input type="number" name="lobby_wait_sec"
+                            value="{{ schedule.lobby_wait_sec if schedule else app_settings.lobby_wait_sec }}"
+                            min="0" max="1800"
+                            class="input input-bordered w-full bg-[#16181c] border-[#2f3336]">
                     </div>
 
                     <div class="form-control w-full">

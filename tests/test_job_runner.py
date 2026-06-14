@@ -10,18 +10,21 @@ from sqlalchemy.orm import sessionmaker
 
 import recording.worker as worker_module
 import scheduling.job_runner as job_runner_module
+import scheduling.recording_executor as recording_executor_module
+import scheduling.upload_runner as upload_runner_module
+from database.migrations import run_schema_migrations
 from database.models import (
     Base,
     JobStatus,
     Meeting,
     Schedule,
-    _run_schema_migrations,
 )
 from database.models import (
     RecordingJob as RecordingJobModel,
 )
 from recording.worker import RecordingJob, RecordingResult
-from scheduling.job_runner import JobRunner
+from scheduling.job_runner import JobRunner, QueueScheduleResult
+from services.runtime_config import RuntimeRecordingConfig
 from utils.timezone import utc_now
 
 
@@ -53,21 +56,45 @@ def session_local(tmp_path, monkeypatch):
     db_path = tmp_path / "job-runner.db"
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
-    _run_schema_migrations(engine)
+    run_schema_migrations(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     monkeypatch.setattr(job_runner_module, "get_session_local", lambda: SessionLocal)
-    monkeypatch.setattr(job_runner_module, "get_setting_int", lambda session, key: 900)
-    monkeypatch.setattr(job_runner_module, "notify_recording_completed", AsyncMock())
-    monkeypatch.setattr(job_runner_module, "notify_recording_failed", AsyncMock())
-    monkeypatch.setattr(job_runner_module, "notify_recording_retry", AsyncMock())
-    monkeypatch.setattr(job_runner_module, "notify_recording_status", AsyncMock(return_value=None))
-    monkeypatch.setattr(job_runner_module, "notify_youtube_upload_completed", AsyncMock())
-    monkeypatch.setattr(job_runner_module, "ACTIVE_NOTIFICATION_STATUSES", set())
+    monkeypatch.setattr(recording_executor_module, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(recording_executor_module, "notify_recording_completed", AsyncMock())
+    monkeypatch.setattr(recording_executor_module, "notify_recording_failed", AsyncMock())
+    monkeypatch.setattr(recording_executor_module, "notify_recording_retry", AsyncMock())
+    monkeypatch.setattr(recording_executor_module, "notify_recording_status", AsyncMock(return_value=None))
+    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock())
+    monkeypatch.setattr(recording_executor_module, "ACTIVE_NOTIFICATION_STATUSES", set())
+
+    class FakeRuntimeConfigService:
+        def get_recording_config(
+            self,
+            session=None,
+            *,
+            lobby_wait_sec=None,
+            resolution_w=None,
+            resolution_h=None,
+        ):
+            return RuntimeRecordingConfig(
+                resolution_w=resolution_w if resolution_w is not None else 1600,
+                resolution_h=resolution_h if resolution_h is not None else 900,
+                lobby_wait_sec=lobby_wait_sec if lobby_wait_sec is not None else 450,
+                recordings_dir=tmp_path / "recordings",
+                diagnostics_dir=tmp_path / "diagnostics",
+                ffmpeg_stall_timeout_sec=120,
+                ffmpeg_stall_grace_sec=30,
+            )
+
+    monkeypatch.setattr(job_runner_module, "get_runtime_config_service", lambda: FakeRuntimeConfigService())
 
     settings = SimpleNamespace(
         recordings_dir=tmp_path / "recordings",
+        diagnostics_dir=tmp_path / "diagnostics",
         lobby_wait_sec=900,
+        resolution_w=1920,
+        resolution_h=1080,
     )
     monkeypatch.setattr(worker_module, "get_settings", lambda: settings)
 
@@ -102,6 +129,8 @@ class TestJobRunner:
         scheduled_coro = scheduled[0]
         assert scheduled_coro.cr_code.co_name == "_run_direct_job"
         assert scheduled_coro.cr_frame.f_locals["job"].job_id == job_id
+        assert scheduled_coro.cr_frame.f_locals["job"].lobby_wait_sec == 450
+        assert scheduled_coro.cr_frame.f_locals["job"].resolution == (1600, 900)
         scheduled_coro.close()
 
         session = session_local()
@@ -112,6 +141,7 @@ class TestJobRunner:
             assert db_job.attempt_no == 1
             assert db_job.retry_count == 0
             assert db_job.status == JobStatus.QUEUED.value
+            assert db_job.lobby_wait_sec == 450
         finally:
             session.close()
 
@@ -135,6 +165,9 @@ class TestJobRunner:
                 meeting=meeting,
                 schedule_type="once",
                 duration_sec=180,
+                lobby_wait_sec=777,
+                resolution_w=1280,
+                resolution_h=720,
                 enabled=True,
             )
             session.add(meeting)
@@ -151,6 +184,8 @@ class TestJobRunner:
         assert kwargs["schedule_id"] == schedule_id
         assert kwargs["job"].meeting_code == "room-123"
         assert kwargs["job"].display_name == "Recorder Bot"
+        assert kwargs["job"].lobby_wait_sec == 777
+        assert kwargs["job"].resolution == (1280, 720)
 
         session = session_local()
         try:
@@ -159,8 +194,98 @@ class TestJobRunner:
             assert db_job.job_id == kwargs["job"].job_id
             assert db_job.meeting_code == "room-123"
             assert db_job.status == JobStatus.QUEUED.value
+            assert db_job.lobby_wait_sec == 777
+
+            schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
+            assert schedule.last_started_at is not None
+            assert schedule.last_completed_at is not None
+            assert schedule.last_run_at == schedule.last_started_at
         finally:
             session.close()
+
+    def test_queue_schedule_returns_queued_when_busy(self, monkeypatch):
+        """Busy runner should accept a different schedule into the queue."""
+        runner = JobRunner()
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            return Mock()
+
+        monkeypatch.setattr(job_runner_module.asyncio, "create_task", fake_create_task)
+
+        async def hold_lock():
+            await runner._lock.acquire()
+
+        import asyncio
+
+        asyncio.run(hold_lock())
+        try:
+            result = runner.queue_schedule(1, manual_trigger=True)
+            assert result == QueueScheduleResult(
+                accepted=True,
+                status="queued",
+                schedule_id=1,
+                queue_position=1,
+            )
+            assert runner.queue_length == 1
+            scheduled[0].close()
+        finally:
+            runner._lock.release()
+
+    def test_queue_schedule_rejects_duplicate_pending_schedule(self, monkeypatch):
+        """A schedule accepted but not yet running should not be accepted twice."""
+        runner = JobRunner()
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            return Mock()
+
+        monkeypatch.setattr(job_runner_module.asyncio, "create_task", fake_create_task)
+
+        first = runner.queue_schedule(1, manual_trigger=True)
+        second = runner.queue_schedule(1, manual_trigger=True)
+
+        assert first.accepted is True
+        assert first.status == "triggered"
+        assert second.accepted is False
+        assert second.status == "duplicate"
+        scheduled[0].close()
+
+    def test_queue_schedule_treats_pending_processor_as_busy(self, monkeypatch):
+        """A second schedule should queue while the first accepted schedule is still pending."""
+        runner = JobRunner()
+        scheduled = []
+
+        class FakeTask:
+            def done(self):
+                return False
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            return FakeTask()
+
+        monkeypatch.setattr(job_runner_module.asyncio, "create_task", fake_create_task)
+
+        first = runner.queue_schedule(1, manual_trigger=True)
+        second = runner.queue_schedule(2, manual_trigger=True)
+
+        assert first == QueueScheduleResult(
+            accepted=True,
+            status="triggered",
+            schedule_id=1,
+            queue_position=0,
+        )
+        assert second == QueueScheduleResult(
+            accepted=True,
+            status="queued",
+            schedule_id=2,
+            queue_position=1,
+        )
+        assert runner.queue_length == 2
+        assert len(scheduled) == 1
+        scheduled[0].close()
 
     @pytest.mark.asyncio
     async def test_manual_schedule_trigger_deadline_uses_trigger_time(self, session_local, monkeypatch):
@@ -207,7 +332,7 @@ class TestJobRunner:
         async def fast_sleep(_seconds):
             return None
 
-        monkeypatch.setattr(job_runner_module.asyncio, "sleep", fast_sleep)
+        monkeypatch.setattr(recording_executor_module.asyncio, "sleep", fast_sleep)
 
         job = RecordingJob.create(
             provider="jitsi",

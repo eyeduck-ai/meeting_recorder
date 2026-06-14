@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session
 
-from database.models import get_session_local
+from database.session import get_session_local
 
 
 def get_db_session() -> Session:

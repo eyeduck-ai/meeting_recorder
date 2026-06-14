@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from config.settings import Settings, get_settings
 from database.models import AppSettings
 
 # Default values for all configurable settings
@@ -18,6 +19,22 @@ SETTING_DEFAULTS = {
 }
 
 
+def get_setting_defaults(settings: Settings | None = None) -> dict[str, str]:
+    """Return editable setting defaults from environment-backed settings."""
+    settings = settings or get_settings()
+    return {
+        "resolution_w": str(settings.resolution_w),
+        "resolution_h": str(settings.resolution_h),
+        "lobby_wait_sec": str(settings.lobby_wait_sec),
+        "ffmpeg_preset": settings.ffmpeg_preset,
+        "ffmpeg_crf": str(settings.ffmpeg_crf),
+        "ffmpeg_audio_bitrate": settings.ffmpeg_audio_bitrate,
+        "jitsi_base_url": settings.jitsi_base_url,
+        "pre_join_seconds": SETTING_DEFAULTS["pre_join_seconds"],
+        "tz": settings.tz,
+    }
+
+
 def get_setting(db: Session, key: str) -> str:
     """Get a setting value, falling back to default if not set.
 
@@ -31,7 +48,7 @@ def get_setting(db: Session, key: str) -> str:
     setting = db.query(AppSettings).filter(AppSettings.key == key).first()
     if setting:
         return setting.value
-    return SETTING_DEFAULTS.get(key, "")
+    return get_setting_defaults().get(key, "")
 
 
 def get_setting_int(db: Session, key: str) -> int:
@@ -62,8 +79,8 @@ def get_all_settings(db: Session) -> dict[str, str]:
     Returns:
         Dictionary of all settings with current values
     """
-    # Start with defaults
-    result = dict(SETTING_DEFAULTS)
+    # Start with environment-backed defaults
+    result = get_setting_defaults()
 
     # Override with database values
     settings = db.query(AppSettings).all()

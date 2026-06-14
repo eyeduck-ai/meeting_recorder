@@ -15,6 +15,7 @@ def test_direct_record_request_accepts_zoom():
     )
 
     assert request.provider == "zoom"
+    assert request.lobby_wait_sec is None
 
 
 def test_meeting_create_accepts_zoom():

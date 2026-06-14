@@ -7,7 +7,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database.models import AppSettings, DetectionLog, get_db
+from database.models import AppSettings, DetectionLog
+from database.session import get_db
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/api/detection", tags=["detection"])

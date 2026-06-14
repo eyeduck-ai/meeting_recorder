@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from urllib.parse import urljoin
 
@@ -86,7 +85,12 @@ class JitsiProvider(BaseProvider):
                 # Use force=True because SVG checkmark icon intercepts pointer events
                 await consent_checkbox.click(force=True)
                 logger.info("Consent checkbox clicked (unsafe room name warning)")
-                await asyncio.sleep(0.5)
+                await self.wait_for_condition(
+                    consent_checkbox.is_checked,
+                    timeout_ms=1000,
+                    fallback_sec=0.2,
+                    reason="Jitsi unsafe room consent checkbox",
+                )
 
         # Handle password if provided
         if password:
@@ -138,9 +142,6 @@ class JitsiProvider(BaseProvider):
         """
         logger.info("Checking for password dialog")
 
-        # Wait a moment for dialog to appear
-        await asyncio.sleep(1)
-
         # Look for password dialog
         password_selectors = [
             'input[name="lockKey"]',
@@ -149,31 +150,38 @@ class JitsiProvider(BaseProvider):
             'input[placeholder*="密碼" i]',
         ]
 
-        for selector in password_selectors:
-            password_input = page.locator(selector)
-            if await password_input.count() > 0:
-                await password_input.fill(password)
-                logger.info("Password filled in dialog")
+        match = await self.wait_for_any_selector(
+            page,
+            password_selectors,
+            timeout_ms=1500,
+            reason="Jitsi password dialog",
+        )
+        if match:
+            password_input = self._first_locator(match.target.locator(match.selector))
+            await password_input.fill(password)
+            logger.info("Password filled in dialog")
 
-                # Find and click OK/Submit button
-                submit_selectors = [
-                    'button:has-text("OK")',
-                    'button:has-text("Submit")',
-                    'button:has-text("確定")',
-                    'button:has-text("Enter")',
-                    'button[type="submit"]',
-                ]
-
-                for btn_selector in submit_selectors:
-                    btn = page.locator(btn_selector)
-                    if await btn.count() > 0:
-                        await btn.first.click()
-                        logger.info("Password submitted")
-                        return True
-
-                # Try pressing Enter if no button found
-                await password_input.press("Enter")
+            submit_selectors = [
+                'button:has-text("OK")',
+                'button:has-text("Submit")',
+                'button:has-text("確定")',
+                'button:has-text("Enter")',
+                'button[type="submit"]',
+            ]
+            submit_match = await self.wait_for_any_selector(
+                page,
+                submit_selectors,
+                timeout_ms=1000,
+                reason="Jitsi password submit button",
+            )
+            if submit_match:
+                submit_button = self._first_locator(submit_match.target.locator(submit_match.selector))
+                await submit_button.click()
+                logger.info("Password submitted")
                 return True
+
+            await password_input.press("Enter")
+            return True
 
         return False
 
@@ -327,10 +335,13 @@ class JitsiProvider(BaseProvider):
 
                 # Method 1: Keyboard shortcut 'w' (most robust)
                 await page.keyboard.press("w")
-                await asyncio.sleep(1)
 
                 # Verify
-                if await tile_view_indicator.count() == 0 or not await tile_view_indicator.first.is_visible():
+                if await self.wait_for_condition(
+                    lambda: self._tile_view_hidden(tile_view_indicator),
+                    timeout_ms=1500,
+                    reason="Jitsi tile view hidden after keyboard toggle",
+                ):
                     logger.info("Successfully toggled to Speaker View")
                     return True
 
@@ -340,9 +351,13 @@ class JitsiProvider(BaseProvider):
                 tile_button = page.locator('[aria-label*="tile" i], [aria-label*="grid" i]')
                 if await tile_button.count() > 0:
                     await tile_button.first.click()
-                    await asyncio.sleep(1)
 
-                    if await tile_view_indicator.count() == 0:
+                    if await self.wait_for_condition(
+                        lambda: self._tile_view_hidden(tile_view_indicator),
+                        timeout_ms=1500,
+                        fallback_sec=0.2,
+                        reason="Jitsi tile view hidden after button toggle",
+                    ):
                         logger.info("Successfully toggled to Speaker View via button")
                         return True
             else:
@@ -355,3 +370,9 @@ class JitsiProvider(BaseProvider):
         except Exception as e:
             logger.warning(f"Could not set layout: {e}")
             return False
+
+    async def _tile_view_hidden(self, tile_view_indicator) -> bool:
+        """Return True when Jitsi tile-view indicator is gone or hidden."""
+        if await tile_view_indicator.count() == 0:
+            return True
+        return not await self._first_locator(tile_view_indicator).is_visible()

@@ -11,9 +11,11 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from croniter import croniter
+from sqlalchemy.orm import Session
 
 from config.settings import get_settings
-from database.models import Schedule, ScheduleType, get_session_local
+from database.models import Schedule, ScheduleType
+from database.session import get_session_local
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -225,7 +227,7 @@ class SchedulerService:
             logger.info(f"Added schedule {schedule.id} ({schedule.schedule_type})")
 
             # Check for catch-up run (if we missed the last trigger and still within window)
-            if schedule.schedule_type == ScheduleType.CRON and schedule.cron_expression and self._job_callback:
+            if schedule_type_value == ScheduleType.CRON.value and schedule.cron_expression and self._job_callback:
                 try:
                     now_local = datetime.now(self._scheduler.timezone)
                     # Use croniter to get previous fire time
@@ -237,14 +239,13 @@ class SchedulerService:
 
                     last_fire_utc = ensure_utc(last_fire)
                     end_utc = ensure_utc(last_fire + timedelta(seconds=schedule.duration_sec))
-                    last_run_at = ensure_utc(schedule.last_run_at) if schedule.last_run_at else None
-
-                    if last_run_at and last_fire_utc and last_run_at >= last_fire_utc:
-                        logger.info(f"Schedule {schedule.id} already ran for latest window; skip catch-up")
+                    if self._is_schedule_active_or_queued(schedule.id):
+                        logger.info(f"Schedule {schedule.id} already running or queued; skip catch-up")
                     elif self._should_skip_catchup(schedule.id, last_fire_utc):
                         pass  # Already logged in _should_skip_catchup
                     elif end_utc and utc_now() < end_utc:
                         logger.info(f"Schedule {schedule.id} within window; triggering catch-up run")
+                        self._mark_triggered(schedule.id)
                         self._job_callback(schedule.id)
                 except Exception as catch_up_error:
                     logger.debug(f"Catch-up check failed for schedule {schedule.id}: {catch_up_error}")
@@ -296,8 +297,7 @@ class SchedulerService:
         """
         logger.info(f"Schedule {schedule_id} triggered")
 
-        # Update last_run_at
-        self._update_last_run(schedule_id)
+        self._mark_triggered(schedule_id)
 
         # Call the registered callback
         if self._job_callback:
@@ -313,30 +313,58 @@ class SchedulerService:
             if job and job.next_run_time:
                 self._update_next_run(schedule_id, job.next_run_time)
 
-    def _update_last_run(self, schedule_id: int) -> None:
-        """Update last_run_at in database."""
+    def _mark_triggered(self, schedule_id: int) -> None:
+        """Record that a schedule trigger event happened."""
         SessionLocal = get_session_local()
         session = SessionLocal()
         try:
-            schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
-            if schedule:
-                schedule.last_run_at = utc_now()
+            if self._mark_triggered_in_session(session, schedule_id):
                 session.commit()
         finally:
             session.close()
+
+    def _mark_triggered_in_session(self, session: Session, schedule_id: int) -> bool:
+        schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
+        if not schedule:
+            return False
+        schedule.last_triggered_at = utc_now()
+        return True
+
+    def _is_schedule_active_or_queued(self, schedule_id: int) -> bool:
+        """Check the job callback owner for a running or queued schedule."""
+        callback_owner = getattr(self._job_callback, "__self__", None)
+        checker = getattr(callback_owner, "is_schedule_active_or_queued", None)
+        if not checker:
+            return False
+        try:
+            return bool(checker(schedule_id))
+        except Exception as e:
+            logger.warning(f"Failed to inspect queue state for schedule {schedule_id}: {e}")
+            return False
 
     def _update_next_run(self, schedule_id: int, next_run: datetime) -> None:
         """Update next_run_at in database."""
         SessionLocal = get_session_local()
         session = SessionLocal()
         try:
-            schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
-            if schedule:
-                # Ensure next_run is UTC-aware (scheduler provides local time)
-                schedule.next_run_at = ensure_utc(next_run)
+            if self._update_next_run_in_session(session, schedule_id, next_run):
                 session.commit()
         finally:
             session.close()
+
+    def _update_next_run_in_session(self, session: Session, schedule_id: int, next_run: datetime) -> bool:
+        schedule = session.query(Schedule).filter(Schedule.id == schedule_id).first()
+        if not schedule:
+            return False
+
+        # Ensure next_run is UTC-aware (scheduler provides local time).
+        normalized_next_run = ensure_utc(next_run)
+        current_next_run = ensure_utc(schedule.next_run_at)
+        if current_next_run == normalized_next_run:
+            return False
+
+        schedule.next_run_at = normalized_next_run
+        return True
 
     def _should_skip_catchup(self, schedule_id: int, last_fire_utc: datetime) -> bool:
         """Check if we should skip catch-up for this schedule.
@@ -387,22 +415,30 @@ class SchedulerService:
         if not self._scheduler:
             return
 
-        synced_count = 0
-        for job in self._scheduler.get_jobs():
-            # Skip the sync job itself
-            if not job.id.startswith("schedule_") or job.id == "schedule_sync":
-                continue
+        changed_count = 0
+        SessionLocal = get_session_local()
+        session = SessionLocal()
+        try:
+            for job in self._scheduler.get_jobs():
+                # Skip the sync job itself
+                if not job.id.startswith("schedule_") or job.id == "schedule_sync":
+                    continue
 
-            try:
-                schedule_id = int(job.id.replace("schedule_", ""))
-                if job.next_run_time:
-                    self._update_next_run(schedule_id, job.next_run_time)
-                    synced_count += 1
-            except (ValueError, Exception) as e:
-                logger.warning(f"Failed to sync next_run for {job.id}: {e}")
+                try:
+                    schedule_id = int(job.id.replace("schedule_", ""))
+                    if job.next_run_time and self._update_next_run_in_session(session, schedule_id, job.next_run_time):
+                        changed_count += 1
+                except (ValueError, Exception) as e:
+                    logger.warning(f"Failed to sync next_run for {job.id}: {e}")
 
-        if synced_count > 0:
-            logger.debug(f"Synced next_run_at for {synced_count} schedules")
+            if changed_count > 0:
+                session.commit()
+                logger.debug(f"Synced next_run_at for {changed_count} schedules")
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def get_next_run_time(self, schedule_id: int) -> datetime | None:
         """Get next run time for a schedule.
@@ -441,19 +477,18 @@ class SchedulerService:
             )
         return jobs
 
-    async def trigger_schedule(self, schedule_id: int) -> str | None:
+    async def trigger_schedule(self, schedule_id: int):
         """Manually trigger a schedule immediately.
 
         Args:
             schedule_id: Schedule ID to trigger
 
         Returns:
-            Job ID if triggered successfully, None otherwise
+            Callback result if accepted by the job runner, None otherwise
         """
         logger.info(f"Manual trigger for schedule {schedule_id}")
 
-        # Update last_run_at
-        self._update_last_run(schedule_id)
+        self._mark_triggered(schedule_id)
 
         # Call the registered callback
         if self._job_callback:
@@ -477,3 +512,15 @@ def get_scheduler() -> SchedulerService:
     if _scheduler_instance is None:
         _scheduler_instance = SchedulerService()
     return _scheduler_instance
+
+
+def set_scheduler_instance(scheduler: SchedulerService) -> None:
+    """Set the compatibility scheduler singleton."""
+    global _scheduler_instance
+    _scheduler_instance = scheduler
+
+
+def reset_scheduler_instance() -> None:
+    """Clear the compatibility scheduler singleton."""
+    global _scheduler_instance
+    _scheduler_instance = None

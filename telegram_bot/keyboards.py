@@ -2,6 +2,8 @@
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from providers import list_provider_metadata
+
 
 def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     """Get the main menu reply keyboard (persistent at bottom)."""
@@ -170,16 +172,16 @@ def get_meetings_list_keyboard(meetings: list) -> InlineKeyboardMarkup:
 
 def get_provider_keyboard() -> InlineKeyboardMarkup:
     """Get inline keyboard for provider selection."""
-    buttons = [
-        [
-            InlineKeyboardButton("Jitsi", callback_data="provider:jitsi"),
-            InlineKeyboardButton("Webex", callback_data="provider:webex"),
-        ],
-        [
-            InlineKeyboardButton("Zoom", callback_data="provider:zoom"),
-        ],
-        [InlineKeyboardButton("❌ 取消", callback_data="cancel")],
-    ]
+    providers = list_provider_metadata()
+    buttons = []
+    for index in range(0, len(providers), 2):
+        buttons.append(
+            [
+                InlineKeyboardButton(provider.label, callback_data=f"provider:{provider.name}")
+                for provider in providers[index : index + 2]
+            ]
+        )
+    buttons.append([InlineKeyboardButton("❌ 取消", callback_data="cancel")])
     return InlineKeyboardMarkup(buttons)
 
 

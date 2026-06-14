@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -6,12 +7,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import Page
 
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SelectorMatch:
+    """A matched selector and the Playwright target that owns it."""
+
+    target: Any
+    selector: str
 
 
 @dataclass
@@ -124,6 +134,166 @@ class BaseProvider(ABC):
         """Apply password when prompted after joining."""
         return False
 
+    async def wait_for_page_idle(
+        self,
+        page: Page,
+        *,
+        timeout_ms: int = 3000,
+        fallback_sec: float = 0.5,
+        reason: str = "page readiness",
+    ) -> bool:
+        """Best-effort bounded wait for page/network settling before short fallback sleep."""
+        try:
+            await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            return True
+        except Exception as e:
+            logger.debug(f"Timed out waiting for {reason}: {e}; using {fallback_sec}s fallback")
+            await asyncio.sleep(fallback_sec)
+            return False
+
+    def _normalize_targets(self, targets: Any | list[Any] | tuple[Any, ...]) -> list[Any]:
+        """Normalize a page/frame or list of targets for selector helpers."""
+        if isinstance(targets, list | tuple):
+            return list(targets)
+        return [targets]
+
+    @staticmethod
+    def _first_locator(locator):
+        """Return the first locator while supporting real and fake Playwright APIs."""
+        first = getattr(locator, "first", locator)
+        return first() if callable(first) else first
+
+    async def _wait_for_selector_match(
+        self,
+        target,
+        selector: str,
+        *,
+        state: str,
+        timeout_ms: int,
+    ) -> SelectorMatch:
+        locator = target.locator(selector)
+        first_locator = self._first_locator(locator)
+        wait_for = getattr(first_locator, "wait_for", None)
+        if wait_for:
+            await wait_for(state=state, timeout=timeout_ms)
+        else:
+            count = await locator.count()
+            if count <= 0:
+                raise TimeoutError(f"Selector not found: {selector}")
+            if state == "visible" and hasattr(first_locator, "is_visible") and not await first_locator.is_visible():
+                raise TimeoutError(f"Selector not visible: {selector}")
+        return SelectorMatch(target=target, selector=selector)
+
+    async def wait_for_any_selector(
+        self,
+        targets,
+        selectors: list[str],
+        *,
+        state: str = "visible",
+        timeout_ms: int = 3000,
+        fallback_sec: float = 0.0,
+        reason: str = "selector readiness",
+    ) -> SelectorMatch | None:
+        """Best-effort bounded wait until any selector appears on any target."""
+        target_list = self._normalize_targets(targets)
+        tasks = [
+            asyncio.create_task(self._wait_for_selector_match(target, selector, state=state, timeout_ms=timeout_ms))
+            for target in target_list
+            for selector in selectors
+        ]
+        if not tasks:
+            return None
+
+        match = None
+        try:
+            for task in asyncio.as_completed(tasks, timeout=timeout_ms / 1000):
+                try:
+                    match = await task
+                    break
+                except Exception:
+                    continue
+        except TimeoutError:
+            logger.debug(f"Timed out waiting for {reason}")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        if match:
+            return match
+
+        if fallback_sec > 0:
+            await self.short_ui_settle(fallback_sec=fallback_sec, reason=reason)
+        return None
+
+    async def wait_for_condition(
+        self,
+        condition: Callable[[], object],
+        *,
+        timeout_ms: int = 1000,
+        interval_sec: float = 0.1,
+        fallback_sec: float = 0.0,
+        reason: str = "condition",
+    ) -> bool:
+        """Poll a small UI condition with a bounded timeout."""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_ms / 1000
+        while loop.time() < deadline:
+            try:
+                result = condition()
+                if hasattr(result, "__await__"):
+                    result = await result
+                if result:
+                    return True
+            except Exception:
+                pass
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(interval_sec, remaining))
+
+        logger.debug(f"Timed out waiting for {reason}")
+        if fallback_sec > 0:
+            await self.short_ui_settle(fallback_sec=fallback_sec, reason=reason)
+        return False
+
+    async def wait_until_selectors_hidden(
+        self,
+        target,
+        selectors: list[str],
+        *,
+        timeout_ms: int = 1000,
+        fallback_sec: float = 0.0,
+        reason: str = "selectors hidden",
+    ) -> bool:
+        """Best-effort wait until known blocking selectors are hidden or absent."""
+
+        async def selector_hidden(selector: str) -> bool:
+            locator = target.locator(selector)
+            if await locator.count() <= 0:
+                return True
+            first_locator = self._first_locator(locator)
+            if hasattr(first_locator, "is_visible"):
+                return not await first_locator.is_visible()
+            return False
+
+        async def all_hidden() -> bool:
+            return all([await selector_hidden(selector) for selector in selectors])
+
+        return await self.wait_for_condition(
+            all_hidden,
+            timeout_ms=timeout_ms,
+            fallback_sec=fallback_sec,
+            reason=reason,
+        )
+
+    async def short_ui_settle(self, *, fallback_sec: float = 0.2, reason: str = "UI debounce") -> None:
+        """Centralized short UI debounce for controls without a reliable selector state."""
+        logger.debug(f"Using {fallback_sec}s UI settle fallback for {reason}")
+        await asyncio.sleep(fallback_sec)
+
     @abstractmethod
     async def probe_state(self, page: Page) -> MeetingStateSnapshot:
         """Probe the provider-specific meeting state."""
@@ -137,8 +307,6 @@ class BaseProvider(ABC):
         probe_callback: Callable[[MeetingStateSnapshot], None] | None = None,
     ) -> JoinResult:
         """Wait until successfully joined the meeting."""
-        import asyncio
-
         logger.info(f"Waiting to join meeting (timeout={timeout_sec}s)")
         start_time = asyncio.get_event_loop().time()
         password_attempted = False
@@ -186,8 +354,6 @@ class BaseProvider(ABC):
         probe_callback: Callable[[MeetingStateSnapshot], None] | None = None,
     ) -> bool:
         """Wait in the lobby until admitted or timeout."""
-        import asyncio
-
         logger.info(f"Waiting in lobby (max={max_wait_sec}s)")
         start_time = asyncio.get_event_loop().time()
         check_interval = 5

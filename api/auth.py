@@ -67,14 +67,22 @@ def is_authenticated(request: Request) -> bool:
     return False
 
 
-# Paths that don't require authentication
-PUBLIC_PATHS = [
+# Exact paths that don't require authentication.
+PUBLIC_EXACT_PATHS = {
     "/health",
     "/api",  # API info and environment status
+    "/api/environment",
     "/login",
-    "/static",
     "/favicon.ico",
-]
+}
+
+# Path prefixes that don't require authentication.
+PUBLIC_PREFIX_PATHS = ("/static/",)
+
+
+def is_public_path(path: str) -> bool:
+    """Return True when the request path is intentionally public."""
+    return path in PUBLIC_EXACT_PATHS or any(path.startswith(prefix) for prefix in PUBLIC_PREFIX_PATHS)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -90,9 +98,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # Check if path is public
-        for public_path in PUBLIC_PATHS:
-            if path == public_path or path.startswith(public_path + "/"):
-                return await call_next(request)
+        if is_public_path(path):
+            return await call_next(request)
 
         # Check authentication
         if is_authenticated(request):

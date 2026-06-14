@@ -37,6 +37,12 @@ YOUTUBE_SCOPES = [
 ]
 
 
+def _read_file_chunk(video_path: Path, offset: int, chunk_size: int) -> bytes:
+    with open(video_path, "rb") as file:
+        file.seek(offset)
+        return file.read(chunk_size)
+
+
 class UploadStatus(StrEnum):
     """Upload status."""
 
@@ -164,6 +170,10 @@ class TokenStorage:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.storage_path, "w") as f:
             json.dump(token.to_dict(), f)
+        try:
+            self.storage_path.chmod(0o600)
+        except OSError as e:
+            logger.debug(f"Could not restrict token file permissions: {e}")
         logger.info("Token saved successfully")
 
     def delete(self) -> None:
@@ -222,6 +232,10 @@ class YouTubeUploader:
         """Close HTTP client."""
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
+
+    async def _read_chunk(self, video_path: Path, offset: int, chunk_size: int) -> bytes:
+        """Read a video chunk without blocking the event loop."""
+        return await asyncio.to_thread(_read_file_chunk, video_path, offset, chunk_size)
 
     # -------------------------------------------------------------------------
     # OAuth 2.0 Device Code Flow (for headless operation)
@@ -572,85 +586,87 @@ class YouTubeUploader:
 
         client = await self._get_http_client()
 
-        with open(video_path, "rb") as f:
-            while uploaded_bytes < file_size:
-                # Calculate chunk size
-                remaining = file_size - uploaded_bytes
-                chunk_size = min(self.CHUNK_SIZE, remaining)
+        while uploaded_bytes < file_size:
+            # Calculate chunk size
+            remaining = file_size - uploaded_bytes
+            chunk_size = min(self.CHUNK_SIZE, remaining)
 
-                # Read chunk
-                f.seek(uploaded_bytes)
-                chunk = f.read(chunk_size)
+            # Read chunk
+            chunk = await self._read_chunk(video_path, uploaded_bytes, chunk_size)
+            if not chunk:
+                raise UploadFailedError("Upload incomplete")
 
-                # Build content range header
-                content_range = f"bytes {uploaded_bytes}-{uploaded_bytes + chunk_size - 1}/{file_size}"
+            actual_chunk_size = len(chunk)
 
-                try:
-                    response = await client.put(
-                        upload_url,
-                        headers={
-                            "Content-Length": str(chunk_size),
-                            "Content-Range": content_range,
-                        },
-                        content=chunk,
-                        timeout=300.0,  # 5 minutes for large chunks
-                    )
+            # Build content range header
+            content_range = f"bytes {uploaded_bytes}-{uploaded_bytes + actual_chunk_size - 1}/{file_size}"
 
-                    if response.status_code in (200, 201):
-                        # Upload complete
-                        data = response.json()
-                        video_id = data.get("id")
-                        if progress_callback:
-                            progress_callback(file_size, file_size)
-                        return video_id
+            try:
+                response = await client.put(
+                    upload_url,
+                    headers={
+                        "Content-Length": str(actual_chunk_size),
+                        "Content-Range": content_range,
+                    },
+                    content=chunk,
+                    timeout=300.0,  # 5 minutes for large chunks
+                )
 
-                    elif response.status_code == 308:
-                        # Resume incomplete - more chunks needed
-                        range_header = response.headers.get("Range", "")
-                        if range_header:
-                            # Parse "bytes=0-12345" to get uploaded bytes
-                            uploaded_bytes = int(range_header.split("-")[1]) + 1
-                        else:
-                            uploaded_bytes += chunk_size
+                if response.status_code in (200, 201):
+                    # Upload complete
+                    data = response.json()
+                    video_id = data.get("id")
+                    if progress_callback:
+                        progress_callback(file_size, file_size)
+                    return video_id
 
-                        if progress_callback:
-                            progress_callback(uploaded_bytes, file_size)
-
-                        # Reset retry counter on success
-                        retry_count = 0
-                        retry_delay = self.INITIAL_RETRY_DELAY
-
-                    elif response.status_code in (500, 502, 503, 504):
-                        # Server error - retry with backoff
-                        retry_count += 1
-                        if retry_count > self.MAX_RETRIES:
-                            raise UploadFailedError(f"Upload failed after {self.MAX_RETRIES} retries")
-
-                        logger.warning(f"Server error {response.status_code}, retrying in {retry_delay}s")
-                        await asyncio.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, self.MAX_RETRY_DELAY)
-
-                        # Query upload status to resume
-                        uploaded_bytes = await self._query_upload_status(upload_url, file_size)
-
-                    elif response.status_code == 404:
-                        # Upload session expired
-                        raise UploadFailedError("Upload session expired")
-
+                elif response.status_code == 308:
+                    # Resume incomplete - more chunks needed
+                    range_header = response.headers.get("Range", "")
+                    if range_header:
+                        # Parse "bytes=0-12345" to get uploaded bytes
+                        uploaded_bytes = int(range_header.split("-")[1]) + 1
                     else:
-                        raise UploadFailedError(f"Upload failed with status {response.status_code}: {response.text}")
+                        uploaded_bytes += actual_chunk_size
 
-                except httpx.TimeoutException:
+                    if progress_callback:
+                        progress_callback(uploaded_bytes, file_size)
+
+                    # Reset retry counter on success
+                    retry_count = 0
+                    retry_delay = self.INITIAL_RETRY_DELAY
+
+                elif response.status_code in (500, 502, 503, 504):
+                    # Server error - retry with backoff
                     retry_count += 1
                     if retry_count > self.MAX_RETRIES:
-                        raise UploadFailedError("Upload timed out")
+                        raise UploadFailedError(f"Upload failed after {self.MAX_RETRIES} retries")
 
-                    logger.warning(f"Upload timeout, retrying in {retry_delay}s")
+                    logger.warning(f"Server error {response.status_code}, retrying in {retry_delay}s")
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, self.MAX_RETRY_DELAY)
 
                     # Query upload status to resume
                     uploaded_bytes = await self._query_upload_status(upload_url, file_size)
+
+                elif response.status_code == 404:
+                    # Upload session expired
+                    raise UploadFailedError("Upload session expired")
+
+                else:
+                    raise UploadFailedError(f"Upload failed with status {response.status_code}: {response.text}")
+
+            except httpx.TimeoutException:
+                retry_count += 1
+                if retry_count > self.MAX_RETRIES:
+                    raise UploadFailedError("Upload timed out")
+
+                logger.warning(f"Upload timeout, retrying in {retry_delay}s")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, self.MAX_RETRY_DELAY)
+
+                # Query upload status to resume
+                uploaded_bytes = await self._query_upload_status(upload_url, file_size)
 
         raise UploadFailedError("Upload incomplete")
 
@@ -723,3 +739,9 @@ def get_youtube_uploader() -> YouTubeUploader:
     if _uploader_instance is None:
         _uploader_instance = YouTubeUploader()
     return _uploader_instance
+
+
+async def close_youtube_uploader() -> None:
+    """Close the global uploader's HTTP client if it has been created."""
+    if _uploader_instance is not None:
+        await _uploader_instance.close()

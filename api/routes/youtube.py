@@ -148,7 +148,8 @@ async def upload_video(request: UploadRequest):
     """
     from pathlib import Path
 
-    from database.models import RecordingJob, get_session_local
+    from database.models import RecordingJob
+    from database.session import get_session_local
     from uploading.youtube import UploadStatus, VideoMetadata
 
     uploader = get_youtube_uploader()

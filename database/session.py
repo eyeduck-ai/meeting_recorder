@@ -3,13 +3,60 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
-from database.models import get_session_local
+from config.settings import get_settings
+from database.base import Base
+from database.migrations import run_schema_migrations
 
 if TYPE_CHECKING:
     from database.models import RecordingJob
     from recording.worker import RecordingResult
+
+
+_engine: Engine | None = None
+_SessionLocal: sessionmaker[Session] | None = None
+
+
+def get_engine() -> Engine:
+    """Get or create the database engine lazily."""
+    global _engine
+    if _engine is None:
+        settings = get_settings()
+        _engine = create_engine(
+            settings.database_url,
+            connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
+        )
+    return _engine
+
+
+def get_session_local() -> sessionmaker[Session]:
+    """Get or create the SQLAlchemy session factory."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())
+    return _SessionLocal
+
+
+def init_db() -> None:
+    """Initialize database tables and apply idempotent compatibility migrations."""
+    import database.models  # noqa: F401
+
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    run_schema_migrations(engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency for getting a database session."""
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 @contextmanager

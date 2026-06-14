@@ -10,8 +10,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import auth
-from api.routes import ui
+from api.routes import ui, ui_common
 from database.models import JobStatus
+from database.session import get_db
 
 
 def _make_job(status: str, diagnostic_dir: str | None = None):
@@ -51,9 +52,9 @@ def ui_client_factory(monkeypatch, mock_settings):
     """Create a UI test client with an injected mock DB session."""
 
     monkeypatch.setattr(auth, "get_settings", lambda: mock_settings)
-    monkeypatch.setattr(ui, "settings", mock_settings)
+    monkeypatch.setattr(ui_common, "settings", mock_settings)
     monkeypatch.setattr(
-        ui,
+        ui_common,
         "get_environment_status",
         lambda: SimpleNamespace(is_recording_capable=True, warning_message=None),
     )
@@ -62,7 +63,7 @@ def ui_client_factory(monkeypatch, mock_settings):
         app = FastAPI()
         app.add_middleware(auth.AuthMiddleware)
         app.include_router(ui.router)
-        app.dependency_overrides[ui.get_db] = lambda: db_session
+        app.dependency_overrides[get_db] = lambda: db_session
         return TestClient(app)
 
     return build_client

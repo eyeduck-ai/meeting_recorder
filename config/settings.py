@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    cors_allowed_origins: str = ""
 
     # Authentication (simple password protection)
     auth_password: str | None = None  # Set via AUTH_PASSWORD env var
@@ -103,6 +104,11 @@ class Settings(BaseSettings):
     def youtube_configured(self) -> bool:
         """Check if YouTube credentials are configured."""
         return bool(self.youtube_client_id and self.youtube_client_secret)
+
+    @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        """Return explicitly allowed CORS origins."""
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache

@@ -1,6 +1,5 @@
 """Webex Meeting Provider for Guest Join."""
 
-import asyncio
 import logging
 from urllib.parse import urljoin
 
@@ -66,8 +65,8 @@ class WebexProvider(BaseProvider):
         """
         logger.info(f"Handling Webex prejoin page, display_name={display_name}")
 
-        # Wait for page to load
-        await asyncio.sleep(2)
+        # Prefer bounded Playwright readiness over fixed startup sleep.
+        await self.wait_for_page_idle(page, timeout_ms=3000, fallback_sec=0.5, reason="Webex prejoin page")
 
         # Handle cookie consent banner (on main page)
         try:
@@ -75,7 +74,7 @@ class WebexProvider(BaseProvider):
             if await accept_btn.count() > 0:
                 await accept_btn.first.click()
                 logger.info("Accepted cookie consent")
-                await asyncio.sleep(0.5)
+                await self.short_ui_settle(fallback_sec=0.2, reason="Webex cookie consent")
         except Exception:
             pass
 
@@ -97,7 +96,9 @@ class WebexProvider(BaseProvider):
                     await selector.first.click()
                     logger.info("Clicked 'Join from this browser' button")
                     join_clicked = True
-                    await asyncio.sleep(2)
+                    await self.wait_for_page_idle(
+                        page, timeout_ms=3000, fallback_sec=0.5, reason="Webex browser join transition"
+                    )
                     break
             except Exception:
                 continue
@@ -110,15 +111,32 @@ class WebexProvider(BaseProvider):
         try:
             await iframe_locator.wait_for(state="visible", timeout=15000)
         except Exception:
-            # Try waiting a bit more
-            await asyncio.sleep(3)
+            await self.wait_for_any_selector(
+                page,
+                ["#unified-webclient-iframe"],
+                timeout_ms=3000,
+                reason="Webex iframe fallback",
+            )
             if await iframe_locator.count() == 0:
                 logger.error("Could not find Webex iframe")
                 raise RuntimeError("Webex iframe not found")
-        await asyncio.sleep(2)  # Wait for iframe content to initialize
 
         # Now work within the iframe
         iframe = self._get_webex_iframe(page)
+        await self.wait_for_any_selector(
+            iframe,
+            [
+                '[data-test="Name (required)"]',
+                '[data-test="Email (required)"]',
+                '[data-test="join-button"]',
+                '[data-test="video-button"]',
+                '[data-test="mute-button"]',
+            ],
+            state="attached",
+            timeout_ms=5000,
+            fallback_sec=0.2,
+            reason="Webex iframe controls",
+        )
 
         # First try to close any permission dialogs (may not appear with fake-ui)
         try:
@@ -126,7 +144,7 @@ class WebexProvider(BaseProvider):
             if await close_dialog_btn.count() > 0:
                 await close_dialog_btn.click()
                 logger.info("Closed camera dialog")
-                await asyncio.sleep(0.5)
+                await self.short_ui_settle(fallback_sec=0.2, reason="Webex camera dialog close")
         except Exception:
             pass
 
@@ -135,7 +153,7 @@ class WebexProvider(BaseProvider):
             if await reject_btn.count() > 0:
                 await reject_btn.click()
                 logger.info("Rejected microphone permission")
-                await asyncio.sleep(0.5)
+                await self.short_ui_settle(fallback_sec=0.2, reason="Webex microphone permission reject")
         except Exception:
             pass
 
@@ -164,13 +182,13 @@ class WebexProvider(BaseProvider):
                     ):
                         await video_btn.first.click()
                         logger.info(f"Disabled video using: {selector}")
-                        await asyncio.sleep(0.5)
+                        await self.short_ui_settle(fallback_sec=0.2, reason="Webex video toggle")
                         break
                     # Also try clicking if aria-label suggests video is active
                     elif "start" not in aria_label.lower() and "開啟" not in aria_label:
                         await video_btn.first.click()
                         logger.info(f"Toggled video using: {selector}")
-                        await asyncio.sleep(0.5)
+                        await self.short_ui_settle(fallback_sec=0.2, reason="Webex video toggle")
                         break
             except Exception as e:
                 logger.debug(f"Could not click video button {selector}: {e}")
@@ -192,12 +210,12 @@ class WebexProvider(BaseProvider):
                     if "mute" in aria_label.lower() and "unmute" not in aria_label.lower():
                         await mic_btn.first.click()
                         logger.info(f"Muted mic using: {selector}")
-                        await asyncio.sleep(0.5)
+                        await self.short_ui_settle(fallback_sec=0.2, reason="Webex mic toggle")
                         break
                     elif "靜音" in aria_label and "取消" not in aria_label:
                         await mic_btn.first.click()
                         logger.info(f"Muted mic using: {selector}")
-                        await asyncio.sleep(0.5)
+                        await self.short_ui_settle(fallback_sec=0.2, reason="Webex mic toggle")
                         break
             except Exception as e:
                 logger.debug(f"Could not click mic button {selector}: {e}")
@@ -301,8 +319,6 @@ class WebexProvider(BaseProvider):
         """
         logger.info("Checking for Webex password dialog")
 
-        await asyncio.sleep(1)
-
         try:
             iframe = self._get_webex_iframe(page)
 
@@ -312,6 +328,12 @@ class WebexProvider(BaseProvider):
                 'input[placeholder*="password" i]',
             ]
 
+            await self.wait_for_any_selector(
+                iframe,
+                password_selectors,
+                timeout_ms=1500,
+                reason="Webex password dialog",
+            )
             for selector in password_selectors:
                 password_input = iframe.locator(selector)
                 if await password_input.count() > 0:
@@ -509,15 +531,23 @@ class WebexProvider(BaseProvider):
             layout_btn = iframe.locator('[data-test="layout-button"], button[aria-label*="layout" i]')
             if await layout_btn.count() > 0:
                 await layout_btn.first.click()
-                await asyncio.sleep(0.5)
 
                 if preset == "speaker":
-                    speaker_option = iframe.locator(':text("Speaker view"), :text("發言人檢視")')
+                    option_selector = ':text("Speaker view"), :text("發言人檢視")'
                 else:
-                    speaker_option = iframe.locator(':text("Grid view"), :text("格狀檢視")')
+                    option_selector = ':text("Grid view"), :text("格狀檢視")'
 
-                if await speaker_option.count() > 0:
-                    await speaker_option.first.click()
+                option_match = await self.wait_for_any_selector(
+                    iframe,
+                    [option_selector],
+                    state="attached",
+                    timeout_ms=1000,
+                    fallback_sec=0.2,
+                    reason="Webex layout option",
+                )
+                if option_match:
+                    speaker_option = self._first_locator(option_match.target.locator(option_match.selector))
+                    await speaker_option.click()
                     logger.info(f"Layout set to {preset}")
                     return True
 

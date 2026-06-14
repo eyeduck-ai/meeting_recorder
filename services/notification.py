@@ -251,7 +251,8 @@ def load_notification_config() -> NotificationConfig:
     import json
     import os
 
-    from database.models import AppSettings, get_session_local
+    from database.models import AppSettings
+    from database.session import get_session_local
 
     config = NotificationConfig()
 

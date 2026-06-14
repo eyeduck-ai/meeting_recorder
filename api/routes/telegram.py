@@ -1,11 +1,12 @@
 """Telegram API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from config.settings import get_settings
-from database.models import TelegramUser, get_db
+from database.models import TelegramUser
+from database.session import get_db
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
@@ -14,6 +15,8 @@ settings = get_settings()
 
 class TelegramUserResponse(BaseModel):
     """Telegram user response model."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     chat_id: int
@@ -29,9 +32,6 @@ class TelegramUserResponse(BaseModel):
     notify_on_upload: bool
     created_at: str | None
     last_interaction_at: str | None
-
-    class Config:
-        from_attributes = True
 
 
 class ApproveUserRequest(BaseModel):

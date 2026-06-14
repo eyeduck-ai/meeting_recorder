@@ -36,9 +36,9 @@
                     class="select select-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
                     required>
                     {% for provider in providers %}
-                    <option value="{{ provider.value }}" {% if meeting and meeting.provider==provider %}selected{% endif
+                    <option value="{{ provider.name }}" {% if meeting and meeting.provider==provider.name %}selected{% endif
                         %}>
-                        {{ provider.value | upper }}
+                        {{ provider.label }}
                     </option>
                     {% endfor %}
                 </select>
@@ -76,10 +76,25 @@
             <div class="form-control w-full">
                 <label class="label font-bold text-gray-500 text-xs uppercase tracking-wider">Meeting Password <span
                         class="text-gray-600 font-normal normal-case">(Optional)</span></label>
-                <input type="password" name="password"
-                    value="{{ meeting.password_encrypted or '' if meeting else '' }}"
+                {% if meeting %}
+                <div class="text-xs text-gray-500 mb-2">
+                    {% if meeting.has_password %}
+                    Password is set. Leave blank to keep it unchanged.
+                    {% else %}
+                    No password is set.
+                    {% endif %}
+                </div>
+                {% endif %}
+                <input type="password" name="password" value=""
                     class="input input-bordered w-full bg-black border-[#2f3336] focus:border-primary rounded-lg"
-                    placeholder="Leave empty if no password required">
+                    placeholder="{% if meeting %}Enter a new password to replace the current one{% else %}Leave empty if no password required{% endif %}">
+                {% if meeting and meeting.has_password %}
+                <label class="label cursor-pointer justify-start gap-3 mt-2">
+                    <input type="checkbox" name="clear_password" value="true"
+                        class="checkbox checkbox-sm checkbox-error">
+                    <span class="label-text text-gray-500">Clear stored meeting password</span>
+                </label>
+                {% endif %}
                 <label class="label">
                     <span class="label-text-alt text-gray-600">Required for password-protected meetings</span>
                 </label>
@@ -126,19 +141,15 @@
         const baseUrlGroup = document.getElementById('base-url-group');
         const baseUrlInput = document.getElementById('base-url-input');
 
-        const configs = {
-            'jitsi': { label: 'Meeting Code', ph: 'my-meeting-room', hint: 'Jitsi room name', showUrl: true },
-            'webex': { label: 'Meeting URL', ph: 'https://company.webex.com/meet/user', hint: 'Full Webex link', showUrl: false },
-            'zoom': { label: 'Meeting URL / ID', ph: 'https://zoom.us/j/123456789?pwd=...', hint: 'Full Zoom invite link is recommended', showUrl: false }
-        };
+        const configs = {{ provider_configs | safe }};
 
         function updateForm(provider) {
             const conf = configs[provider] || configs['jitsi'];
             meetingCodeLabel.textContent = conf.label;
-            meetingCodeInput.placeholder = conf.ph;
+            meetingCodeInput.placeholder = conf.placeholder;
             meetingCodeHint.textContent = conf.hint;
 
-            if (conf.showUrl) {
+            if (conf.showBaseUrl) {
                 baseUrlGroup.classList.remove('hidden');
                 baseUrlInput.disabled = false;
             } else {
