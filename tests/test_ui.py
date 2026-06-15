@@ -57,6 +57,21 @@ def test_ui_aggregate_router_includes_jobs_and_recordings_routes():
     assert ("/recordings/{job_id}/download", "GET") in routes
 
 
+def test_settings_template_exposes_recording_crop_top_field():
+    """Settings page should expose and submit the recording top-crop fallback."""
+    template = (Path(__file__).resolve().parents[1] / "web" / "templates" / "settings.html").read_text(encoding="utf-8")
+
+    assert 'id="recording_browser_mode"' in template
+    assert "recording_browser_mode: document.getElementById('recording_browser_mode').value" in template
+    assert 'id="recording_crop_mode"' in template
+    assert "recording_crop_mode: document.getElementById('recording_crop_mode').value" in template
+    assert 'id="recording_frame_warning"' in template
+    assert "Normal browser with crop off can record Chrome tabs" in template
+    assert "updateRecordingFrameWarning()" in template
+    assert 'id="recording_crop_top_px"' in template
+    assert "recording_crop_top_px: parseInt" in template
+
+
 @pytest.fixture
 def fake_settings():
     """Settings shared by UI routes and auth middleware during tests."""

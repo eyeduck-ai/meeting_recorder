@@ -16,6 +16,9 @@ def fake_settings(tmp_path):
     return SimpleNamespace(
         resolution_w=1024,
         resolution_h=768,
+        recording_browser_mode="app",
+        recording_crop_mode="off",
+        recording_crop_top_px=16,
         lobby_wait_sec=600,
         recordings_dir=tmp_path / "env-recordings",
         diagnostics_dir=tmp_path / "env-diagnostics",
@@ -45,6 +48,9 @@ def test_env_only_fallback(fake_settings):
     config = RuntimeConfigService(settings=fake_settings).get_recording_config()
 
     assert config.resolution == (1024, 768)
+    assert config.recording_browser_mode == "app"
+    assert config.recording_crop_mode == "off"
+    assert config.recording_crop_top_px == 16
     assert config.lobby_wait_sec == 600
     assert config.recordings_dir == Path(fake_settings.recordings_dir)
     assert config.diagnostics_dir == Path(fake_settings.diagnostics_dir)
@@ -53,11 +59,17 @@ def test_env_only_fallback(fake_settings):
 def test_db_app_settings_override_env(fake_settings, db_session):
     set_app_setting(db_session, "resolution_w", "1280")
     set_app_setting(db_session, "resolution_h", "720")
+    set_app_setting(db_session, "recording_browser_mode", "normal")
+    set_app_setting(db_session, "recording_crop_mode", "manual")
+    set_app_setting(db_session, "recording_crop_top_px", "48")
     set_app_setting(db_session, "lobby_wait_sec", "300")
 
     config = RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)
 
     assert config.resolution == (1280, 720)
+    assert config.recording_browser_mode == "normal"
+    assert config.recording_crop_mode == "manual"
+    assert config.recording_crop_top_px == 48
     assert config.lobby_wait_sec == 300
 
 
@@ -99,4 +111,26 @@ def test_lobby_wait_range_is_validated(fake_settings, db_session):
     set_app_setting(db_session, "lobby_wait_sec", "1801")
 
     with pytest.raises(RuntimeConfigError, match="lobby_wait_sec"):
+        RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)
+
+
+def test_recording_crop_top_must_be_smaller_than_resolution_height(fake_settings, db_session):
+    set_app_setting(db_session, "resolution_h", "720")
+    set_app_setting(db_session, "recording_crop_top_px", "720")
+
+    with pytest.raises(RuntimeConfigError, match="recording_crop_top_px"):
+        RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)
+
+
+def test_recording_crop_mode_must_be_valid(fake_settings, db_session):
+    set_app_setting(db_session, "recording_crop_mode", "dynamic")
+
+    with pytest.raises(RuntimeConfigError, match="recording_crop_mode"):
+        RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)
+
+
+def test_recording_browser_mode_must_be_valid(fake_settings, db_session):
+    set_app_setting(db_session, "recording_browser_mode", "popup")
+
+    with pytest.raises(RuntimeConfigError, match="recording_browser_mode"):
         RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)

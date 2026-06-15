@@ -60,6 +60,8 @@ class FFmpegPipeline:
     audio_source: str = "virtual_speaker.monitor"
     width: int = 1280
     height: int = 720
+    capture_x: int = 0
+    capture_y: int = 0
     framerate: int = 30
     log_path: Path | None = None
 
@@ -79,6 +81,17 @@ class FFmpegPipeline:
         if not self._process:
             return None
         return self._process.poll()
+
+    def video_input(self) -> str:
+        """Return the x11grab display input, including capture offset when configured."""
+        if self.capture_x == 0 and self.capture_y == 0:
+            return self.display
+
+        display = self.display.split("+", 1)[0]
+        display_id = display.rsplit(":", 1)[-1]
+        if "." not in display_id:
+            display = f"{display}.0"
+        return f"{display}+{self.capture_x},{self.capture_y}"
 
     def _build_command(self) -> list[str]:
         """Build FFmpeg command line."""
@@ -105,7 +118,7 @@ class FFmpegPipeline:
             "-framerate",
             str(self.framerate),
             "-i",
-            self.display,
+            self.video_input(),
         ]
 
         if use_pulse:

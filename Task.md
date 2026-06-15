@@ -30,3 +30,8 @@
 - [x] P3：持續將 Jitsi/Webex/Zoom 剩餘固定 sleep 改成 selector/state/function bounded wait，僅保留必要 debounce/fallback。
 - [x] P3：將 Zoom join/prejoin 改成狀態推進流程，覆蓋 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支。
 - [x] P3：新增 provider transient overlay dismissal，讓 Zoom 錄製前清掉 hardware acceleration 等遮擋提示。
+- [x] P3：新增錄製畫面準備與 `recording_crop_top_px` 上方裁切 fallback；後續已移除 kiosk/fullscreen launch flags 依賴。
+- [x] P3：新增 `recording_crop_mode` auto/manual/off，依 Chromium inner/outer dimensions 動態解析上方裁切 offset，並保留 manual fallback。
+- [x] P3：移除 Chromium kiosk/fullscreen launch flags 與測試依賴，保留 auto top-crop 作為 fallback/debug。
+- [x] P3：新增 `recording_browser_mode=app|normal`，以 Chromium app window 作為主要乾淨錄影框架，並保留 normal browser + crop fallback。
+- [x] P3：強化 app window 錄製框架，包含 initial page bounded wait、URL diagnostics redaction、非遞迴 fallback loop 與 normal+off UI 警告。

@@ -14,7 +14,7 @@ class FakeDiagnosticPage:
     """Minimal page stub used to exercise provider diagnostics."""
 
     def __init__(self):
-        self.url = "https://example.test/meeting"
+        self.url = "https://example.test/meeting?pwd=page-secret#frag"
         self.viewport_size = {"width": 1280, "height": 720}
 
     async def screenshot(self, path: str, full_page: bool = True) -> None:
@@ -55,7 +55,7 @@ def make_job(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(
         job_id="diag1234",
         provider="jitsi",
-        meeting_code="fixture-room",
+        meeting_code="https://example.test/meeting?pwd=meeting-secret#frag",
         display_name="Recorder Bot",
         output_dir=tmp_path / "recordings" / "diag1234",
         attempt_no=1,
@@ -103,6 +103,7 @@ class TestDiagnosticsContract:
         assert diagnostic_data.provider_state_log_path is None
         metadata = diagnostic_data.metadata_path.read_text(encoding="utf-8")
         assert "prepare_runtime" in metadata
+        assert "meeting-secret" not in metadata
 
     @pytest.mark.asyncio
     async def test_join_failure_keeps_provider_state_log(self, patched_settings, tmp_path):
@@ -169,6 +170,9 @@ class TestDiagnosticsContract:
         assert session.runtime_path.exists()
         assert (session.diagnostics_dir / "ffmpeg.log").exists()
         assert diagnostic_data.metadata_path is not None and diagnostic_data.metadata_path.exists()
+        metadata = diagnostic_data.metadata_path.read_text(encoding="utf-8")
+        assert "meeting-secret" not in metadata
+        assert "page-secret" not in metadata
         assert diagnostic_data.screenshot_path is not None and diagnostic_data.screenshot_path.exists()
         assert diagnostic_data.html_path is not None and diagnostic_data.html_path.exists()
         assert diagnostic_data.console_log_path is not None and diagnostic_data.console_log_path.exists()

@@ -92,8 +92,23 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 目前真實狀態是：
 
 - `.env` / `config.settings`：資料庫、認證、Telegram、YouTube、FFmpeg 進階參數、路徑
-- `services.app_settings` + `app_settings` table：部分 UI 可調整設定
+- `services.app_settings` + `app_settings` table：部分 UI 可調整設定，包括錄製解析度、lobby 等待、`recording_browser_mode`、`recording_crop_mode` 與 `recording_crop_top_px`
 - `detection_config`、`notification_config`：JSON 形式存於 `app_settings`
+
+### 錄製畫面與裁切
+
+- `RecordingSession` 預設以 Chromium app window (`--app=<join_url>`) 準備錄製畫面；乾淨畫面主要依賴 app window，而不是 kiosk/fullscreen launch flags 或 auto top-crop。
+- app mode 必須使用 `launch_persistent_context(..., --app=<join_url>)` 產生的 persistent context 初始 page；要 bounded wait page 產生，不要恢復 `--app=about:blank` 後再 `new_page()` 的流程。
+- app mode 不應主動 request DOM fullscreen；fullscreen best-effort 只保留給 normal/fallback mode，避免 app window 主方案引入額外 provider UI side effect。
+- `recording_browser_mode` 是全域 UI/API 設定，合法值為 `app`、`normal`；它不是 schedule 欄位，既有 schedule 下次執行也會使用當下解析出的全域值。
+- `recording_crop_mode` 是全域 UI/API 設定，合法值為 `auto`、`manual`、`off`，預設 `off`；它不是 schedule 欄位，既有 schedule 下次執行也會使用當下解析出的全域值。
+- `recording_crop_top_px` 是 manual offset 與 auto fallback，合法範圍為 `0 <= value < resolution_h`；它不是 schedule 欄位。
+- 若 app mode 在 FFmpeg capture 前失敗，worker 會對同一 job fallback 一次到 normal mode；若原 crop mode 是 `off`，fallback 的有效 crop mode 會改成 `auto`。
+- `auto` 模式會使用額外 Xvfb 高度並在 capture 前以 browser `outerHeight - innerHeight` 解析實際 offset；`manual` 模式直接使用 `recording_crop_top_px`；`off` 模式從 X11 `y=0` 擷取。
+- FFmpeg 輸出仍是 `resolution_w x resolution_h`，top crop 只改變 X11 capture offset。
+- `runtime.json` 與 failure `metadata.json` 的 URL/meeting code 必須 redacted query/fragment；Zoom/Webex invite token、`pwd` 或 meeting secret 不應寫入 diagnostics。
+- v1 不做 provider-aware dynamic content crop；不要把 Jitsi/Webex/Zoom DOM selector 塞進 recording runtime 來計算裁切區域。
+- provider 自身 overlay 或控制列仍由 provider layout/overlay hook 處理，不要把它和瀏覽器 chrome 裁切混成同一層責任。
 
 ### Provider 支援現況
 

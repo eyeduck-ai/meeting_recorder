@@ -242,7 +242,6 @@ async def main() -> int:
                 "--disable-infobars",
                 f"--window-size={settings.resolution_w},{settings.resolution_h}",
                 "--window-position=0,0",
-                "--app=about:blank",
             ],
             env=env_vars,
         )

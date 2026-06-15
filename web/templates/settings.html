@@ -159,6 +159,57 @@
                     </div>
                 </div>
 
+                <div>
+                    <label for="recording_browser_mode" class="block text-sm font-bold mb-2">Browser Mode</label>
+                    <select id="recording_browser_mode" name="recording_browser_mode"
+                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-[#1d9bf0]"
+                        onchange="updateRecordingFrameWarning()">
+                        <option value="app" {% if app_settings.recording_browser_mode=='app' %}selected{% endif %}>
+                            App window</option>
+                        <option value="normal" {% if app_settings.recording_browser_mode=='normal' %}selected{% endif %}>
+                            Normal browser</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">
+                        App window opens the meeting URL without Chrome tabs, address bar, or toolbar.
+                    </p>
+                </div>
+
+                <div>
+                    <label for="recording_crop_mode" class="block text-sm font-bold mb-2">Top Crop Mode</label>
+                    <select id="recording_crop_mode" name="recording_crop_mode"
+                        class="select select-bordered w-full bg-black border-[#2f3336] focus:border-[#1d9bf0]"
+                        aria-describedby="recording_crop_mode_help" aria-controls="recording_crop_top_group"
+                        onchange="updateCropMode()">
+                        <option value="auto" {% if app_settings.recording_crop_mode=='auto' %}selected{% endif %}>
+                            Auto detect</option>
+                        <option value="manual" {% if app_settings.recording_crop_mode=='manual' %}selected{% endif %}>
+                            Manual fallback only</option>
+                        <option value="off" {% if app_settings.recording_crop_mode=='off' %}selected{% endif %}>
+                            Off</option>
+                    </select>
+                    <p id="recording_crop_mode_help" class="text-xs text-gray-500 mt-1">
+                        Crop is mainly for normal-browser fallback or debugging.
+                    </p>
+                </div>
+
+                <p id="recording_frame_warning"
+                    class="hidden text-xs text-yellow-300 bg-yellow-950/40 border border-yellow-800 rounded px-3 py-2">
+                    Normal browser with crop off can record Chrome tabs, address bar, or toolbar. Use App window or
+                    enable Auto crop for clean recordings.
+                </p>
+
+                <div id="recording_crop_top_group">
+                    <label for="recording_crop_top_px" class="block text-sm font-bold mb-2">Top Crop Fallback (px)</label>
+                    <input type="number" id="recording_crop_top_px" name="recording_crop_top_px"
+                        value="{{ app_settings.recording_crop_top_px }}" min="0"
+                        max="{{ (app_settings.resolution_h | int) - 1 }}" inputmode="numeric"
+                        aria-describedby="recording_crop_top_px_help"
+                        class="input input-bordered w-full bg-black border-[#2f3336]">
+                    <p id="recording_crop_top_px_help" class="text-xs text-gray-500 mt-1">
+                        Auto uses this only when detection fails. Manual uses it as the capture offset.
+                    </p>
+                </div>
+
                 <!-- URL & TZ -->
                 <div>
                     <label class="block text-sm font-bold mb-2">Jitsi Base URL</label>
@@ -460,6 +511,31 @@
             document.getElementById('resolution_w').value = w;
             document.getElementById('resolution_h').value = h;
         }
+        document.getElementById('recording_crop_top_px').max = Math.max(0, parseInt(document.getElementById('resolution_h').value) - 1);
+    }
+
+    function updateCropMode() {
+        const mode = document.getElementById('recording_crop_mode').value;
+        const cropGroup = document.getElementById('recording_crop_top_group');
+        const help = document.getElementById('recording_crop_mode_help');
+        const isOff = mode === 'off';
+        cropGroup.classList.toggle('hidden', isOff);
+        document.getElementById('recording_crop_mode').setAttribute('aria-expanded', String(!isOff));
+        if (mode === 'auto') {
+            help.textContent = 'Auto detects the browser chrome height before capture and uses the fallback only if detection fails.';
+        } else if (mode === 'manual') {
+            help.textContent = 'Manual uses the fallback value directly as the top capture offset.';
+        } else {
+            help.textContent = 'Off disables top crop and captures from the top of the virtual display.';
+        }
+        updateRecordingFrameWarning();
+    }
+
+    function updateRecordingFrameWarning() {
+        const browserMode = document.getElementById('recording_browser_mode').value;
+        const cropMode = document.getElementById('recording_crop_mode').value;
+        const warning = document.getElementById('recording_frame_warning');
+        warning.classList.toggle('hidden', !(browserMode === 'normal' && cropMode === 'off'));
     }
 
     async function saveSettings() {
@@ -469,6 +545,9 @@
             ffmpeg_preset: document.getElementById('ffmpeg_preset').value,
             lobby_wait_sec: parseInt(document.getElementById('lobby_wait_sec').value),
             pre_join_seconds: parseInt(document.getElementById('pre_join_seconds').value),
+            recording_browser_mode: document.getElementById('recording_browser_mode').value,
+            recording_crop_mode: document.getElementById('recording_crop_mode').value,
+            recording_crop_top_px: parseInt(document.getElementById('recording_crop_top_px').value),
             jitsi_base_url: document.getElementById('jitsi_base_url').value,
             tz: document.getElementById('tz').value
         };
@@ -564,6 +643,7 @@
         loadDetectionConfig();
         loadNotificationConfig();
         refreshDiskUsage();
+        updateCropMode();
 
         // Check if we should switch to a specific tab (e.g., from detection-logs page)
         const savedTab = sessionStorage.getItem('settings_tab');

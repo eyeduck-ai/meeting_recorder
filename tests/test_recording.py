@@ -2,15 +2,20 @@
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+import recording.ffmpeg_pipeline as ffmpeg_module
 import recording.session as session_module
 from database.models import JobStatus
+from providers.base import JoinResult
+from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
 from recording.session import RecordingSession
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
-from recording.worker import RecordingJob, RecordingWorker
+from recording.worker import RecordingJob, RecordingResult, RecordingWorker
+from utils.timezone import utc_now
 
 
 class TestRecordingJob:
@@ -233,9 +238,216 @@ class TestRecordingWorker:
 
         assert worker._status == JobStatus.RECORDING
 
+    def test_app_mode_failure_before_capture_builds_normal_auto_crop_fallback(self, tmp_path):
+        """App-mode pre-capture failures should retry once in normal mode with crop protection."""
+        worker = RecordingWorker()
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+        )
+        result = RecordingResult(job_id="job123", status=JobStatus.STARTING)
+
+        assert worker._can_fallback_to_normal_browser(job, result) is True
+
+        fallback_job = worker._build_normal_browser_fallback_job(job, "join_meeting: failed")
+
+        assert fallback_job.recording_browser_mode == "app"
+        assert fallback_job.resolved_browser_mode == "normal"
+        assert fallback_job.recording_crop_mode == "auto"
+        assert fallback_job.browser_fallback_used is True
+        assert fallback_job.browser_fallback_reason == "join_meeting: failed"
+        assert fallback_job.browser_fallback_attempts == 1
+
+    def test_app_mode_failure_after_capture_start_does_not_fallback(self, tmp_path):
+        """Once capture has started, failures should not relaunch browser fallback."""
+        worker = RecordingWorker()
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+        )
+        result = RecordingResult(
+            job_id="job123",
+            status=JobStatus.RECORDING,
+            recording_started_at=utc_now(),
+        )
+
+        assert worker._can_fallback_to_normal_browser(job, result) is False
+
+    @pytest.mark.asyncio
+    async def test_record_retries_app_failure_once_with_normal_auto_crop(self, monkeypatch, tmp_path):
+        """The worker should use an explicit second attempt for pre-capture app failures."""
+        sessions = []
+
+        class FakeSession:
+            def __init__(self, job):
+                self.job = job
+                self.stage = None
+                self.cleaned = False
+                sessions.append(self)
+
+            def begin_stage(self, stage):
+                self.stage = stage
+
+            def end_stage(self, stage, status="ok"):
+                if self.stage == stage:
+                    self.stage = None
+
+            def current_stage(self):
+                return self.stage
+
+            async def prepare_runtime(self):
+                if self.job.resolved_browser_mode in (None, "app"):
+                    raise RuntimeError("app window failed")
+
+            async def join_meeting(self):
+                return JoinResult(success=True)
+
+            async def dismiss_provider_overlays(self, _stage):
+                return False
+
+            async def set_layout(self, _preset):
+                return True
+
+            async def prepare_capture_surface(self):
+                return None
+
+            async def start_capture(self):
+                return None
+
+            async def probe_provider_state(self, _stage):
+                return None
+
+            async def finalize_capture(self):
+                now = utc_now()
+                return RecordingInfo(
+                    output_path=self.job.output_dir / "recording.mkv",
+                    file_size=123,
+                    duration_sec=1.0,
+                    start_time=now,
+                    end_time=now,
+                )
+
+            def process_returncode(self):
+                return None
+
+            def build_runtime_summary(self, **_kwargs):
+                return {
+                    "resolved_browser_mode": self.job.resolved_browser_mode or self.job.recording_browser_mode,
+                    "fallback_used": self.job.browser_fallback_used,
+                    "fallback_reason": self.job.browser_fallback_reason,
+                    "fallback_attempts": self.job.browser_fallback_attempts,
+                    "crop_mode": self.job.recording_crop_mode,
+                }
+
+            async def collect_diagnostics(self, **_kwargs):
+                return None
+
+            async def cleanup(self):
+                self.cleaned = True
+
+        worker = RecordingWorker()
+        monkeypatch.setattr("recording.worker.RecordingSession", FakeSession)
+        monkeypatch.setattr(worker, "_monitor_recording", AsyncMock(return_value=("duration_elapsed", 0)))
+
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+        )
+
+        result = await worker.record(job)
+
+        assert result.status == JobStatus.SUCCEEDED
+        assert result.start_time is not None
+        assert len(sessions) == 2
+        assert sessions[0].cleaned is True
+        assert sessions[1].cleaned is True
+        assert sessions[1].job.resolved_browser_mode == "normal"
+        assert sessions[1].job.recording_crop_mode == "auto"
+        assert result.runtime_summary["resolved_browser_mode"] == "normal"
+        assert result.runtime_summary["fallback_used"] is True
+        assert result.runtime_summary["fallback_attempts"] == 1
+        assert result.failure_stage is None
+        assert worker.is_busy is False
+
+
+class TestFFmpegPipeline:
+    """Tests for FFmpeg command construction."""
+
+    @pytest.fixture
+    def ffmpeg_settings(self):
+        return SimpleNamespace(
+            ffmpeg_debug_ts=False,
+            ffmpeg_thread_queue_size=1024,
+            ffmpeg_preset="ultrafast",
+            ffmpeg_crf=23,
+            ffmpeg_audio_filter="aresample=async=1000:first_pts=0",
+            ffmpeg_audio_bitrate="128k",
+        )
+
+    def _video_input(self, cmd: list[str]) -> str:
+        x11grab_index = cmd.index("x11grab")
+        input_index = cmd.index("-i", x11grab_index)
+        return cmd[input_index + 1]
+
+    def test_default_capture_uses_display_without_offset(self, monkeypatch, tmp_path, ffmpeg_settings):
+        """Default x11grab input should preserve the existing display format."""
+        monkeypatch.setattr(ffmpeg_module, "get_settings", lambda: ffmpeg_settings)
+        monkeypatch.setattr(ffmpeg_module, "_check_pulseaudio_available", lambda _source: False)
+
+        pipeline = FFmpegPipeline(
+            output_path=tmp_path / "recording.mkv",
+            display=":99",
+            width=1280,
+            height=720,
+        )
+
+        cmd = pipeline._build_command()
+
+        assert self._video_input(cmd) == ":99"
+        assert "1280x720" in cmd
+
+    def test_offset_capture_uses_screen_coordinate_without_scaling(self, monkeypatch, tmp_path, ffmpeg_settings):
+        """Top crop should offset x11grab while preserving configured output dimensions."""
+        monkeypatch.setattr(ffmpeg_module, "get_settings", lambda: ffmpeg_settings)
+        monkeypatch.setattr(ffmpeg_module, "_check_pulseaudio_available", lambda _source: False)
+
+        pipeline = FFmpegPipeline(
+            output_path=tmp_path / "recording.mkv",
+            display=":99",
+            width=1280,
+            height=720,
+            capture_y=72,
+        )
+
+        cmd = pipeline._build_command()
+
+        assert self._video_input(cmd) == ":99.0+0,72"
+        assert "1280x720" in cmd
+
 
 class TestRecordingSession:
     """Tests for recording session runtime configuration."""
+
+    def _fake_provider(self, join_url: str = "https://meet.test/room"):
+        return SimpleNamespace(build_join_url=lambda _code, _base_url=None: join_url)
 
     @pytest.mark.asyncio
     async def test_dismiss_provider_overlays_delegates_to_provider(self):
@@ -313,9 +525,12 @@ class TestRecordingSession:
         settings.diagnostics_dir = tmp_path / "diagnostics"
         settings.resolution_w = 1920
         settings.resolution_h = 1080
+        settings.recording_browser_mode = "normal"
+        settings.recording_crop_mode = "off"
+        settings.recording_crop_top_px = 0
 
         monkeypatch.setattr(session_module, "get_settings", lambda: settings)
-        monkeypatch.setattr(session_module, "get_provider", lambda _provider: object())
+        monkeypatch.setattr(session_module, "get_provider", lambda _provider: self._fake_provider())
         monkeypatch.setattr(session_module, "VirtualEnvironment", FakeVirtualEnvironment)
         monkeypatch.setattr(session_module, "async_playwright", lambda: FakePlaywrightManager())
         monkeypatch.setattr(session_module, "FFmpegPipeline", FakeFFmpegPipeline)
@@ -329,6 +544,8 @@ class TestRecordingSession:
             output_dir=tmp_path / "recordings" / "job123",
             resolution_w=1366,
             resolution_h=768,
+            recording_browser_mode="normal",
+            recording_crop_mode="off",
             diagnostics_dir=tmp_path / "diagnostics" / "job123",
         )
         session = RecordingSession(job)
@@ -339,10 +556,516 @@ class TestRecordingSession:
         assert captured["virtual_env_config"].width == 1366
         assert captured["virtual_env_config"].height == 768
         assert "--window-size=1366,768" in captured["launch_args"]
+        assert "--kiosk" not in captured["launch_args"]
+        assert "--start-fullscreen" not in captured["launch_args"]
+        assert "--start-maximized" not in captured["launch_args"]
+        assert "--app=about:blank" not in captured["launch_args"]
+        assert not any(arg.startswith("--app=") for arg in captured["launch_args"])
         assert captured["viewport"] == {"width": 1366, "height": 768}
         assert captured["ffmpeg_kwargs"]["width"] == 1366
         assert captured["ffmpeg_kwargs"]["height"] == 768
+        assert captured["ffmpeg_kwargs"]["capture_y"] == 0
         assert captured["ffmpeg_started"] is True
+
+    @pytest.mark.asyncio
+    async def test_app_browser_mode_uses_persistent_context_initial_page(self, monkeypatch, tmp_path):
+        """App browser mode should launch the join URL as an app window and use its first page."""
+        captured = {"new_page_called": False, "goto_called": False, "evaluate_called": False}
+        join_url = "https://meet.test/app-room?pwd=secret-token#frag"
+
+        class FakeVirtualEnvironment:
+            def __init__(self, config):
+                captured["virtual_env_config"] = config
+                self.display = ":99"
+                self.pulse_monitor = "virtual.monitor"
+
+            async def start(self):
+                return {"DISPLAY": self.display}
+
+        class FakePage:
+            async def add_init_script(self, _script):
+                return None
+
+            def on(self, _event, _callback):
+                return None
+
+            async def goto(self, *_args, **_kwargs):
+                captured["goto_called"] = True
+
+            async def evaluate(self, _script):
+                captured["evaluate_called"] = True
+                return None
+
+        app_page = FakePage()
+
+        class FakeContext:
+            pages = [app_page]
+
+            async def new_page(self):
+                captured["new_page_called"] = True
+                return FakePage()
+
+        class FakeChromium:
+            async def launch_persistent_context(self, user_data_dir, *, headless, args, env, viewport, permissions):
+                captured["user_data_dir"] = user_data_dir
+                captured["headless"] = headless
+                captured["launch_args"] = args
+                captured["launch_env"] = env
+                captured["viewport"] = viewport
+                captured["permissions"] = permissions
+                return FakeContext()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightManager:
+            async def start(self):
+                return FakePlaywright()
+
+        async def prejoin(page, _display_name, _password):
+            captured["prejoin_page"] = page
+
+        async def click_join(page):
+            captured["click_join_page"] = page
+
+        async def wait_until_joined(page, **_kwargs):
+            captured["wait_page"] = page
+            return JoinResult(success=True)
+
+        provider = SimpleNamespace(
+            build_join_url=lambda _code, _base_url=None: join_url,
+            prejoin=prejoin,
+            click_join=click_join,
+            wait_until_joined=wait_until_joined,
+        )
+
+        settings = Mock()
+        settings.diagnostics_dir = tmp_path / "diagnostics"
+        settings.resolution_w = 1920
+        settings.resolution_h = 1080
+        settings.recording_browser_mode = "app"
+        settings.recording_crop_mode = "off"
+        settings.recording_crop_top_px = 0
+
+        monkeypatch.setattr(session_module, "get_settings", lambda: settings)
+        monkeypatch.setattr(session_module, "get_provider", lambda _provider: provider)
+        monkeypatch.setattr(session_module, "VirtualEnvironment", FakeVirtualEnvironment)
+        monkeypatch.setattr(session_module, "async_playwright", lambda: FakePlaywrightManager())
+
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job123",
+            resolution_w=1280,
+            resolution_h=720,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+            diagnostics_dir=tmp_path / "diagnostics" / "job123",
+        )
+        session = RecordingSession(job)
+
+        await session.prepare_runtime()
+        join_result = await session.join_meeting()
+        summary = session.build_runtime_summary(end_reason="completed")
+
+        assert join_result.success is True
+        assert captured["virtual_env_config"].height == 720
+        assert f"--app={join_url}" in captured["launch_args"]
+        assert captured["viewport"] == {"width": 1280, "height": 720}
+        assert captured["permissions"] == ["microphone"]
+        assert captured["new_page_called"] is False
+        assert captured["goto_called"] is False
+        assert captured["evaluate_called"] is False
+        assert captured["prejoin_page"] is app_page
+        assert captured["click_join_page"] is app_page
+        assert captured["wait_page"] is app_page
+        assert summary["recording_browser_mode"] == "app"
+        assert summary["resolved_browser_mode"] == "app"
+        assert summary["browser_context_type"] == "persistent_app"
+        assert summary["app_launch_url"] == "https://meet.test/app-room"
+        assert "secret-token" not in summary["app_launch_url"]
+
+    @pytest.mark.asyncio
+    async def test_app_browser_mode_waits_for_initial_page_when_context_starts_empty(self):
+        """App browser mode should tolerate delayed initial page creation."""
+        captured = {}
+        app_page = object()
+
+        class FakeContext:
+            pages = []
+
+            async def wait_for_event(self, event, *, timeout):
+                captured["wait_for_event"] = (event, timeout)
+                return app_page
+
+        session = RecordingSession.__new__(RecordingSession)
+
+        page = await session._wait_for_initial_app_page(FakeContext())
+
+        assert page is app_page
+        assert captured["wait_for_event"] == ("page", session_module.APP_INITIAL_PAGE_TIMEOUT_MS)
+
+    @pytest.mark.asyncio
+    async def test_normal_browser_join_navigates_to_join_url(self):
+        """Normal browser mode should keep the existing explicit navigation step."""
+        captured = {}
+        join_url = "https://meet.test/normal-room"
+
+        class FakePage:
+            async def goto(self, url, *, wait_until):
+                captured["goto"] = (url, wait_until)
+
+            async def evaluate(self, script):
+                captured["fullscreen_script"] = script
+                return None
+
+        async def prejoin(page, _display_name, _password):
+            captured["prejoin_page"] = page
+
+        async def click_join(page):
+            captured["click_join_page"] = page
+
+        async def wait_until_joined(page, **_kwargs):
+            captured["wait_page"] = page
+            return JoinResult(success=True)
+
+        page = FakePage()
+        provider = SimpleNamespace(
+            build_join_url=lambda _code, _base_url=None: join_url,
+            prejoin=prejoin,
+            click_join=click_join,
+            wait_until_joined=wait_until_joined,
+        )
+        session = RecordingSession.__new__(RecordingSession)
+        session.page = page
+        session.provider = provider
+        session.job = SimpleNamespace(meeting_code="room", base_url=None, display_name="Bot", password=None)
+        session.resolved_browser_mode = "normal"
+        session._join_url = None
+        session.record_provider_state = Mock()
+
+        result = await session.join_meeting()
+
+        assert result.success is True
+        assert captured["goto"] == (join_url, "domcontentloaded")
+        assert "requestFullscreen" in captured["fullscreen_script"]
+        assert captured["prejoin_page"] is page
+        assert captured["click_join_page"] is page
+        assert captured["wait_page"] is page
+
+    @pytest.mark.asyncio
+    async def test_top_crop_expands_display_and_offsets_capture(self, monkeypatch, tmp_path):
+        """Top crop should make the display taller while preserving output dimensions."""
+        captured = {}
+
+        class FakeVirtualEnvironment:
+            def __init__(self, config):
+                captured["virtual_env_config"] = config
+                self.display = ":99"
+                self.pulse_monitor = "virtual.monitor"
+
+            async def start(self):
+                return {"DISPLAY": self.display}
+
+        class FakePage:
+            async def add_init_script(self, _script):
+                return None
+
+            def on(self, _event, _callback):
+                return None
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowser:
+            async def new_context(self, *, viewport, permissions):
+                captured["viewport"] = viewport
+                return FakeContext()
+
+        class FakeChromium:
+            async def launch(self, *, headless, args, env):
+                captured["launch_args"] = args
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightManager:
+            async def start(self):
+                return FakePlaywright()
+
+        class FakeFFmpegPipeline:
+            def __init__(self, **kwargs):
+                captured["ffmpeg_kwargs"] = kwargs
+                self.is_recording = False
+
+            async def start(self):
+                captured["ffmpeg_started"] = True
+
+        settings = Mock()
+        settings.diagnostics_dir = tmp_path / "diagnostics"
+        settings.resolution_w = 1920
+        settings.resolution_h = 1080
+        settings.recording_browser_mode = "normal"
+        settings.recording_crop_mode = "manual"
+        settings.recording_crop_top_px = 0
+
+        monkeypatch.setattr(session_module, "get_settings", lambda: settings)
+        monkeypatch.setattr(session_module, "get_provider", lambda _provider: self._fake_provider())
+        monkeypatch.setattr(session_module, "VirtualEnvironment", FakeVirtualEnvironment)
+        monkeypatch.setattr(session_module, "async_playwright", lambda: FakePlaywrightManager())
+        monkeypatch.setattr(session_module, "FFmpegPipeline", FakeFFmpegPipeline)
+
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job123",
+            resolution_w=1366,
+            resolution_h=768,
+            recording_browser_mode="normal",
+            recording_crop_mode="manual",
+            recording_crop_top_px=80,
+            diagnostics_dir=tmp_path / "diagnostics" / "job123",
+        )
+        session = RecordingSession(job)
+
+        await session.prepare_runtime()
+        await session.start_capture()
+
+        assert captured["virtual_env_config"].width == 1366
+        assert captured["virtual_env_config"].height == 848
+        assert "--window-size=1366,848" in captured["launch_args"]
+        assert captured["viewport"] == {"width": 1366, "height": 768}
+        assert captured["ffmpeg_kwargs"]["width"] == 1366
+        assert captured["ffmpeg_kwargs"]["height"] == 768
+        assert captured["ffmpeg_kwargs"]["capture_y"] == 80
+        assert captured["ffmpeg_started"] is True
+
+    @pytest.mark.asyncio
+    async def test_prepare_capture_surface_records_browser_dimensions(self):
+        """Capture preparation should persist browser surface diagnostics."""
+
+        class FakePage:
+            async def bring_to_front(self):
+                self.brought_to_front = True
+
+            async def evaluate(self, script):
+                assert "const fullscreenRequestAllowed = true" in script
+                return {
+                    "fullscreenRequestAllowed": True,
+                    "fullscreenRequested": True,
+                    "innerWidth": 1280,
+                    "innerHeight": 720,
+                    "outerWidth": 1280,
+                    "outerHeight": 800,
+                }
+
+        session = RecordingSession.__new__(RecordingSession)
+        session.page = FakePage()
+        session._capture_surface = None
+        session.recording_crop_mode = "auto"
+        session.configured_crop_top_px = 0
+        session.auto_crop_reserved_px = 160
+        session.resolved_crop_top_px = 0
+        session.auto_crop_source = "auto_pending"
+
+        await session.prepare_capture_surface()
+
+        assert session._capture_surface["innerWidth"] == 1280
+        assert session._capture_surface["outerHeight"] == 800
+        assert session._capture_surface["fullscreenRequestAllowed"] is True
+        assert session.resolved_crop_top_px == 83
+
+    @pytest.mark.asyncio
+    async def test_prepare_capture_surface_does_not_request_fullscreen_in_app_mode(self):
+        """App browser mode should not trigger provider/browser fullscreen side effects."""
+
+        class FakePage:
+            async def bring_to_front(self):
+                return None
+
+            async def evaluate(self, script):
+                assert "const fullscreenRequestAllowed = false" in script
+                return {
+                    "fullscreenElement": False,
+                    "fullscreenRequestAllowed": False,
+                    "fullscreenRequested": False,
+                    "innerWidth": 1280,
+                    "innerHeight": 720,
+                    "outerWidth": 1280,
+                    "outerHeight": 720,
+                }
+
+        session = RecordingSession.__new__(RecordingSession)
+        session.page = FakePage()
+        session.resolved_browser_mode = "app"
+        session._capture_surface = None
+        session.recording_crop_mode = "off"
+        session.configured_crop_top_px = 0
+        session.auto_crop_reserved_px = 0
+        session.resolved_crop_top_px = 0
+        session.auto_crop_source = "off"
+
+        await session.prepare_capture_surface()
+
+        assert session._capture_surface["fullscreenRequestAllowed"] is False
+        assert session._capture_surface["fullscreenRequested"] is False
+
+    @pytest.mark.asyncio
+    async def test_auto_crop_reserves_display_and_uses_browser_dimensions(self, monkeypatch, tmp_path):
+        """Auto crop should reserve display height and resolve capture offset from browser dimensions."""
+        captured = {}
+
+        class FakeVirtualEnvironment:
+            def __init__(self, config):
+                captured["virtual_env_config"] = config
+                self.display = ":99"
+                self.pulse_monitor = "virtual.monitor"
+
+            async def start(self):
+                return {"DISPLAY": self.display}
+
+        class FakePage:
+            async def add_init_script(self, _script):
+                return None
+
+            def on(self, _event, _callback):
+                return None
+
+            async def bring_to_front(self):
+                return None
+
+            async def evaluate(self, _script):
+                return {
+                    "innerWidth": 1280,
+                    "innerHeight": 720,
+                    "outerWidth": 1288,
+                    "outerHeight": 805,
+                    "screenHeight": 880,
+                    "devicePixelRatio": 1,
+                }
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowser:
+            async def new_context(self, *, viewport, permissions):
+                captured["viewport"] = viewport
+                return FakeContext()
+
+        class FakeChromium:
+            async def launch(self, *, headless, args, env):
+                captured["launch_args"] = args
+                return FakeBrowser()
+
+        class FakePlaywright:
+            chromium = FakeChromium()
+
+        class FakePlaywrightManager:
+            async def start(self):
+                return FakePlaywright()
+
+        class FakeFFmpegPipeline:
+            def __init__(self, **kwargs):
+                captured["ffmpeg_kwargs"] = kwargs
+                self.is_recording = False
+
+            async def start(self):
+                captured["ffmpeg_started"] = True
+
+        settings = Mock()
+        settings.diagnostics_dir = tmp_path / "diagnostics"
+        settings.resolution_w = 1920
+        settings.resolution_h = 1080
+        settings.recording_browser_mode = "normal"
+        settings.recording_crop_mode = "auto"
+        settings.recording_crop_top_px = 0
+
+        monkeypatch.setattr(session_module, "get_settings", lambda: settings)
+        monkeypatch.setattr(session_module, "get_provider", lambda _provider: self._fake_provider())
+        monkeypatch.setattr(session_module, "VirtualEnvironment", FakeVirtualEnvironment)
+        monkeypatch.setattr(session_module, "async_playwright", lambda: FakePlaywrightManager())
+        monkeypatch.setattr(session_module, "FFmpegPipeline", FakeFFmpegPipeline)
+
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job123",
+            resolution_w=1280,
+            resolution_h=720,
+            recording_browser_mode="normal",
+            recording_crop_mode="auto",
+            recording_crop_top_px=0,
+            diagnostics_dir=tmp_path / "diagnostics" / "job123",
+        )
+        session = RecordingSession(job)
+
+        await session.prepare_runtime()
+        await session.prepare_capture_surface()
+        await session.start_capture()
+        summary = session.build_runtime_summary(end_reason="completed")
+
+        assert captured["virtual_env_config"].height == 880
+        assert "--window-size=1280,880" in captured["launch_args"]
+        assert captured["viewport"] == {"width": 1280, "height": 720}
+        assert captured["ffmpeg_kwargs"]["capture_y"] == 88
+        assert summary["crop_mode"] == "auto"
+        assert summary["configured_crop_top_px"] == 0
+        assert summary["resolved_crop_top_px"] == 88
+        assert summary["auto_crop_source"] == "browser_outer_inner"
+        assert summary["capture_frame"]["y"] == 88
+
+    @pytest.mark.asyncio
+    async def test_auto_crop_falls_back_when_browser_dimensions_are_missing(self, monkeypatch, tmp_path):
+        """Auto crop should use configured fallback when browser dimensions are unavailable."""
+
+        class FakePage:
+            async def bring_to_front(self):
+                return None
+
+            async def evaluate(self, _script):
+                return {"error": "no dimensions"}
+
+        settings = Mock()
+        settings.diagnostics_dir = tmp_path / "diagnostics"
+        settings.resolution_w = 1280
+        settings.resolution_h = 720
+        settings.recording_crop_mode = "auto"
+        settings.recording_crop_top_px = 0
+
+        monkeypatch.setattr(session_module, "get_settings", lambda: settings)
+
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job123",
+            resolution_w=1280,
+            resolution_h=720,
+            recording_crop_mode="auto",
+            recording_crop_top_px=80,
+            diagnostics_dir=tmp_path / "diagnostics" / "job123",
+        )
+        session = RecordingSession(job)
+        session.page = FakePage()
+
+        await session.prepare_capture_surface()
+
+        assert session.resolved_crop_top_px == 80
+        assert session.auto_crop_source == "fallback_configured"
 
 
 class TestVirtualEnvironment:

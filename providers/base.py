@@ -8,12 +8,25 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from playwright.async_api import Page
 
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+def redact_url_secrets(value: str | None) -> str | None:
+    """Remove URL query/fragment from diagnostic strings that may contain invite secrets."""
+    if value is None:
+        return None
+
+    text = str(value)
+    parsed = urlsplit(text)
+    if not parsed.scheme and not parsed.netloc:
+        return text.split("?", 1)[0].split("#", 1)[0]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
 @dataclass(frozen=True)
@@ -450,8 +463,8 @@ class BaseProvider(ABC):
             metadata = {
                 "collected_at": data.collected_at.isoformat(),
                 "job_id": job_id,
-                "meeting_code": meeting_code,
-                "url": page.url,
+                "meeting_code": redact_url_secrets(meeting_code),
+                "url": redact_url_secrets(page.url),
                 "title": await page.title(),
                 "viewport": page.viewport_size,
                 "error_code": error_code,

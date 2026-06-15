@@ -9,6 +9,9 @@ from database.models import AppSettings
 SETTING_DEFAULTS = {
     "resolution_w": "1920",
     "resolution_h": "1080",
+    "recording_browser_mode": "app",
+    "recording_crop_mode": "off",
+    "recording_crop_top_px": "0",
     "lobby_wait_sec": "900",
     "ffmpeg_preset": "ultrafast",
     "ffmpeg_crf": "23",
@@ -25,6 +28,9 @@ def get_setting_defaults(settings: Settings | None = None) -> dict[str, str]:
     return {
         "resolution_w": str(settings.resolution_w),
         "resolution_h": str(settings.resolution_h),
+        "recording_browser_mode": settings.recording_browser_mode,
+        "recording_crop_mode": settings.recording_crop_mode,
+        "recording_crop_top_px": str(settings.recording_crop_top_px),
         "lobby_wait_sec": str(settings.lobby_wait_sec),
         "ffmpeg_preset": settings.ffmpeg_preset,
         "ffmpeg_crf": str(settings.ffmpeg_crf),

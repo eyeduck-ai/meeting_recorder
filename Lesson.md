@@ -32,3 +32,8 @@
 - 測試通過但留下 deprecation warning 時不要視為完全乾淨；框架升級相關 warning 應盡早改成新 API，避免之後版本升級變成硬錯誤。
 - Zoom 這類第三方 join page 不要假設固定頁面順序；應先判斷目前頁面狀態，再依狀態推進 cookie、browser join、name/password、join、lobby 或 in-meeting，並避免在 provider state evidence 中保存 invite token。
 - Zoom 進入會議後仍可能出現遮擋共享畫面的 transient toast；錄影開始前要讓 provider best-effort 清理這類 UI，不要用改 Chromium GPU 參數取代 DOM 層 dismissal。
+- 在 Xvfb 裡不要用 Chromium kiosk/fullscreen launch flags 作為乾淨錄影保證。Jitsi smoke 實測 `crop=0` 搭配 kiosk/fullscreen 仍錄到 Chrome tab/address bar；`manual crop=80` 只移除主要工具列但仍留下 7px 白/灰視窗邊界；`manual crop=88` 可成功但固定值依 Chrome/桌面環境可能不穩。若需要 normal browser fallback，才用 `recording_crop_mode=auto` 依 `outerHeight - innerHeight + padding` 解析 offset，並用 runtime browser dimensions 與抽幀驗證實際 capture frame。
+- Jitsi live smoke 若用隨機空房間當對照，可能卡在 `waiting_lobby` 而無法進入錄製階段；這是 provider/房間狀態問題，不應拿來判斷 capture crop 是否失效。需要乾淨對照時，使用可直接加入的既有測試房間，或先用人工主持人建立房間。
+- Chromium `--app` 只有作用在實際錄製用的 app window；`--app=about:blank` 後再 `browser.new_context()` / `context.new_page()` 會產生普通 Chrome page，仍可能錄到 address bar。可行模式是 `launch_persistent_context(..., --app=<join_url>)` 後使用 `context.pages[0]`，再把同一個 page 交給 provider join flow。
+- Chromium app window hardening 時不要只依賴 `context.pages[0]` 立即存在；Playwright persistent context 啟動後應 bounded wait initial page，且 app mode 不需要再 request DOM fullscreen。`runtime.json` / `metadata.json` 也不能保存完整 join URL query/hash，否則 Zoom/Webex 的 `pwd` 或 token 會被 diagnostics 留下。
+- app window 已以 Jitsi live smoke 驗證；Webex/Zoom 因本輪沒有可加入的測試會議連結，只能先用單元測試保護啟動/diagnostics/fallback 行為。拿到有效 Webex/Zoom 測試連結後，要補抽幀確認 redirect、browser join 或 popup 不會脫離 app window。

@@ -11,8 +11,14 @@ from database.models import AppSettings
 RUNTIME_DB_KEYS = {
     "resolution_w",
     "resolution_h",
+    "recording_browser_mode",
+    "recording_crop_mode",
+    "recording_crop_top_px",
     "lobby_wait_sec",
 }
+
+VALID_RECORDING_BROWSER_MODES = {"app", "normal"}
+VALID_RECORDING_CROP_MODES = {"auto", "manual", "off"}
 
 
 class RuntimeConfigError(ValueError):
@@ -30,6 +36,9 @@ class RuntimeRecordingConfig:
     diagnostics_dir: Path
     ffmpeg_stall_timeout_sec: int
     ffmpeg_stall_grace_sec: int
+    recording_browser_mode: str = "app"
+    recording_crop_mode: str = "off"
+    recording_crop_top_px: int = 0
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -58,6 +67,9 @@ class RuntimeConfigService:
         values = {
             "resolution_w": self._setting_value("resolution_w", 1920),
             "resolution_h": self._setting_value("resolution_h", 1080),
+            "recording_browser_mode": self._setting_value("recording_browser_mode", "app"),
+            "recording_crop_mode": self._setting_value("recording_crop_mode", "off"),
+            "recording_crop_top_px": self._setting_value("recording_crop_top_px", 0),
             "lobby_wait_sec": self._setting_value("lobby_wait_sec", 900),
         }
 
@@ -75,6 +87,14 @@ class RuntimeConfigService:
 
         resolved_resolution_w = self._parse_positive_int("resolution_w", values["resolution_w"])
         resolved_resolution_h = self._parse_positive_int("resolution_h", values["resolution_h"])
+        resolved_recording_crop_top_px = self._parse_int_range(
+            "recording_crop_top_px",
+            values["recording_crop_top_px"],
+            minimum=0,
+            maximum=resolved_resolution_h - 1,
+        )
+        resolved_recording_crop_mode = self._parse_crop_mode(values["recording_crop_mode"])
+        resolved_recording_browser_mode = self._parse_browser_mode(values["recording_browser_mode"])
         resolved_lobby_wait_sec = self._parse_int_range(
             "lobby_wait_sec",
             values["lobby_wait_sec"],
@@ -85,6 +105,9 @@ class RuntimeConfigService:
         return RuntimeRecordingConfig(
             resolution_w=resolved_resolution_w,
             resolution_h=resolved_resolution_h,
+            recording_browser_mode=resolved_recording_browser_mode,
+            recording_crop_mode=resolved_recording_crop_mode,
+            recording_crop_top_px=resolved_recording_crop_top_px,
             lobby_wait_sec=resolved_lobby_wait_sec,
             recordings_dir=Path(self._setting_value("recordings_dir", Path("./recordings"))),
             diagnostics_dir=Path(self._setting_value("diagnostics_dir", Path("./diagnostics"))),
@@ -124,6 +147,20 @@ class RuntimeConfigService:
             return int(value)
         except (TypeError, ValueError) as exc:
             raise RuntimeConfigError(f"{key} must be an integer") from exc
+
+    def _parse_crop_mode(self, value: object) -> str:
+        mode = str(value).strip().lower()
+        if mode not in VALID_RECORDING_CROP_MODES:
+            choices = ", ".join(sorted(VALID_RECORDING_CROP_MODES))
+            raise RuntimeConfigError(f"recording_crop_mode must be one of: {choices}")
+        return mode
+
+    def _parse_browser_mode(self, value: object) -> str:
+        mode = str(value).strip().lower()
+        if mode not in VALID_RECORDING_BROWSER_MODES:
+            choices = ", ".join(sorted(VALID_RECORDING_BROWSER_MODES))
+            raise RuntimeConfigError(f"recording_browser_mode must be one of: {choices}")
+        return mode
 
 
 def get_runtime_config_service(settings: Settings | None = None) -> RuntimeConfigService:

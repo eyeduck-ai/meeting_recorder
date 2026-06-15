@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Recording settings
     resolution_w: int = 1920
     resolution_h: int = 1080
+    recording_browser_mode: Literal["app", "normal"] = "app"
+    recording_crop_mode: Literal["auto", "manual", "off"] = "off"
+    recording_crop_top_px: int = 0
     lobby_wait_sec: int = 900
     max_recording_sec: int = 14400  # 4 hours default max
 

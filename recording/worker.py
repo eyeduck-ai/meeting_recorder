@@ -3,7 +3,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +59,13 @@ class RecordingJob:
     lobby_wait_sec: int = 900
     resolution_w: int = 1920
     resolution_h: int = 1080
+    recording_browser_mode: str = "app"
+    resolved_browser_mode: str | None = None
+    recording_crop_mode: str = "off"
+    recording_crop_top_px: int = 0
+    browser_fallback_used: bool = False
+    browser_fallback_reason: str | None = None
+    browser_fallback_attempts: int = 0
     diagnostics_dir: Path | None = None
     ffmpeg_stall_timeout_sec: int = 120
     ffmpeg_stall_grace_sec: int = 30
@@ -109,6 +116,9 @@ class RecordingJob:
             lobby_wait_sec=runtime_config.lobby_wait_sec,
             resolution_w=runtime_config.resolution_w,
             resolution_h=runtime_config.resolution_h,
+            recording_browser_mode=runtime_config.recording_browser_mode,
+            recording_crop_mode=runtime_config.recording_crop_mode,
+            recording_crop_top_px=runtime_config.recording_crop_top_px,
             diagnostics_dir=runtime_config.diagnostics_dir / resolved_job_id,
             ffmpeg_stall_timeout_sec=runtime_config.ffmpeg_stall_timeout_sec,
             ffmpeg_stall_grace_sec=runtime_config.ffmpeg_stall_grace_sec,
@@ -194,21 +204,69 @@ class RecordingWorker:
             return True
         return False
 
+    def _can_fallback_to_normal_browser(self, job: RecordingJob, result: RecordingResult) -> bool:
+        return (
+            job.recording_browser_mode == "app"
+            and (job.resolved_browser_mode in (None, "app"))
+            and not job.browser_fallback_used
+            and result.recording_started_at is None
+        )
+
+    def _build_normal_browser_fallback_job(self, job: RecordingJob, reason: str) -> RecordingJob:
+        fallback_crop_mode = job.recording_crop_mode if job.recording_crop_mode != "off" else "auto"
+        return replace(
+            job,
+            resolved_browser_mode="normal",
+            recording_crop_mode=fallback_crop_mode,
+            browser_fallback_used=True,
+            browser_fallback_reason=reason,
+            browser_fallback_attempts=job.browser_fallback_attempts + 1,
+        )
+
     async def record(self, job: RecordingJob) -> RecordingResult:
         """Execute a recording job."""
-        self._current_job = job
         self._cancel_requested = False
         self._finish_requested = False
-        self._update_status(JobStatus.STARTING)
-
         result = RecordingResult(
             job_id=job.job_id,
             status=JobStatus.STARTING,
             attempt_no=job.attempt_no,
             start_time=utc_now(),
         )
+        current_job = job
 
-        job.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            while True:
+                self._current_job = current_job
+                self._reset_result_for_attempt(result, current_job)
+                current_job.output_dir.mkdir(parents=True, exist_ok=True)
+                self._update_status(JobStatus.STARTING)
+
+                fallback_job = await self._record_attempt(current_job, result)
+                if fallback_job is None:
+                    return result
+                current_job = fallback_job
+        finally:
+            self._current_job = None
+
+    def _reset_result_for_attempt(self, result: RecordingResult, job: RecordingJob) -> None:
+        result.status = JobStatus.STARTING
+        result.attempt_no = job.attempt_no
+        result.recording_info = None
+        result.diagnostic_data = None
+        result.error_code = None
+        result.error_message = None
+        result.joined_at = None
+        result.recording_started_at = None
+        result.recording_stopped_at = None
+        result.end_time = None
+        result.end_reason = None
+        result.failure_stage = None
+        result.ffmpeg_exit_code = None
+        result.runtime_summary = None
+
+    async def _record_attempt(self, job: RecordingJob, result: RecordingResult) -> RecordingJob | None:
+        """Execute one browser attempt for a recording job."""
 
         session = RecordingSession(job)
         detection_orchestrator: DetectionOrchestrator | None = None
@@ -267,6 +325,10 @@ class RecordingWorker:
             session.begin_stage("dismiss_overlays_pre_capture")
             await session.dismiss_provider_overlays("dismiss_overlays_pre_capture")
             session.end_stage("dismiss_overlays_pre_capture")
+
+            session.begin_stage("prepare_capture_surface")
+            await session.prepare_capture_surface()
+            session.end_stage("prepare_capture_surface")
 
             if job.duration_mode == "fixed" and job.deadline_at:
                 deadline_at = ensure_utc(job.deadline_at)
@@ -361,6 +423,23 @@ class RecordingWorker:
             active_stage = session.current_stage()
             if active_stage:
                 session.end_stage(active_stage, status="error")
+            if self._can_fallback_to_normal_browser(job, result):
+                fallback_reason = f"{active_stage or 'unknown'}: {e}"
+                logger.warning(
+                    "App browser mode failed before capture; retrying job %s in normal browser mode: %s",
+                    job.job_id,
+                    fallback_reason,
+                )
+                result.runtime_summary = session.build_runtime_summary(
+                    failure_stage=active_stage,
+                    ffmpeg_exit_code=session.process_returncode(),
+                    end_reason="browser_fallback",
+                    error_code=ErrorCode.INTERNAL_ERROR.value,
+                    error_message=fallback_reason,
+                )
+                fallback_job = self._build_normal_browser_fallback_job(job, fallback_reason)
+                return fallback_job
+
             result.status = JobStatus.FAILED
             if not result.error_code:
                 if "ffmpeg" in str(e).lower():
@@ -418,9 +497,8 @@ class RecordingWorker:
                     logger.warning(f"Failed to save detection logs: {e}")
 
             await session.cleanup()
-            self._current_job = None
 
-        return result
+        return None
 
     async def _monitor_recording(
         self,

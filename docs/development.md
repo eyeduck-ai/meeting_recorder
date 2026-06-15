@@ -30,9 +30,10 @@ FastAPI 使用 lifespan 管理 runtime ownership。Route import 不應初始化 
 2. `JobRunner` 以單一 lock 控制錄製併發
 3. `RecordingWorker` 建立虛擬錄製環境與 Playwright 瀏覽器
 4. Provider 負責加入會議、等待大廳、調整版面
-5. `FFmpegPipeline` 進行錄製
-6. 依固定時長或自動偵測條件結束
-7. 寫回 job 狀態、診斷資料、通知與可選的 YouTube 上傳
+5. `RecordingSession` 準備固定尺寸 browser capture surface，必要時套用上方裁切 offset
+6. `FFmpegPipeline` 進行錄製
+7. 依固定時長或自動偵測條件結束
+8. 寫回 job 狀態、診斷資料、通知與可選的 YouTube 上傳
 
 ## 開發環境
 
@@ -105,6 +106,7 @@ uv run uvicorn api.main:app --reload
 - 認證與 API 邊界：`AUTH_PASSWORD`、`AUTH_SESSION_SECRET`、`CORS_ALLOWED_ORIGINS`
 - Telegram：`TELEGRAM_BOT_TOKEN`
 - YouTube：`YOUTUBE_CLIENT_ID`、`YOUTUBE_CLIENT_SECRET`、`YOUTUBE_DEFAULT_PRIVACY`
+- 錄製預設：`RECORDING_BROWSER_MODE`、`RECORDING_CROP_MODE`、`RECORDING_CROP_TOP_PX`
 - FFmpeg 進階參數：`FFMPEG_*`
 
 目前程式碼中的預設時區是 `Asia/Taipei`，不是 `UTC`。
@@ -115,6 +117,9 @@ uv run uvicorn api.main:app --reload
 
 - `resolution_w`
 - `resolution_h`
+- `recording_browser_mode`
+- `recording_crop_mode`
+- `recording_crop_top_px`
 - `lobby_wait_sec`
 - `ffmpeg_preset`
 - `ffmpeg_crf`
@@ -125,7 +130,7 @@ uv run uvicorn api.main:app --reload
 
 錄製 runtime 的有效設定由 `services/runtime_config.py` 解析，優先順序是：明確 job/schedule/API override > DB `app_settings` > `.env` / `config.settings` > code default。路徑、secret、auth、Telegram、YouTube 與 DB URL 仍屬於 `.env` / `config.settings` 管理，不放入 DB overlay。
 
-手動錄製省略 `lobby_wait_sec` 時會使用 DB/global 預設。新建 schedule 省略 `lobby_wait_sec`、`resolution_w`、`resolution_h` 時，會在建立當下解析成 concrete value 寫入 schedule；既有 schedule 的錄製設定視為該 schedule 的明確覆蓋值。
+手動錄製省略 `lobby_wait_sec` 時會使用 DB/global 預設。新建 schedule 省略 `lobby_wait_sec`、`resolution_w`、`resolution_h` 時，會在建立當下解析成 concrete value 寫入 schedule；既有 schedule 的錄製設定視為該 schedule 的明確覆蓋值。`recording_browser_mode`、`recording_crop_mode` 與 `recording_crop_top_px` 是全域 capture 設定，會在每次錄製執行時重新解析，不寫入 schedule。
 
 ### 3. JSON 類設定
 
@@ -161,6 +166,9 @@ uv run uvicorn api.main:app --reload
 - `providers/base.py` 是 provider bounded wait helper 的 owner；Jitsi/Webex/Zoom join/prejoin flow 不應新增裸 `asyncio.sleep()`，必要 debounce 要透過共用 helper 或註解說明。
 - `providers/zoom.py` 使用 Zoom 專用 page-stage/action loop 推進 launch page、cookie banner、Join from browser、name/password form、waiting room 與 in-meeting 狀態；不要再把 Zoom join 寫成固定頁面順序。
 - Provider 可實作 `dismiss_transient_overlays()` 清理進入會議後遮擋錄影的暫時 UI；`RecordingSession` 只呼叫 provider hook，不應知道各 provider DOM selector。
+- `RecordingSession` 預設以 Chromium app window 啟動實際 join URL，並使用 persistent context 的第一個 page 作為錄製頁；normal browser mode 只作為 fallback/debug 路徑。
+- app mode 會 bounded wait initial page，且不主動 request DOM fullscreen；normal/fallback mode 才保留 fullscreen best-effort。
+- `RecordingSession.prepare_capture_surface()` 負責進入錄製前的瀏覽器 capture surface 準備、crop 解析與 browser dimension diagnostics；provider 不應承擔 Chromium launch flags 或 FFmpeg crop offset。
 - `scheduling/job_runner.py` 應專注在 queue orchestration、schedule lifecycle 與 upload 委派。Schedule queue、pending、duplicate 與 queue position 狀態已移到 `scheduling/schedule_queue.py`；recording retry、attempt DB 更新、status callback 與 stage notification 已移到 `scheduling/recording_executor.py`；YouTube upload 前的 remux/transcode、upload progress 與 YouTube metadata 已移到 `scheduling/upload_runner.py`。
 - `recording/monitor.py` 是錄製監控 loop owner，集中處理 duration、finish/cancel request、FFmpeg stall 與 auto-detect end 判斷；`RecordingWorker` 只負責 orchestration 並透過 wrapper 委派。
 - `services/recording_manager.py` 的 list、cleanup 與 disk usage 應共用單次 filesystem scan 產生的 entry/stat metadata；新增錄影檔功能時不要在同一 request 內重複 `rglob()` 或對同一影片重複 `stat()`。
@@ -189,6 +197,19 @@ uv run uvicorn api.main:app --reload
 - `scheduling.job_runner.JobRunner` 使用單一 `asyncio.Lock`
 - 現況一次只支援一個錄製工作
 - 排程衝突時，新的工作會進 queue 等待
+
+### 錄製畫面範圍
+
+- `recording_browser_mode` 是 UI/API 可調的全域設定，支援 `app`、`normal`，預設為 `app`。
+- app mode 使用 `launch_persistent_context(..., --app=<join_url>)` 開啟實際會議 URL，並 bounded wait persistent context 的第一個 page；不要再用 `--app=about:blank` 後另開普通 page。
+- normal mode 保留 `launch()` + `new_context()` + `new_page()` + `goto(join_url)`，主要供 app mode fallback 或除錯。
+- `recording_crop_mode` 是 UI/API 可調的全域設定，支援 `auto`、`manual`、`off`，預設為 `off`。
+- `recording_crop_top_px` 是 manual 模式的 offset，也是 auto 偵測失敗時的 fallback，必須是 `0 <= value < resolution_h`。
+- `auto` 模式會保留額外虛擬桌面高度，錄影前由 `outerHeight - innerHeight + padding` 解析實際 `capture_y`；`manual` 模式直接使用 `recording_crop_top_px`；`off` 模式強制 `capture_y=0`。
+- 若 app mode 在 FFmpeg 開始前失敗，worker 會用同一 logical result 進行一次 normal mode attempt；若原 crop mode 是 `off`，fallback 會改用 `auto` 以避免錄到 browser chrome。
+- FFmpeg 仍輸出 `resolution_w x resolution_h`，只改變 X11 display 的擷取 offset，不做縮放。
+- `runtime.json` 與 failure `metadata.json` 的 URL/meeting code 欄位會移除 query/fragment，避免 Zoom/Webex invite token 或密碼參數落入診斷輸出。
+- v1 不做 provider-aware dynamic DOM cropping；provider 自身控制列或 transient overlay 仍由 provider layout/overlay hook 處理。
 
 ### 排程行為
 
@@ -304,12 +325,15 @@ docker compose logs -f app
 錄製失敗時常見輸出：
 
 - `diagnostics/<job_id>/metadata.json`
+- `diagnostics/<job_id>/runtime.json`
 - `diagnostics/<job_id>/screenshot.png`
 - `diagnostics/<job_id>/page.html`
 - `diagnostics/<job_id>/console.log`
 - `diagnostics/<job_id>/ffmpeg.log`
 - `diagnostics/<job_id>/remux.log`
 - `diagnostics/<job_id>/transcode.log`
+
+`runtime.json` 會保留 browser mode、crop/capture frame 與 browser surface dimensions；`runtime.json` 與 `metadata.json` 的 URL 欄位只保留不含 query/fragment 的 redacted form。
 
 ### Provider 測試腳本
 

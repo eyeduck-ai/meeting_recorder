@@ -85,6 +85,9 @@ def session_local(tmp_path, monkeypatch):
                 diagnostics_dir=tmp_path / "diagnostics",
                 ffmpeg_stall_timeout_sec=120,
                 ffmpeg_stall_grace_sec=30,
+                recording_browser_mode="app",
+                recording_crop_mode="manual",
+                recording_crop_top_px=66,
             )
 
     monkeypatch.setattr(job_runner_module, "get_runtime_config_service", lambda: FakeRuntimeConfigService())
@@ -131,6 +134,9 @@ class TestJobRunner:
         assert scheduled_coro.cr_frame.f_locals["job"].job_id == job_id
         assert scheduled_coro.cr_frame.f_locals["job"].lobby_wait_sec == 450
         assert scheduled_coro.cr_frame.f_locals["job"].resolution == (1600, 900)
+        assert scheduled_coro.cr_frame.f_locals["job"].recording_browser_mode == "app"
+        assert scheduled_coro.cr_frame.f_locals["job"].recording_crop_mode == "manual"
+        assert scheduled_coro.cr_frame.f_locals["job"].recording_crop_top_px == 66
         scheduled_coro.close()
 
         session = session_local()
@@ -186,6 +192,9 @@ class TestJobRunner:
         assert kwargs["job"].display_name == "Recorder Bot"
         assert kwargs["job"].lobby_wait_sec == 777
         assert kwargs["job"].resolution == (1280, 720)
+        assert kwargs["job"].recording_browser_mode == "app"
+        assert kwargs["job"].recording_crop_mode == "manual"
+        assert kwargs["job"].recording_crop_top_px == 66
 
         session = session_local()
         try:

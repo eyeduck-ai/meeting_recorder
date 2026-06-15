@@ -1,7 +1,9 @@
 """API routes for application settings management."""
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database.session import get_db
@@ -15,6 +17,9 @@ class SettingsUpdate(BaseModel):
 
     resolution_w: int | None = None
     resolution_h: int | None = None
+    recording_browser_mode: Literal["app", "normal"] | None = None
+    recording_crop_mode: Literal["auto", "manual", "off"] | None = None
+    recording_crop_top_px: int | None = Field(default=None, ge=0)
     lobby_wait_sec: int | None = None
     ffmpeg_preset: str | None = None
     ffmpeg_crf: int | None = None
@@ -32,6 +37,9 @@ def get_settings_endpoint(db: Session = Depends(get_db)):
     return {
         "resolution_w": int(settings["resolution_w"]),
         "resolution_h": int(settings["resolution_h"]),
+        "recording_browser_mode": settings["recording_browser_mode"],
+        "recording_crop_mode": settings["recording_crop_mode"],
+        "recording_crop_top_px": int(settings["recording_crop_top_px"]),
         "lobby_wait_sec": int(settings["lobby_wait_sec"]),
         "ffmpeg_preset": settings["ffmpeg_preset"],
         "ffmpeg_crf": int(settings["ffmpeg_crf"]),
@@ -50,6 +58,15 @@ def update_settings_endpoint(settings: SettingsUpdate, db: Session = Depends(get
     for key, value in settings.model_dump().items():
         if value is not None:
             updates[key] = str(value)
+
+    current = get_all_settings(db)
+    effective_resolution_h = int(updates.get("resolution_h", current["resolution_h"]))
+    effective_crop_top = int(updates.get("recording_crop_top_px", current["recording_crop_top_px"]))
+    if effective_crop_top >= effective_resolution_h:
+        raise HTTPException(
+            status_code=422,
+            detail="recording_crop_top_px must be smaller than resolution_h",
+        )
 
     update_settings(db, updates)
 
