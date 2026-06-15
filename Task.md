@@ -37,3 +37,6 @@
 - [x] P3：移除 Chromium kiosk/fullscreen launch flags 與測試依賴，保留 auto top-crop 作為 fallback/debug。
 - [x] P3：新增 `recording_browser_mode=app|normal`，以 Chromium app window 作為主要乾淨錄影框架，並保留 normal browser + crop fallback。
 - [x] P3：強化 app window 錄製框架，包含 initial page bounded wait、URL diagnostics redaction、非遞迴 fallback loop 與 normal+off UI 警告。
+- [x] P3：新增 smart trim 與 dynamic extension，包含媒體活動分析、schedule 覆寫、preferred/raw/trimmed output metadata、YouTube 上傳後裁剪檔清理與 Detection & Activity UI。
+- [x] P3：修 smart trim / dynamic extension 後續風險，包含 schedule 覆寫即時驗證、完成檔 batch activity analysis、Detection UI 儲存錯誤處理與裁剪檔上傳後刪除狀態標示。
+- [x] P3：最佳化 dynamic start/end media activity recognition，包含 live audio 長駐 meter、streaming completed-file probes、audio/video 並行檢查與 coarse-to-fine boundary refinement。

@@ -144,13 +144,19 @@ class JobRunner:
             deadline_at = self._get_fixed_deadline_at(schedule, manual_trigger=manual_trigger)
             if deadline_at:
                 logger.info(f"Fixed duration deadline for schedule {schedule_id}: {deadline_at.isoformat()}")
-            meeting_end_time = deadline_at or (utc_now() + timedelta(seconds=schedule.duration_sec))
             runtime_config = get_runtime_config_service().get_recording_config(
                 session,
                 lobby_wait_sec=schedule.lobby_wait_sec,
                 resolution_w=schedule.resolution_w,
                 resolution_h=schedule.resolution_h,
+                smart_trim_enabled=schedule.smart_trim_enabled,
+                dynamic_extension_enabled=schedule.dynamic_extension_enabled,
+                dynamic_extension_idle_sec=schedule.dynamic_extension_idle_sec,
+                dynamic_extension_max_sec=schedule.dynamic_extension_max_sec,
             )
+            meeting_end_time = deadline_at or (utc_now() + timedelta(seconds=schedule.duration_sec))
+            if runtime_config.dynamic_extension_enabled and runtime_config.dynamic_extension_max_sec > 0:
+                meeting_end_time += timedelta(seconds=runtime_config.dynamic_extension_max_sec)
 
             job = RecordingJob.create(
                 provider=meeting.provider,

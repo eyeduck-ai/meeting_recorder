@@ -431,6 +431,8 @@ class RecordingSession:
         error_code: str | None = None,
         error_message: str | None = None,
         recording_info: RecordingInfo | None = None,
+        trim_summary: dict | None = None,
+        dynamic_extension_stop_reason: str | None = None,
     ) -> dict:
         """Build and persist a runtime summary."""
         self.diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -443,6 +445,7 @@ class RecordingSession:
             "failure_stage": failure_stage,
             "ffmpeg_exit_code": ffmpeg_exit_code,
             "end_reason": end_reason,
+            "dynamic_extension_stop_reason": dynamic_extension_stop_reason,
             "error_code": error_code,
             "error_message": error_message,
             "display": self.virtual_env.display if self.virtual_env else None,
@@ -475,6 +478,8 @@ class RecordingSession:
             "stages": self._stage_timings,
             "updated_at": utc_now().isoformat(),
         }
+        if trim_summary:
+            summary["trim"] = trim_summary
         if recording_info:
             summary["recording_info"] = {
                 "output_path": str(recording_info.output_path),

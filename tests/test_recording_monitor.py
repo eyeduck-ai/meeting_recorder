@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from recording.activity import ActivityConfig, LiveMediaActivityProbe, MediaActivityState
 from recording.monitor import RecordingMonitor
 
 
@@ -39,6 +40,9 @@ def make_job(**kwargs):
     defaults = {
         "duration_sec": 60,
         "min_duration_sec": None,
+        "dynamic_extension_enabled": False,
+        "dynamic_extension_idle_sec": 300,
+        "dynamic_extension_max_sec": 3600,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -60,6 +64,7 @@ def make_monitor(
     session=None,
     job=None,
     detection_orchestrator=None,
+    media_activity_probe=None,
     cancel=False,
     finish=False,
     clock=None,
@@ -70,6 +75,7 @@ def make_monitor(
         session=session or FakeSession(),
         job=job or make_job(),
         detection_orchestrator=detection_orchestrator,
+        media_activity_probe=media_activity_probe,
         is_cancel_requested=lambda: cancel,
         is_finish_requested=lambda: finish,
         ffmpeg_stall_timeout_sec=ffmpeg_stall_timeout_sec,
@@ -136,6 +142,175 @@ async def test_monitor_returns_auto_detected_from_detection_orchestrator():
     assert end_reason == "auto_detected"
     assert ffmpeg_exit_code is None
     detector.check_all.assert_awaited_once()
+
+
+class FakeActivityProbe:
+    def __init__(self, *states):
+        self.states = list(states)
+        self.calls = 0
+        self.prime_calls = 0
+        self.close_calls = 0
+
+    async def prime(self, session):
+        self.prime_calls += 1
+
+    async def check(self, session):
+        self.calls += 1
+        if self.states:
+            return self.states.pop(0)
+        return MediaActivityState(audio_active=False, video_active=False, reason="default idle")
+
+    async def close(self):
+        self.close_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_dynamic_extension_continues_until_max_extension():
+    probe = FakeActivityProbe(
+        MediaActivityState(audio_active=True, video_active=False, reason="audio active"),
+        MediaActivityState(audio_active=False, video_active=True, reason="video active"),
+    )
+    monitor = make_monitor(
+        job=make_job(
+            duration_sec=5,
+            dynamic_extension_enabled=True,
+            dynamic_extension_idle_sec=10,
+            dynamic_extension_max_sec=10,
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11, 16),
+    )
+
+    end_reason, ffmpeg_exit_code = await monitor.run()
+
+    assert end_reason == "completed"
+    assert ffmpeg_exit_code is None
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
+    assert probe.calls == 2
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_dynamic_extension_stops_after_idle_timeout():
+    probe = FakeActivityProbe(
+        MediaActivityState(audio_active=False, video_active=False, reason="idle"),
+        MediaActivityState(audio_active=False, video_active=False, reason="idle"),
+        MediaActivityState(audio_active=False, video_active=False, reason="idle"),
+    )
+    monitor = make_monitor(
+        job=make_job(
+            duration_sec=5,
+            dynamic_extension_enabled=True,
+            dynamic_extension_idle_sec=10,
+            dynamic_extension_max_sec=60,
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11, 17),
+    )
+
+    end_reason, ffmpeg_exit_code = await monitor.run()
+
+    assert end_reason == "completed"
+    assert ffmpeg_exit_code is None
+    assert monitor.dynamic_extension_stop_reason == "idle_timeout"
+
+
+@pytest.mark.asyncio
+async def test_monitor_dynamic_extension_falls_back_when_probes_unavailable():
+    probe = FakeActivityProbe(
+        MediaActivityState(audio_active=None, video_active=None, reason="baseline"),
+        MediaActivityState(audio_active=None, video_active=None, reason="unavailable"),
+    )
+    monitor = make_monitor(
+        job=make_job(duration_sec=5, dynamic_extension_enabled=True),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11),
+    )
+
+    end_reason, ffmpeg_exit_code = await monitor.run()
+
+    assert end_reason == "completed"
+    assert ffmpeg_exit_code is None
+    assert monitor.dynamic_extension_stop_reason == "activity_probe_unavailable"
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_primes_dynamic_extension_probe_before_duration():
+    probe = FakeActivityProbe(
+        MediaActivityState(audio_active=None, video_active=None, reason="baseline"),
+        MediaActivityState(audio_active=None, video_active=None, reason="unavailable"),
+    )
+    monitor = make_monitor(
+        job=make_job(duration_sec=10, dynamic_extension_enabled=True),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11, 16),
+    )
+
+    end_reason, ffmpeg_exit_code = await monitor.run()
+
+    assert end_reason == "completed"
+    assert ffmpeg_exit_code is None
+    assert probe.prime_calls == 1
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_closes_dynamic_extension_probe_on_cancel():
+    probe = FakeActivityProbe()
+    monitor = make_monitor(
+        job=make_job(duration_sec=10, dynamic_extension_enabled=True),
+        media_activity_probe=probe,
+        cancel=True,
+        clock=sequence_clock(0),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await monitor.run()
+
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_extends_when_audio_unavailable_but_video_active():
+    probe = FakeActivityProbe(MediaActivityState(audio_active=None, video_active=True, reason="video active"))
+    monitor = make_monitor(
+        job=make_job(duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_max_sec=5),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11),
+    )
+
+    end_reason, ffmpeg_exit_code = await monitor.run()
+
+    assert end_reason == "completed"
+    assert ffmpeg_exit_code is None
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
+    assert probe.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_live_activity_probe_checks_audio_and_video_concurrently():
+    probe = LiveMediaActivityProbe(ActivityConfig())
+    audio_started = asyncio.Event()
+    video_started = asyncio.Event()
+
+    async def check_audio(session):
+        audio_started.set()
+        await video_started.wait()
+        return True, -20.0
+
+    async def check_video(session):
+        await audio_started.wait()
+        video_started.set()
+        return False, 0.0
+
+    probe._check_audio = check_audio
+    probe._check_video = check_video
+
+    state = await asyncio.wait_for(probe.check(FakeSession()), timeout=1.0)
+
+    assert state.audio_active is True
+    assert state.video_active is False
 
 
 @pytest.mark.asyncio

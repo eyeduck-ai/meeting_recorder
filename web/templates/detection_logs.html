@@ -59,6 +59,8 @@
                         <option value="webrtc_connection">WebRTC Connection</option>
                         <option value="url_change">URL Change</option>
                         <option value="screen_freeze">Screen Freeze</option>
+                        <option value="dynamic_extension">Dynamic Extension</option>
+                        <option value="media_activity">Media Activity</option>
                     </select>
                 </div>
                 <div class="form-control">
@@ -236,7 +238,9 @@
             'video_element': 'Video',
             'webrtc_connection': 'WebRTC',
             'url_change': 'URL',
-            'screen_freeze': 'Freeze'
+            'screen_freeze': 'Freeze',
+            'dynamic_extension': 'Extension',
+            'media_activity': 'Activity'
         };
         return names[type] || type;
     }

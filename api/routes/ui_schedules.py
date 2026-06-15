@@ -85,6 +85,10 @@ async def schedules_new(
                 early_join_sec=source_schedule.early_join_sec,
                 min_duration_sec=source_schedule.min_duration_sec,
                 stillness_timeout_sec=source_schedule.stillness_timeout_sec,
+                smart_trim_enabled=source_schedule.smart_trim_enabled,
+                dynamic_extension_enabled=source_schedule.dynamic_extension_enabled,
+                dynamic_extension_idle_sec=source_schedule.dynamic_extension_idle_sec,
+                dynamic_extension_max_sec=source_schedule.dynamic_extension_max_sec,
                 cron_expression=source_schedule.cron_expression,
                 start_time=None,
             )
@@ -140,6 +144,10 @@ async def schedules_save(
     min_duration_min: int | None = Form(None),
     stillness_timeout_sec: int = Form(180),
     dry_run: bool = Form(False),
+    smart_trim_mode: str = Form("inherit"),
+    dynamic_extension_mode: str = Form("inherit"),
+    dynamic_extension_idle_sec: str | None = Form(None),
+    dynamic_extension_max_sec: str | None = Form(None),
 ):
     """Save schedule (create or update)."""
     settings = get_settings()
@@ -162,6 +170,18 @@ async def schedules_save(
     elif resolution_preset == "720p":
         resolution_w, resolution_h = 1280, 720
 
+    def mode_to_bool(value: str) -> bool | None:
+        if value == "on":
+            return True
+        if value == "off":
+            return False
+        return None
+
+    def parse_optional_int(value: str | None) -> int | None:
+        if value is None or value == "":
+            return None
+        return int(value)
+
     schedule_data = {
         "meeting_id": meeting_id,
         "schedule_type": ScheduleType(schedule_type).value,
@@ -178,6 +198,10 @@ async def schedules_save(
         "min_duration_sec": min_duration_sec,
         "stillness_timeout_sec": stillness_timeout_sec,
         "auto_detect_mode": auto_detect_mode,
+        "smart_trim_enabled": mode_to_bool(smart_trim_mode),
+        "dynamic_extension_enabled": mode_to_bool(dynamic_extension_mode),
+        "dynamic_extension_idle_sec": parse_optional_int(dynamic_extension_idle_sec),
+        "dynamic_extension_max_sec": parse_optional_int(dynamic_extension_max_sec),
     }
     if ScheduleType(schedule_type) == ScheduleType.ONCE and start_time:
         local_dt = datetime.fromisoformat(start_time)

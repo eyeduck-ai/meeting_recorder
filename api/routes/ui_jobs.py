@@ -14,6 +14,12 @@ from database.session import get_db
 router = APIRouter(tags=["ui"])
 
 
+def _mark_trimmed_artifact_state(job: RecordingJob) -> None:
+    """Attach a display flag for trimmed files deleted after upload."""
+    trimmed_output_path = getattr(job, "trimmed_output_path", None)
+    job.trimmed_artifact_removed = bool(trimmed_output_path and not Path(trimmed_output_path).exists())
+
+
 @router.get("/jobs", response_class=HTMLResponse)
 async def jobs_list(
     request: Request,
@@ -68,6 +74,7 @@ async def jobs_detail(request: Request, job_id: str, db: Session = Depends(get_d
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    _mark_trimmed_artifact_state(job)
     status_value = job.status.value if hasattr(job.status, "value") else job.status
     failure_context = None
     job_logs: list[ui_job_diagnostics.JobLogView] = []

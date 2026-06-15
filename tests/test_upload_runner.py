@@ -42,7 +42,7 @@ async def test_run_upload_task_remuxes_mkv_and_delegates_youtube_upload(tmp_path
     monkeypatch.setattr(upload_runner_module, "update_progress", update_progress)
 
     runner = YouTubeUploadRunner()
-    runner.upload_to_youtube = AsyncMock()
+    runner.upload_to_youtube = AsyncMock(return_value=True)
     runner._persist_local_recording_path = Mock()
 
     await runner.run_upload_task(
@@ -227,3 +227,47 @@ async def test_upload_to_youtube_restores_success_on_exception(tmp_path, monkeyp
     job = _get_upload_job(SessionLocal)
     assert job.status == JobStatus.SUCCEEDED.value
     upload_runner_module.clear_progress.assert_called_with("job123")
+
+
+@pytest.mark.asyncio
+async def test_run_upload_task_cleans_trimmed_artifact_after_success(tmp_path, monkeypatch):
+    raw_path = tmp_path / "recording.mkv"
+    trimmed_path = tmp_path / "recording.trimmed.mkv"
+    upload_path = tmp_path / "recording.trimmed.mp4"
+    raw_path.write_bytes(b"raw")
+    trimmed_path.write_bytes(b"trimmed")
+    upload_path.write_bytes(b"mp4")
+
+    prepare_upload = AsyncMock(
+        return_value=CanonicalRecording(
+            output_path=upload_path,
+            file_size=upload_path.stat().st_size,
+        )
+    )
+    monkeypatch.setattr(upload_runner_module, "get_settings", lambda: SimpleNamespace(diagnostics_dir=tmp_path))
+    monkeypatch.setattr(upload_runner_module, "prepare_upload_recording_file", prepare_upload)
+    monkeypatch.setattr(upload_runner_module, "clear_progress", Mock())
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+
+    runner = YouTubeUploadRunner()
+    runner.upload_to_youtube = AsyncMock(return_value=True)
+    runner._persist_local_recording_path = Mock()
+    runner._cleanup_uploaded_trimmed_output = AsyncMock()
+
+    await runner.run_upload_task(
+        UploadRequest(
+            job_id="job123",
+            video_path=trimmed_path,
+            title="Meeting",
+            privacy="unlisted",
+            raw_video_path=raw_path,
+            cleanup_video_path_after_success=trimmed_path,
+        )
+    )
+
+    runner._cleanup_uploaded_trimmed_output.assert_awaited_once_with(
+        job_id="job123",
+        cleanup_path=trimmed_path,
+        prepared_upload_path=upload_path,
+        raw_video_path=raw_path,
+    )

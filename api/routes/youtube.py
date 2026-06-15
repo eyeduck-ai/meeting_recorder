@@ -227,6 +227,14 @@ async def upload_video(request: UploadRequest):
             # Update job with video ID
             job.youtube_video_id = result.video_id
             job.youtube_uploaded_at = utc_now()
+            trimmed_path = Path(job.trimmed_output_path) if job.trimmed_output_path else None
+            raw_path = Path(job.raw_output_path) if job.raw_output_path else None
+            if trimmed_path and Path(job.output_path) == trimmed_path:
+                for candidate in {trimmed_path, video_path}:
+                    if candidate.exists() and (raw_path is None or candidate != raw_path):
+                        candidate.unlink()
+                if raw_path and raw_path.exists():
+                    job.output_path = str(raw_path)
             session.commit()
 
             return {

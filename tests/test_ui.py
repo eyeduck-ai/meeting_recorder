@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from api import auth
-from api.routes import health, ui, ui_common, ui_schedules
+from api.routes import health, ui, ui_common, ui_recordings, ui_schedules
 from database.models import AppSettings, Base, Meeting, Schedule
 from database.session import get_db
 from scheduling.job_runner import QueueScheduleResult
@@ -81,6 +81,33 @@ def test_storage_templates_use_maintenance_and_local_removed_state():
     assert "runMaintenance(true)" in settings_template
     assert "job.local_download_available" in recordings_template
     assert "Local removed" in recordings_template
+
+
+def test_settings_template_checks_detection_save_failures():
+    """Detection settings save should not report success unless both writes succeed."""
+    template = (Path(__file__).resolve().parents[1] / "web" / "templates" / "settings.html").read_text(encoding="utf-8")
+
+    assert "btn.disabled = true" in template
+    assert "const detectionRes = await fetch('/api/detection/config'" in template
+    assert "if (!detectionRes.ok)" in template
+    assert "Provider detection settings failed to save" in template
+    assert "finally" in template
+    assert "btn.disabled = false" in template
+
+
+def test_trimmed_artifact_removed_flag_tracks_missing_trimmed_file(tmp_path):
+    job = SimpleNamespace(trimmed_output_path=str(tmp_path / "recording.trimmed.mkv"))
+
+    ui_recordings._mark_trimmed_artifact_state(job)
+
+    assert job.trimmed_artifact_removed is True
+
+    existing = tmp_path / "existing.trimmed.mkv"
+    existing.write_bytes(b"trimmed")
+    job.trimmed_output_path = str(existing)
+    ui_recordings._mark_trimmed_artifact_state(job)
+
+    assert job.trimmed_artifact_removed is False
 
 
 @pytest.fixture

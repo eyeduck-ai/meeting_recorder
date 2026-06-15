@@ -3,12 +3,13 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, replace
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from config.settings import get_settings
 from database.models import ErrorCode, JobStatus
+from recording.activity import ActivityConfig, LiveMediaActivityProbe, RecordingActivityAnalyzer, trim_recording
 from recording.detection import DetectionConfig, DetectionOrchestrator
 from recording.detectors import AudioSilenceDetector, create_default_detectors
 from recording.ffmpeg_pipeline import RecordingInfo
@@ -28,6 +29,15 @@ class RecordingResult:
     status: JobStatus
     attempt_no: int = 1
     recording_info: RecordingInfo | None = None
+    output_path: Path | None = None
+    raw_output_path: Path | None = None
+    trimmed_output_path: Path | None = None
+    trim_start_sec: float | None = None
+    trim_end_sec: float | None = None
+    trim_status: str | None = None
+    trim_reason: str | None = None
+    trim_diagnostics: dict | None = None
+    dynamic_extension_stop_reason: str | None = None
     diagnostic_data: object | None = None
     error_code: str | None = None
     error_message: str | None = None
@@ -73,6 +83,11 @@ class RecordingJob:
     dry_run: bool = False
     min_duration_sec: int | None = None
     stillness_timeout_sec: int = 180
+    smart_trim_enabled: bool = True
+    dynamic_extension_enabled: bool = True
+    dynamic_extension_idle_sec: int = 300
+    dynamic_extension_max_sec: int = 3600
+    activity_config: ActivityConfig = field(default_factory=ActivityConfig)
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -128,6 +143,11 @@ class RecordingJob:
             dry_run=kwargs.get("dry_run", False),
             min_duration_sec=kwargs.get("min_duration_sec"),
             stillness_timeout_sec=kwargs.get("stillness_timeout_sec", 180),
+            smart_trim_enabled=runtime_config.smart_trim_enabled,
+            dynamic_extension_enabled=runtime_config.dynamic_extension_enabled,
+            dynamic_extension_idle_sec=runtime_config.dynamic_extension_idle_sec,
+            dynamic_extension_max_sec=runtime_config.dynamic_extension_max_sec,
+            activity_config=runtime_config.activity_config,
         )
 
 
@@ -253,6 +273,15 @@ class RecordingWorker:
         result.status = JobStatus.STARTING
         result.attempt_no = job.attempt_no
         result.recording_info = None
+        result.output_path = None
+        result.raw_output_path = None
+        result.trimmed_output_path = None
+        result.trim_start_sec = None
+        result.trim_end_sec = None
+        result.trim_status = None
+        result.trim_reason = None
+        result.trim_diagnostics = None
+        result.dynamic_extension_stop_reason = None
         result.diagnostic_data = None
         result.error_code = None
         result.error_message = None
@@ -373,13 +402,16 @@ class RecordingWorker:
                 await session.probe_provider_state("monitor_recording")
             except Exception as e:
                 logger.warning(f"Failed to record provider state at recording start: {e}")
-            result.end_reason, result.ffmpeg_exit_code = await self._monitor_recording(
+            monitor_result = await self._monitor_recording(
                 session=session,
                 job=job,
                 detection_orchestrator=detection_orchestrator,
                 ffmpeg_stall_timeout_sec=job.ffmpeg_stall_timeout_sec,
                 ffmpeg_stall_grace_sec=job.ffmpeg_stall_grace_sec,
             )
+            result.end_reason = monitor_result[0]
+            result.ffmpeg_exit_code = monitor_result[1]
+            result.dynamic_extension_stop_reason = monitor_result[2] if len(monitor_result) > 2 else None
             session.end_stage("monitor_recording")
 
             self._update_status(JobStatus.FINALIZING)
@@ -387,12 +419,15 @@ class RecordingWorker:
             result.recording_info = await session.finalize_capture()
             session.end_stage("finalize_capture")
             result.recording_stopped_at = utc_now()
+            await self._apply_smart_trim(session, job, result)
 
             result.status = JobStatus.SUCCEEDED
             result.end_time = utc_now()
             result.runtime_summary = session.build_runtime_summary(
                 end_reason=result.end_reason,
                 recording_info=result.recording_info,
+                trim_summary=self._build_trim_summary(result),
+                dynamic_extension_stop_reason=result.dynamic_extension_stop_reason,
             )
             self._update_status(JobStatus.SUCCEEDED)
 
@@ -459,7 +494,8 @@ class RecordingWorker:
                 error_message=result.error_message,
             )
             self._update_status(JobStatus.FAILED)
-            logger.error(f"Recording failed: {e} (stage={result.failure_stage}, diagnostics={session.diagnostics_dir})")
+            diagnostics_dir = getattr(session, "diagnostics_dir", None)
+            logger.error(f"Recording failed: {e} (stage={result.failure_stage}, diagnostics={diagnostics_dir})")
             result.diagnostic_data = await session.collect_diagnostics(
                 error_code=result.error_code,
                 error_message=result.error_message,
@@ -467,38 +503,78 @@ class RecordingWorker:
             )
 
         finally:
-            if detection_orchestrator is not None and detection_orchestrator.detection_log:
-                try:
-                    from database.models import DetectionLog
-                    from database.models import RecordingJob as DBJob
-                    from database.session import get_session_local
-
-                    SessionLocal = get_session_local()
-                    db_session = SessionLocal()
-                    try:
-                        db_job = db_session.query(DBJob).filter(DBJob.job_id == job.job_id).first()
-                        if db_job:
-                            for log_entry in detection_orchestrator.detection_log:
-                                detection_log = DetectionLog(
-                                    job_id=db_job.id,
-                                    detector_type=log_entry.detector_type.value,
-                                    detected=log_entry.detected,
-                                    confidence=log_entry.confidence,
-                                    reason=log_entry.reason,
-                                    attempt_no=job.attempt_no,
-                                    triggered_at=log_entry.timestamp,
-                                )
-                                db_session.add(detection_log)
-                            db_session.commit()
-                            logger.info(f"Saved {len(detection_orchestrator.detection_log)} detection logs")
-                    finally:
-                        db_session.close()
-                except Exception as e:
-                    logger.warning(f"Failed to save detection logs: {e}")
+            try:
+                await self._save_detection_logs(job, result, detection_orchestrator)
+            except Exception as e:
+                logger.warning(f"Failed to save detection logs: {e}")
 
             await session.cleanup()
 
         return None
+
+    async def _save_detection_logs(
+        self,
+        job: RecordingJob,
+        result: RecordingResult,
+        detection_orchestrator: DetectionOrchestrator | None,
+    ) -> None:
+        """Persist provider detection and media activity decisions."""
+        provider_logs = detection_orchestrator.detection_log if detection_orchestrator else []
+        has_activity_log = result.trim_status is not None
+        has_extension_log = result.dynamic_extension_stop_reason is not None
+        if not provider_logs and not has_activity_log and not has_extension_log:
+            return
+
+        from database.models import DetectionLog
+        from database.models import RecordingJob as DBJob
+        from database.session import get_session_local
+
+        SessionLocal = get_session_local()
+        db_session = SessionLocal()
+        try:
+            db_job = db_session.query(DBJob).filter(DBJob.job_id == job.job_id).first()
+            if not db_job:
+                return
+            for log_entry in provider_logs:
+                db_session.add(
+                    DetectionLog(
+                        job_id=db_job.id,
+                        detector_type=log_entry.detector_type.value,
+                        detected=log_entry.detected,
+                        confidence=log_entry.confidence,
+                        reason=log_entry.reason,
+                        attempt_no=job.attempt_no,
+                        triggered_at=log_entry.timestamp,
+                    )
+                )
+            if has_extension_log:
+                db_session.add(
+                    DetectionLog(
+                        job_id=db_job.id,
+                        detector_type="dynamic_extension",
+                        detected=result.dynamic_extension_stop_reason != "fixed_duration_reached",
+                        confidence=1.0,
+                        reason=result.dynamic_extension_stop_reason,
+                        attempt_no=job.attempt_no,
+                        triggered_at=utc_now(),
+                    )
+                )
+            if has_activity_log:
+                db_session.add(
+                    DetectionLog(
+                        job_id=db_job.id,
+                        detector_type="media_activity",
+                        detected=result.trim_status == "trimmed",
+                        confidence=1.0,
+                        reason=result.trim_reason,
+                        attempt_no=job.attempt_no,
+                        triggered_at=utc_now(),
+                    )
+                )
+            db_session.commit()
+            logger.info("Saved detection/activity logs for job %s", job.job_id)
+        finally:
+            db_session.close()
 
     async def _monitor_recording(
         self,
@@ -508,18 +584,92 @@ class RecordingWorker:
         detection_orchestrator: DetectionOrchestrator | None,
         ffmpeg_stall_timeout_sec: int,
         ffmpeg_stall_grace_sec: int,
-    ) -> tuple[str, int | None]:
+    ) -> tuple[str, int | None, str | None]:
         """Monitor the recording loop until it should stop."""
+        media_activity_probe = LiveMediaActivityProbe(job.activity_config) if job.dynamic_extension_enabled else None
         monitor = RecordingMonitor(
             session=session,
             job=job,
             detection_orchestrator=detection_orchestrator,
+            media_activity_probe=media_activity_probe,
             is_cancel_requested=lambda: self._cancel_requested,
             is_finish_requested=lambda: self._finish_requested,
             ffmpeg_stall_timeout_sec=ffmpeg_stall_timeout_sec,
             ffmpeg_stall_grace_sec=ffmpeg_stall_grace_sec,
         )
-        return await monitor.run()
+        end_reason, ffmpeg_exit_code = await monitor.run()
+        return end_reason, ffmpeg_exit_code, monitor.dynamic_extension_stop_reason
+
+    async def _apply_smart_trim(
+        self,
+        session: RecordingSession,
+        job: RecordingJob,
+        result: RecordingResult,
+    ) -> None:
+        """Analyze and optionally create a trimmed preferred output."""
+        if not result.recording_info:
+            return
+
+        raw_info = result.recording_info
+        raw_path = raw_info.output_path
+        result.raw_output_path = raw_path
+        result.output_path = raw_path
+        result.trim_start_sec = 0.0
+        result.trim_end_sec = raw_info.duration_sec
+
+        if not raw_path.exists():
+            result.trim_status = "skipped"
+            result.trim_reason = "raw recording file not available"
+            return
+
+        if not job.smart_trim_enabled:
+            result.trim_status = "disabled"
+            result.trim_reason = "smart trim disabled"
+            return
+
+        analyzer = RecordingActivityAnalyzer(job.activity_config)
+        decision = await analyzer.analyze(raw_path)
+        result.trim_start_sec = decision.trim_start_sec
+        result.trim_end_sec = decision.trim_end_sec
+        result.trim_status = decision.status
+        result.trim_reason = decision.reason
+        result.trim_diagnostics = decision.diagnostics
+
+        if not decision.should_trim or decision.trim_end_sec is None:
+            return
+
+        trimmed_path = raw_path.with_name(f"{raw_path.stem}.trimmed{raw_path.suffix}")
+        trimmed_info = await trim_recording(
+            input_path=raw_path,
+            output_path=trimmed_path,
+            trim_start_sec=decision.trim_start_sec,
+            trim_end_sec=decision.trim_end_sec,
+            log_path=session.diagnostics_dir / "trim.log",
+        )
+        if not trimmed_info:
+            result.trim_status = "failed"
+            result.trim_reason = "trim command failed; raw recording retained"
+            result.trimmed_output_path = None
+            result.output_path = raw_path
+            result.recording_info = raw_info
+            return
+
+        trimmed_info.start_time = raw_info.start_time + timedelta(seconds=decision.trim_start_sec)
+        trimmed_info.end_time = raw_info.start_time + timedelta(seconds=decision.trim_end_sec)
+        result.trimmed_output_path = trimmed_path
+        result.output_path = trimmed_path
+        result.recording_info = trimmed_info
+
+    def _build_trim_summary(self, result: RecordingResult) -> dict:
+        return {
+            "raw_output_path": str(result.raw_output_path) if result.raw_output_path else None,
+            "trimmed_output_path": str(result.trimmed_output_path) if result.trimmed_output_path else None,
+            "trim_start_sec": result.trim_start_sec,
+            "trim_end_sec": result.trim_end_sec,
+            "trim_status": result.trim_status,
+            "trim_reason": result.trim_reason,
+            "diagnostics": result.trim_diagnostics,
+        }
 
 
 _worker_instance: RecordingWorker | None = None

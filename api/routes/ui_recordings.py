@@ -33,17 +33,40 @@ def _delete_recording_files(output_path: str) -> None:
             candidate.unlink()
 
 
+def _delete_job_recording_files(job: RecordingJob) -> None:
+    """Best-effort delete all local files for a completed job."""
+    for output_path in {job.output_path, job.raw_output_path, job.trimmed_output_path}:
+        if output_path:
+            _delete_recording_files(output_path)
+
+
+def _preferred_existing_output(job: RecordingJob) -> Path | None:
+    """Return the best local playback/download path for a job."""
+    if job.local_recording_deleted_at:
+        return None
+
+    for output_path in (job.output_path, job.trimmed_output_path, job.raw_output_path):
+        if not output_path:
+            continue
+        file_path = Path(output_path)
+        if file_path.exists():
+            preferred = pick_preferred_video_path(file_path)
+            return preferred if preferred.exists() else file_path
+        preferred = pick_preferred_video_path(file_path)
+        if preferred.exists():
+            return preferred
+    return None
+
+
 def _resolve_local_download_path(job: RecordingJob) -> Path | None:
     """Return the downloadable local recording path if it still exists."""
-    if not job.output_path or job.local_recording_deleted_at:
-        return None
+    return _preferred_existing_output(job)
 
-    file_path = Path(job.output_path)
-    if not file_path.exists():
-        return None
 
-    preferred_path = pick_preferred_video_path(file_path)
-    return preferred_path if preferred_path.exists() else None
+def _mark_trimmed_artifact_state(job: RecordingJob) -> None:
+    """Attach a display flag for trimmed files deleted after upload."""
+    trimmed_output_path = getattr(job, "trimmed_output_path", None)
+    job.trimmed_artifact_removed = bool(trimmed_output_path and not Path(trimmed_output_path).exists())
 
 
 @router.get("/recordings", response_class=HTMLResponse)
@@ -60,6 +83,8 @@ async def recordings_list(request: Request, db: Session = Depends(get_db)):
         .order_by(RecordingJob.completed_at.desc())
         .all()
     )
+    for job in jobs:
+        _mark_trimmed_artifact_state(job)
 
     for job in jobs:
         job.local_download_available = _resolve_local_download_path(job) is not None
@@ -92,11 +117,10 @@ async def recordings_delete_all(db: Session = Depends(get_db)):
 
     for job in jobs:
         # Try to delete file from disk if it exists
-        if job.output_path:
-            try:
-                _delete_recording_files(job.output_path)
-            except Exception as e:
-                print(f"Error deleting file {job.output_path}: {e}")
+        try:
+            _delete_job_recording_files(job)
+        except Exception as e:
+            print(f"Error deleting files for {job.job_id}: {e}")
 
         # Delete job from database
         db.delete(job)
@@ -131,11 +155,10 @@ async def recordings_delete(job_id: str, db: Session = Depends(get_db)):
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     if job:
         # Try to delete file from disk if it exists
-        if job.output_path:
-            try:
-                _delete_recording_files(job.output_path)
-            except Exception as e:
-                print(f"Error deleting file {job.output_path}: {e}")
+        try:
+            _delete_job_recording_files(job)
+        except Exception as e:
+            print(f"Error deleting files for {job.job_id}: {e}")
 
         # Delete job from database
         db.delete(job)

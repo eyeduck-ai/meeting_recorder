@@ -186,6 +186,8 @@ async def test_success_with_youtube_enabled_returns_upload_request(executor_sess
     assert upload_request is not None
     assert upload_request.job_id == "upload123"
     assert upload_request.video_path == output_path
+    assert upload_request.raw_video_path is None
+    assert upload_request.cleanup_video_path_after_success is None
     assert upload_request.privacy == "private"
     assert "Weekly Review" in upload_request.title
     assert "https://zoom.us/j/123" in upload_request.title
@@ -263,5 +265,75 @@ async def test_successful_recording_canonicalization_updates_runtime_summary(
         assert db_job.file_size == mp4_path.stat().st_size
         assert db_job.runtime_summary["recording_info"]["output_path"] == str(mp4_path)
         assert db_job.runtime_summary["recording_info"]["file_size"] == mp4_path.stat().st_size
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_success_with_trimmed_output_uploads_trimmed_and_keeps_raw_cleanup_metadata(
+    executor_session_local, tmp_path
+):
+    raw_path = tmp_path / "recording.mkv"
+    trimmed_path = tmp_path / "recording.trimmed.mkv"
+    raw_path.write_bytes(b"raw")
+    trimmed_path.write_bytes(b"trimmed")
+    now = utc_now()
+    job = RecordingJob(
+        job_id="trimup",
+        provider="jitsi",
+        meeting_code="trim-room",
+        display_name="Recorder Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job(executor_session_local, job)
+
+    fake_worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.SUCCEEDED,
+                attempt_no=1,
+                recording_info=RecordingInfo(
+                    output_path=trimmed_path,
+                    file_size=trimmed_path.stat().st_size,
+                    duration_sec=45.0,
+                    start_time=now,
+                    end_time=now + timedelta(seconds=45),
+                ),
+                output_path=trimmed_path,
+                raw_output_path=raw_path,
+                trimmed_output_path=trimmed_path,
+                trim_status="trimmed",
+                trim_start_sec=10.0,
+                trim_end_sec=55.0,
+                recording_started_at=now,
+                end_time=now + timedelta(seconds=60),
+            )
+        ]
+    )
+    executor = RecordingExecutor(worker_provider=lambda: fake_worker)
+
+    upload_request = await executor.run_with_retry(
+        job=job,
+        schedule_id=123,
+        meeting_end_time=utc_now() + timedelta(minutes=5),
+        youtube_enabled=True,
+        youtube_privacy="unlisted",
+        meeting_name="Trimmed Review",
+    )
+
+    assert upload_request is not None
+    assert upload_request.video_path == trimmed_path
+    assert upload_request.raw_video_path == raw_path
+    assert upload_request.cleanup_video_path_after_success == trimmed_path
+
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "trimup").first()
+        assert db_job.output_path == str(trimmed_path)
+        assert db_job.raw_output_path == str(raw_path)
+        assert db_job.trimmed_output_path == str(trimmed_path)
+        assert db_job.trim_status == "trimmed"
     finally:
         session.close()

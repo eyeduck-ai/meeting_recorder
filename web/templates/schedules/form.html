@@ -222,6 +222,53 @@
                             </label>
                         </div>
                     </div>
+
+                    <div class="divider my-2"></div>
+
+                    <!-- Smart Recording Boundaries -->
+                    <div class="space-y-4">
+                        <h3 class="font-bold text-sm text-gray-400">Smart Recording Boundaries</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="form-control">
+                                <label class="label font-bold text-gray-500 text-xs uppercase py-1">Smart Trim</label>
+                                <select name="smart_trim_mode"
+                                    class="select select-bordered select-sm bg-[#16181c] border-[#2f3336]">
+                                    <option value="inherit" {% if not schedule or schedule.smart_trim_enabled is none %}selected{% endif %}>
+                                        Use global default</option>
+                                    <option value="on" {% if schedule and schedule.smart_trim_enabled is sameas true %}selected{% endif %}>
+                                        Enabled</option>
+                                    <option value="off" {% if schedule and schedule.smart_trim_enabled is sameas false %}selected{% endif %}>
+                                        Disabled</option>
+                                </select>
+                            </div>
+                            <div class="form-control">
+                                <label class="label font-bold text-gray-500 text-xs uppercase py-1">Dynamic Extension</label>
+                                <select name="dynamic_extension_mode"
+                                    class="select select-bordered select-sm bg-[#16181c] border-[#2f3336]">
+                                    <option value="inherit" {% if not schedule or schedule.dynamic_extension_enabled is none %}selected{% endif %}>
+                                        Use global default</option>
+                                    <option value="on" {% if schedule and schedule.dynamic_extension_enabled is sameas true %}selected{% endif %}>
+                                        Enabled</option>
+                                    <option value="off" {% if schedule and schedule.dynamic_extension_enabled is sameas false %}selected{% endif %}>
+                                        Disabled</option>
+                                </select>
+                            </div>
+                            <div class="form-control">
+                                <label class="label font-bold text-gray-500 text-xs uppercase py-1">Idle Stop Override (Seconds)</label>
+                                <input type="number" name="dynamic_extension_idle_sec" min="1" max="14400"
+                                    value="{{ schedule.dynamic_extension_idle_sec if schedule and schedule.dynamic_extension_idle_sec is not none else '' }}"
+                                    placeholder="{{ app_settings.dynamic_extension_idle_sec }}"
+                                    class="input input-bordered input-sm bg-[#16181c] border-[#2f3336]">
+                            </div>
+                            <div class="form-control">
+                                <label class="label font-bold text-gray-500 text-xs uppercase py-1">Max Extension Override (Seconds)</label>
+                                <input type="number" name="dynamic_extension_max_sec" min="0" max="86400"
+                                    value="{{ schedule.dynamic_extension_max_sec if schedule and schedule.dynamic_extension_max_sec is not none else '' }}"
+                                    placeholder="{{ app_settings.dynamic_extension_max_sec }}"
+                                    class="input input-bordered input-sm bg-[#16181c] border-[#2f3336]">
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 

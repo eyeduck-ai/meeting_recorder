@@ -61,10 +61,17 @@ class JobResponse(BaseModel):
     recording_started_at: str | None = None
     completed_at: str | None = None
     output_path: str | None = None
+    raw_output_path: str | None = None
+    trimmed_output_path: str | None = None
     file_size: int | None = None
     duration_actual_sec: float | None = None
     local_recording_deleted_at: str | None = None
     local_recording_cleanup_reason: str | None = None
+    trim_start_sec: float | None = None
+    trim_end_sec: float | None = None
+    trim_status: str | None = None
+    trim_reason: str | None = None
+    dynamic_extension_stop_reason: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     failure_stage: str | None = None
@@ -98,12 +105,19 @@ def _model_to_response(job: RecordingJobModel) -> JobResponse:
         recording_started_at=job.recording_started_at.isoformat() if job.recording_started_at else None,
         completed_at=job.completed_at.isoformat() if job.completed_at else None,
         output_path=job.output_path,
+        raw_output_path=job.raw_output_path,
+        trimmed_output_path=job.trimmed_output_path,
         file_size=job.file_size,
         duration_actual_sec=job.duration_actual_sec,
         local_recording_deleted_at=job.local_recording_deleted_at.isoformat()
         if job.local_recording_deleted_at
         else None,
         local_recording_cleanup_reason=job.local_recording_cleanup_reason,
+        trim_start_sec=job.trim_start_sec,
+        trim_end_sec=job.trim_end_sec,
+        trim_status=job.trim_status,
+        trim_reason=job.trim_reason,
+        dynamic_extension_stop_reason=job.dynamic_extension_stop_reason,
         error_code=job.error_code,
         error_message=job.error_message,
         failure_stage=job.failure_stage,

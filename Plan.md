@@ -14,6 +14,8 @@
 - 修正 schedule 解析度、lobby wait 等可設定但未完整套用到 worker/session 的問題。
 - 修正 recording manager 掃描錄影檔目錄與 `recordings_dir` 設定不一致的問題。
 - 已新增 storage maintenance，統一本機 MP4 canonicalization、YouTube 後錄影保留、diagnostics/log/detection log retention 與 Docker log rotation；本機 canonicalization 已 harden 為 temporary MP4 + ffprobe validation + fast remux-only。
+- 已新增 smart trim 與 dynamic extension 設定解析，支援全域預設與 schedule nullable 覆寫。
+- smart/dynamic schedule 覆寫已在 create/update 當下驗證有效組合，避免 invalid config 延後到 job runner 才失敗。
 
 ## P1：服務層與入口一致性
 
@@ -36,6 +38,7 @@
 - 已將 schedule queue、pending、duplicate 與 queue position 狀態拆到 `scheduling/schedule_queue.py`。
 - 已將 recording retry、attempt DB 更新、status callback 與 stage notification 拆到 `scheduling/recording_executor.py`。
 - 已將 recording monitor loop 抽到 `recording/monitor.py`，集中 duration、finish/cancel、FFmpeg stall 與 auto-detect 判斷。
+- 已新增 `recording/activity.py`，集中媒體活動 probe、完成檔 batch activity analysis 與 smart trim helper，避免 provider DOM selector 進入媒體邊界判斷。
 - 已將 `api/routes/ui.py` 的 auth/dashboard/meeting/schedule/settings route 群組拆到獨立子 router；`api.routes.ui.router` 保留為聚合入口。
 - 已將 Telegram create schedule、edit schedule、create meeting conversation 拆到獨立模組；`telegram_bot.conversations` 保留為相容 re-export 聚合器。
 - 已將 Zoom join/prejoin 改為 provider 專用狀態推進，處理 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支，避免假設固定頁面順序。
@@ -47,4 +50,6 @@
 - 已讓 `RecordingManager` 的 list、cleanup、disk usage 共用單次 filesystem scan 與 stat metadata，避免同一 request 反覆 `rglob()` / `stat()`。
 - 已將 scheduler `next_run_at` 同步改成單一 DB session 批次更新，並跳過 unchanged `next_run_at`。
 - 已在 FastAPI shutdown 關閉既有 YouTube uploader HTTP client，並將 YouTube upload chunk read 包到 thread，避免大檔讀取阻塞 event loop。
+- 已讓自動 YouTube 上傳使用 preferred trimmed output，成功後刪除本地裁剪 artifact 並回退 DB `output_path` 到 raw recording。
 - 已新增 provider bounded wait helper，並將 Jitsi/Webex/Zoom join/prejoin flow 剩餘固定 sleep 收斂為 selector/state/function bounded wait 或集中短 debounce。
+- 已最佳化 smart trim / dynamic extension 媒體活動辨識效能，包含 live audio 長駐 meter、streaming completed-file probes、並行 audio/video probe 與 boundary refinement diagnostics。

@@ -76,6 +76,10 @@ def session_local(tmp_path, monkeypatch):
             lobby_wait_sec=None,
             resolution_w=None,
             resolution_h=None,
+            smart_trim_enabled=None,
+            dynamic_extension_enabled=None,
+            dynamic_extension_idle_sec=None,
+            dynamic_extension_max_sec=None,
         ):
             return RuntimeRecordingConfig(
                 resolution_w=resolution_w if resolution_w is not None else 1600,
@@ -88,6 +92,10 @@ def session_local(tmp_path, monkeypatch):
                 recording_browser_mode="app",
                 recording_crop_mode="manual",
                 recording_crop_top_px=66,
+                smart_trim_enabled=True if smart_trim_enabled is None else smart_trim_enabled,
+                dynamic_extension_enabled=True if dynamic_extension_enabled is None else dynamic_extension_enabled,
+                dynamic_extension_idle_sec=300 if dynamic_extension_idle_sec is None else dynamic_extension_idle_sec,
+                dynamic_extension_max_sec=3600 if dynamic_extension_max_sec is None else dynamic_extension_max_sec,
             )
 
     monkeypatch.setattr(job_runner_module, "get_runtime_config_service", lambda: FakeRuntimeConfigService())
@@ -330,8 +338,10 @@ class TestJobRunner:
         after = utc_now()
 
         retry_mock.assert_awaited_once()
-        deadline = retry_mock.await_args.kwargs["meeting_end_time"]
-        assert before + timedelta(seconds=180) <= deadline <= after + timedelta(seconds=180)
+        kwargs = retry_mock.await_args.kwargs
+        assert kwargs["job"].duration_sec == 180
+        deadline = kwargs["meeting_end_time"]
+        assert before + timedelta(seconds=3780) <= deadline <= after + timedelta(seconds=3780)
 
     @pytest.mark.asyncio
     async def test_retry_keeps_same_job_id_and_single_db_row(self, session_local, monkeypatch):

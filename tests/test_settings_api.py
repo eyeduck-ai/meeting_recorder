@@ -33,6 +33,8 @@ def test_settings_endpoint_returns_recording_crop_top(db_session):
     assert response["recording_browser_mode"] == "normal"
     assert response["recording_crop_mode"] == "manual"
     assert response["recording_crop_top_px"] == 42
+    assert response["smart_trim_enabled"] is True
+    assert response["dynamic_extension_idle_sec"] == 300
 
 
 def test_settings_update_accepts_valid_recording_crop_top(db_session):
@@ -42,6 +44,10 @@ def test_settings_update_accepts_valid_recording_crop_top(db_session):
             recording_browser_mode="normal",
             recording_crop_mode="manual",
             recording_crop_top_px=64,
+            smart_trim_enabled=False,
+            dynamic_extension_idle_sec=300,
+            dynamic_extension_max_sec=3600,
+            activity_audio_threshold_db=-42.0,
         ),
         db_session,
     )
@@ -50,6 +56,10 @@ def test_settings_update_accepts_valid_recording_crop_top(db_session):
     assert response["recording_browser_mode"] == "normal"
     assert response["recording_crop_mode"] == "manual"
     assert response["recording_crop_top_px"] == 64
+    assert response["smart_trim_enabled"] is False
+    assert response["dynamic_extension_idle_sec"] == 300
+    assert response["dynamic_extension_max_sec"] == 3600
+    assert response["activity_audio_threshold_db"] == -42.0
 
 
 def test_settings_update_rejects_crop_equal_to_resolution_height(db_session):
@@ -71,3 +81,14 @@ def test_settings_update_rejects_invalid_recording_crop_mode():
 def test_settings_update_rejects_invalid_recording_browser_mode():
     with pytest.raises(ValidationError):
         SettingsUpdate(recording_browser_mode="popup")
+
+
+def test_settings_update_rejects_extension_max_below_idle(db_session):
+    with pytest.raises(HTTPException) as exc:
+        update_settings_endpoint(
+            SettingsUpdate(dynamic_extension_idle_sec=300, dynamic_extension_max_sec=120),
+            db_session,
+        )
+
+    assert exc.value.status_code == 422
+    assert "dynamic_extension_max_sec" in exc.value.detail

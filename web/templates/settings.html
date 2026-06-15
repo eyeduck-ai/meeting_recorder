@@ -18,7 +18,7 @@
             <button onclick="switchTab('integrations')"
                 class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Integrations</button>
             <button onclick="switchTab('detection')"
-                class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Detection</button>
+                class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Detection & Activity</button>
             <button onclick="switchTab('notifications')"
                 class="tab-btn px-4 py-3 whitespace-nowrap text-gray-500">Notifications</button>
         </div>
@@ -34,8 +34,8 @@
             <button onclick="switchTab('integrations')"
                 class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Integrations</button>
             <button onclick="switchTab('detection')"
-                class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Meeting
-                Detection</button>
+                class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Detection
+                & Activity</button>
             <button onclick="switchTab('notifications')"
                 class="tab-btn text-left px-4 py-3 hover:bg-[#181818] border-r-2 border-transparent transition-colors text-gray-500">Notifications</button>
         </div>
@@ -297,67 +297,146 @@
         </div>
 
         <!-- Detection Section -->
-        <div id="section-detection" class="settings-section hidden p-4 md:p-8 max-w-2xl">
+        <div id="section-detection" class="settings-section hidden p-4 md:p-8 max-w-3xl">
             <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-bold">End Detection Config</h3>
+                <h3 class="text-xl font-bold">Detection & Activity</h3>
                 <button onclick="saveDetectionConfig()"
                     class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full px-6"
                     id="btn-save-detection">Save</button>
             </div>
 
-            <p class="text-gray-500 mb-6">Conditions to trigger automatic stop.</p>
+            <div class="space-y-8">
+                <fieldset class="space-y-4">
+                    <legend class="font-bold text-sm text-gray-400 uppercase tracking-wider">Smart Recording Defaults</legend>
+                    <div class="bg-[#16181c] rounded-lg border border-[#2f3336] divide-y divide-[#2f3336]">
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">Smart Start/End Trim</span>
+                                <span class="block text-xs text-gray-500">Create a preferred output from the first media activity and trim idle tail.</span>
+                            </span>
+                            <input type="checkbox" id="smart_trim_enabled" class="toggle toggle-info">
+                        </label>
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">Dynamic End Extension</span>
+                                <span class="block text-xs text-gray-500">After the scheduled duration, continue while audio or video is active.</span>
+                            </span>
+                            <input type="checkbox" id="dynamic_extension_enabled" class="toggle toggle-info"
+                                onchange="updateActivityControls()">
+                        </label>
+                    </div>
 
-            <div class="space-y-4">
-                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
-                    <div>
-                        <div class="font-bold">WebRTC Connection</div>
-                        <div class="text-xs text-gray-500">Browser connection state</div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label for="dynamic_extension_idle_sec" class="block text-sm font-bold mb-2">Idle Stop (sec)</label>
+                            <input type="number" id="dynamic_extension_idle_sec" min="1" max="14400" inputmode="numeric"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="dynamic_extension_max_sec" class="block text-sm font-bold mb-2">Max Extension (sec)</label>
+                            <input type="number" id="dynamic_extension_max_sec" min="0" max="86400" inputmode="numeric"
+                                aria-describedby="dynamic_extension_max_help"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                            <p id="dynamic_extension_max_help" class="text-xs text-gray-500 mt-1">Use 0 for no extension cap.</p>
+                        </div>
                     </div>
-                    <input type="checkbox" id="det_webrtc" class="toggle toggle-info">
-                </div>
-                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
-                    <div>
-                        <div class="font-bold">Text Indicators</div>
-                        <div class="text-xs text-gray-500">"Meeting ended"</div>
-                    </div>
-                    <input type="checkbox" id="det_text" class="toggle toggle-info">
-                </div>
-                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
-                    <div>
-                        <div class="font-bold">Video Element</div>
-                        <div class="text-xs text-gray-500">Video tag removal</div>
-                    </div>
-                    <input type="checkbox" id="det_video" class="toggle toggle-info">
-                </div>
-                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
-                    <div>
-                        <div class="font-bold">URL Change</div>
-                        <div class="text-xs text-gray-500">Navigation away</div>
-                    </div>
-                    <input type="checkbox" id="det_url" class="toggle toggle-info">
-                </div>
-                <div class="flex items-center justify-between p-3 border-b border-[#2f3336]">
-                    <div>
-                        <div class="font-bold">Screen Freeze</div>
-                        <div class="text-xs text-gray-500">Pixels unchanged</div>
-                    </div>
-                    <input type="checkbox" id="det_freeze" class="toggle toggle-info">
-                </div>
-            </div>
+                </fieldset>
 
-            <div class="mt-8 grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-bold mb-2">Freeze Timeout (s)</label>
-                    <input type="number" id="freeze_timeout"
-                        class="input input-bordered w-full bg-black border-[#2f3336]">
-                </div>
-                <div>
-                    <label class="block text-sm font-bold mb-2">Min Detectors</label>
-                    <select id="min_detectors" class="select select-bordered w-full bg-black border-[#2f3336]">
-                        <option value="1">1 (Fastest)</option>
-                        <option value="2">2 (Balanced)</option>
-                        <option value="3">3 (Strict)</option>
-                    </select>
+                <fieldset class="space-y-4">
+                    <legend class="font-bold text-sm text-gray-400 uppercase tracking-wider">Media Activity Thresholds</legend>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label for="activity_audio_threshold_db" class="block text-sm font-bold mb-2">Audio Threshold (dB)</label>
+                            <input type="number" id="activity_audio_threshold_db" step="0.5"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="activity_video_diff_threshold" class="block text-sm font-bold mb-2">Video Difference</label>
+                            <input type="number" id="activity_video_diff_threshold" step="0.001" min="0" max="1"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="activity_sample_interval_sec" class="block text-sm font-bold mb-2">Sample Interval (sec)</label>
+                            <input type="number" id="activity_sample_interval_sec" min="1" max="300" step="0.5"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="activity_sample_window_sec" class="block text-sm font-bold mb-2">Sample Window (sec)</label>
+                            <input type="number" id="activity_sample_window_sec" min="0.25" max="30" step="0.25"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="smart_trim_pre_roll_sec" class="block text-sm font-bold mb-2">Start Pre-roll (sec)</label>
+                            <input type="number" id="smart_trim_pre_roll_sec" min="0" max="60" step="0.5"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="smart_trim_end_post_roll_sec" class="block text-sm font-bold mb-2">End Post-roll (sec)</label>
+                            <input type="number" id="smart_trim_end_post_roll_sec" min="0" max="300" step="0.5"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="space-y-4">
+                    <legend class="font-bold text-sm text-gray-400 uppercase tracking-wider">Provider End Detectors</legend>
+                    <div class="bg-[#16181c] rounded-lg border border-[#2f3336] divide-y divide-[#2f3336]">
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">WebRTC Connection</span>
+                                <span class="block text-xs text-gray-500">Browser connection state</span>
+                            </span>
+                            <input type="checkbox" id="det_webrtc" class="toggle toggle-info">
+                        </label>
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">Text Indicators</span>
+                                <span class="block text-xs text-gray-500">Provider messages such as meeting ended</span>
+                            </span>
+                            <input type="checkbox" id="det_text" class="toggle toggle-info">
+                        </label>
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">Video Element</span>
+                                <span class="block text-xs text-gray-500">Video element disappearance</span>
+                            </span>
+                            <input type="checkbox" id="det_video" class="toggle toggle-info">
+                        </label>
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">URL Change</span>
+                                <span class="block text-xs text-gray-500">Navigation away from the meeting page</span>
+                            </span>
+                            <input type="checkbox" id="det_url" class="toggle toggle-info">
+                        </label>
+                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
+                            <span>
+                                <span class="block font-bold">Screen Freeze</span>
+                                <span class="block text-xs text-gray-500">Provider-level frozen screen detector</span>
+                            </span>
+                            <input type="checkbox" id="det_freeze" class="toggle toggle-info">
+                        </label>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label for="freeze_timeout" class="block text-sm font-bold mb-2">Freeze Timeout (sec)</label>
+                            <input type="number" id="freeze_timeout" min="1" inputmode="numeric"
+                                class="input input-bordered w-full bg-black border-[#2f3336]">
+                        </div>
+                        <div>
+                            <label for="min_detectors" class="block text-sm font-bold mb-2">Min Detectors</label>
+                            <select id="min_detectors" class="select select-bordered w-full bg-black border-[#2f3336]">
+                                <option value="1">1 (Fastest)</option>
+                                <option value="2">2 (Balanced)</option>
+                                <option value="3">3 (Strict)</option>
+                            </select>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <div class="flex justify-end">
+                    <a href="/detection-logs" class="btn btn-outline btn-sm rounded-full">Detection Logs</a>
                 </div>
             </div>
         </div>
@@ -472,6 +551,7 @@
     // Telegram Logic
     async function loadTelegramUsers() {
         const container = document.getElementById('telegram-users-container');
+        if (!container) return;
         try {
             const res = await fetch('/api/v1/telegram/users');
             const users = await res.json();
@@ -557,6 +637,43 @@
         } catch (e) { alert(e); }
     }
 
+    function activitySettingsPayload() {
+        return {
+            smart_trim_enabled: document.getElementById('smart_trim_enabled').checked,
+            dynamic_extension_enabled: document.getElementById('dynamic_extension_enabled').checked,
+            dynamic_extension_idle_sec: parseInt(document.getElementById('dynamic_extension_idle_sec').value),
+            dynamic_extension_max_sec: parseInt(document.getElementById('dynamic_extension_max_sec').value),
+            activity_audio_threshold_db: parseFloat(document.getElementById('activity_audio_threshold_db').value),
+            activity_video_diff_threshold: parseFloat(document.getElementById('activity_video_diff_threshold').value),
+            activity_sample_interval_sec: parseFloat(document.getElementById('activity_sample_interval_sec').value),
+            activity_sample_window_sec: parseFloat(document.getElementById('activity_sample_window_sec').value),
+            smart_trim_pre_roll_sec: parseFloat(document.getElementById('smart_trim_pre_roll_sec').value),
+            smart_trim_end_post_roll_sec: parseFloat(document.getElementById('smart_trim_end_post_roll_sec').value)
+        };
+    }
+
+    async function loadActivityConfig() {
+        const res = await fetch('/api/v1/settings');
+        const c = await res.json();
+        document.getElementById('smart_trim_enabled').checked = c.smart_trim_enabled;
+        document.getElementById('dynamic_extension_enabled').checked = c.dynamic_extension_enabled;
+        document.getElementById('dynamic_extension_idle_sec').value = c.dynamic_extension_idle_sec;
+        document.getElementById('dynamic_extension_max_sec').value = c.dynamic_extension_max_sec;
+        document.getElementById('activity_audio_threshold_db').value = c.activity_audio_threshold_db;
+        document.getElementById('activity_video_diff_threshold').value = c.activity_video_diff_threshold;
+        document.getElementById('activity_sample_interval_sec').value = c.activity_sample_interval_sec;
+        document.getElementById('activity_sample_window_sec').value = c.activity_sample_window_sec;
+        document.getElementById('smart_trim_pre_roll_sec').value = c.smart_trim_pre_roll_sec;
+        document.getElementById('smart_trim_end_post_roll_sec').value = c.smart_trim_end_post_roll_sec;
+        updateActivityControls();
+    }
+
+    function updateActivityControls() {
+        const disabled = !document.getElementById('dynamic_extension_enabled').checked;
+        document.getElementById('dynamic_extension_idle_sec').disabled = disabled;
+        document.getElementById('dynamic_extension_max_sec').disabled = disabled;
+    }
+
     // Existing load functions
     async function loadDetectionConfig() {
         const res = await fetch('/api/detection/config');
@@ -570,6 +687,10 @@
         document.getElementById('min_detectors').value = c.min_detectors_agree;
     }
     async function saveDetectionConfig() {
+        const btn = document.getElementById('btn-save-detection');
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
         const c = {
             webrtc_connection_enabled: document.getElementById('det_webrtc').checked,
             text_indicator_enabled: document.getElementById('det_text').checked,
@@ -579,8 +700,30 @@
             screen_freeze_timeout_sec: parseInt(document.getElementById('freeze_timeout').value),
             min_detectors_agree: parseInt(document.getElementById('min_detectors').value)
         };
-        await fetch('/api/detection/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
-        alert('Detection Saved');
+        try {
+            const activityRes = await fetch('/api/v1/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(activitySettingsPayload())
+            });
+            if (!activityRes.ok) {
+                throw new Error('Activity settings failed to save');
+            }
+            const detectionRes = await fetch('/api/detection/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(c)
+            });
+            if (!detectionRes.ok) {
+                throw new Error('Provider detection settings failed to save');
+            }
+            alert('Detection Saved');
+        } catch (e) {
+            alert(e.message || e);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
     }
 
     // Notification Logic (Restored)
@@ -643,6 +786,7 @@
     document.addEventListener('DOMContentLoaded', () => {
         loadTelegramUsers();
         loadDetectionConfig();
+        loadActivityConfig();
         loadNotificationConfig();
         refreshDiskUsage();
         updateCropMode();
