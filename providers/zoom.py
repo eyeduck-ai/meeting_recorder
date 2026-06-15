@@ -1,13 +1,43 @@
 """Zoom Meeting Provider for Guest Join."""
 
 import logging
+from dataclasses import dataclass
+from enum import StrEnum
+from time import monotonic
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from playwright.async_api import Page
 
-from providers.base import BaseProvider, MeetingState, MeetingStateSnapshot
+from providers.base import BaseProvider, JoinResult, MeetingState, MeetingStateSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+class ZoomJoinStage(StrEnum):
+    """Zoom-specific page stage used to decide the next join action."""
+
+    COOKIE_BLOCKED = "cookie_blocked"
+    APP_LAUNCH_PAGE = "app_launch_page"
+    BROWSER_JOIN_AVAILABLE = "browser_join_available"
+    WEB_CLIENT_LOADING = "web_client_loading"
+    NAME_FORM = "name_form"
+    PASSWORD_FORM = "password_form"
+    JOIN_READY = "join_ready"
+    LOBBY = "lobby"
+    IN_MEETING = "in_meeting"
+    ENDED = "ended"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class ZoomPageState:
+    """Current Zoom page stage and the selectors that proved it."""
+
+    stage: ZoomJoinStage
+    matched_selectors: list[str]
+    error_code: str | None = None
+    error_message: str | None = None
+    confidence: float = 1.0
 
 
 class ZoomProvider(BaseProvider):
@@ -17,6 +47,128 @@ class ZoomProvider(BaseProvider):
     and join via web browser. We use the `/wc/join/{meeting_id}` web client
     path when possible and keep `zc=0` as a fallback hint.
     """
+
+    COOKIE_BLOCKING_SELECTORS = [
+        "#onetrust-banner-sdk",
+        ".onetrust-pc-dark-filter",
+        "#onetrust-accept-btn-handler",
+        ".onetrust-close-btn-handler",
+    ]
+    COOKIE_ACTION_SELECTORS = [
+        "#onetrust-accept-btn-handler",
+        ".onetrust-close-btn-handler",
+        'button:has-text("Accept Cookies")',
+        'button:has-text("ACCEPT COOKIES")',
+        'button:has-text("Accept")',
+        'button:has-text("接受")',
+        'button[aria-label*="Accept" i]',
+        '[id*="onetrust-accept"]',
+    ]
+    BROWSER_JOIN_SELECTORS = [
+        'button:has-text("Join from browser")',
+        'button:has-text("Join from Browser")',
+        'button:has-text("從瀏覽器加入")',
+        '[role="button"]:has-text("Join from browser")',
+        'a:has-text("Join from Your Browser")',
+        'a:has-text("從您的瀏覽器加入")',
+        'a:has-text("從瀏覽器加入")',
+        'a:has-text("join from your browser")',
+        '[data-testid="join-from-browser-link"]',
+        'a.joinWindowBtn:has-text("browser")',
+        'button:has-text("瀏覽器")',
+        'a[href*="wc/join"]',
+    ]
+    APP_LAUNCH_SELECTORS = [
+        'button:has-text("Join from Zoom Workplace app")',
+        'button:has-text("Join from Zoom app")',
+        'button:has-text("從Zoom Workplace應用程式加入")',
+        'text="Did not open Zoom Workplace app?"',
+        'text="並未開啟Zoom Workplace應用程式？"',
+        'text="Join meeting"',
+        'text="加入會議"',
+    ]
+    NAME_SELECTORS = [
+        "#input-for-name",
+        "#inputname",
+        'input[name="inputName"]',
+        'input[placeholder*="name" i]',
+        'input[placeholder*="名稱" i]',
+        'input[aria-label*="name" i]',
+        '[data-testid="input-name"]',
+        'input[type="text"]',
+    ]
+    PASSWORD_SELECTORS = [
+        "#inputpasscode",
+        'input[type="password"]',
+        'input[name="password"]',
+        'input[placeholder*="password" i]',
+        'input[placeholder*="密碼" i]',
+        'input[placeholder*="passcode" i]',
+    ]
+    JOIN_READY_SELECTORS = [
+        "#joinBtn",
+        '[data-testid="join-btn"]',
+        "button.join-btn",
+        "button.preview-join-button",
+        ".preview-join-button",
+        'button:has-text("Join Meeting")',
+        'button:has-text("加入會議")',
+        'button[type="submit"]',
+    ]
+    LOBBY_SELECTORS = [
+        'text="Please wait"',
+        'text="等待"',
+        'text="Waiting Room"',
+        'text="等候室"',
+        'text="host will let you in"',
+        'text="主持人將會讓您加入"',
+        '[data-testid="waiting-room"]',
+    ]
+    IN_MEETING_SELECTORS = [
+        "#wc-footer",
+        '[data-testid="meeting-controls"]',
+        "#wc-container-left",
+        ".meeting-app",
+        '[data-testid="participants-btn"]',
+    ]
+    ENDED_SELECTORS = [
+        'text="Meeting has ended"',
+        'text="會議已結束"',
+        'text="The host has ended this meeting"',
+        'text="主持人已結束此會議"',
+        'text="You have been removed"',
+        'text="您已被移除"',
+        '[data-testid="meeting-ended"]',
+    ]
+    ERROR_SELECTORS = [
+        ('text="Invalid meeting ID"', "MEETING_NOT_FOUND", "無效的會議 ID"),
+        ('text="無效的會議 ID"', "MEETING_NOT_FOUND", "無效的會議 ID"),
+        ('text="This meeting has been locked"', "MEETING_LOCKED", "此會議已鎖定"),
+        ('text="此會議已鎖定"', "MEETING_LOCKED", "此會議已鎖定"),
+        ('text="Meeting not started"', "MEETING_NOT_STARTED", "會議尚未開始"),
+        ('text="會議尚未開始"', "MEETING_NOT_STARTED", "會議尚未開始"),
+    ]
+    TRANSIENT_OVERLAY_TEXT_SELECTORS = [
+        ':text("For a better meeting experience")',
+        ':text("hardware acceleration")',
+        ':text("Use graphics/hardware acceleration")',
+        ':text("硬體加速")',
+        ':text("硬件加速")',
+        ':text("圖形/硬體加速")',
+        ':text("图形/硬件加速")',
+    ]
+    TRANSIENT_OVERLAY_CLOSE_SELECTORS = [
+        'button[aria-label*="close" i]',
+        '[role="button"][aria-label*="close" i]',
+        '[aria-label*="close" i]',
+        'button[aria-label*="關閉" i]',
+        '[role="button"][aria-label*="關閉" i]',
+        'button[aria-label*="关闭" i]',
+        '[role="button"][aria-label*="关闭" i]',
+        'button:has-text("×")',
+        'button:has-text("x")',
+        '[class*="close" i]',
+    ]
 
     @property
     def name(self) -> str:
@@ -42,7 +194,7 @@ class ZoomProvider(BaseProvider):
             query_params.update(web_client_params)
 
             path_parts = [part for part in parsed.path.split("/") if part]
-            if len(path_parts) >= 2 and path_parts[0] == "j":
+            if len(path_parts) >= 2 and path_parts[0] in {"j", "w"}:
                 parsed = parsed._replace(path=f"/wc/join/{path_parts[1]}")
             elif len(path_parts) >= 3 and path_parts[0] == "wc" and path_parts[1] == "join":
                 parsed = parsed._replace(path=f"/wc/join/{path_parts[2]}")
@@ -78,141 +230,61 @@ class ZoomProvider(BaseProvider):
             password: Meeting password if required
         """
         logger.info(f"Handling Zoom prejoin page, display_name={display_name}")
+        self._last_display_name = display_name
+        self._last_password = password
 
-        # Prefer bounded Playwright readiness over fixed startup sleep.
         await self.wait_for_page_idle(page, timeout_ms=3000, fallback_sec=0.5, reason="Zoom prejoin page")
-
-        # Handle cookie consent if present. Zoom's cookie prompt can cover
-        # the browser-join button and prevent the click from reaching it.
-        await self._accept_cookie_consent(page)
-
-        name_selectors = [
-            "#input-for-name",
-            "#inputname",
-            'input[name="inputName"]',
-            'input[placeholder*="name" i]',
-            'input[placeholder*="名稱" i]',
-            'input[aria-label*="name" i]',
-            '[data-testid="input-name"]',
-            'input[type="text"]',
-        ]
-        password_selectors = [
-            "#inputpasscode",
-            'input[type="password"]',
-            'input[name="password"]',
-            'input[placeholder*="password" i]',
-            'input[placeholder*="密碼" i]',
-            'input[placeholder*="passcode" i]',
-        ]
-        join_ready_selectors = [
-            "#joinBtn",
-            '[data-testid="join-btn"]',
-            "button.preview-join-button",
-            'button:has-text("Join")',
-            'button:has-text("加入")',
-        ]
-
-        if not await self._has_any_selector(page, name_selectors):
-            await self._click_browser_join(page)
-
-        await self.wait_for_condition(
-            lambda: self._has_any_selector(page, name_selectors + password_selectors + join_ready_selectors)
-            or "/wc/" in page.url,
-            timeout_ms=3000,
-            fallback_sec=0.2,
-            reason="Zoom browser join controls",
+        state = await self._drive_join_flow(
+            page,
+            display_name=display_name,
+            password=password,
+            click_final_join=False,
+            max_steps=8,
         )
 
-        if not await self._has_any_selector(page, name_selectors) and "/wc/" not in page.url:
-            web_client_url = self.build_join_url(page.url)
-            if web_client_url != page.url:
-                logger.info(f"Navigating directly to Zoom web client: {web_client_url}")
-                await page.goto(web_client_url, wait_until="domcontentloaded")
-                await self.wait_for_page_idle(page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom web client")
-
-        # Fill in display name
-        name_filled = await self._fill_display_name(page, name_selectors, display_name)
-
-        if not name_filled:
-            logger.warning("Could not find display name input")
-
-        # Handle password if provided and password field is visible
-        if password:
-            for selector in password_selectors:
-                for target in self._targets(page):
-                    try:
-                        password_input = target.locator(selector)
-                        if await password_input.count() > 0:
-                            await password_input.first.fill(password)
-                            logger.info(f"Password filled using: {selector}")
-                            break
-                    except Exception:
-                        continue
-
-        # Disable video/audio if possible (before joining)
-        # Look for mute toggles on prejoin page
-        await self._disable_media(page)
+        if state.stage not in {
+            ZoomJoinStage.JOIN_READY,
+            ZoomJoinStage.NAME_FORM,
+            ZoomJoinStage.LOBBY,
+            ZoomJoinStage.IN_MEETING,
+            ZoomJoinStage.WEB_CLIENT_LOADING,
+        }:
+            logger.warning(f"Zoom prejoin did not reach join-ready state: {state.stage.value}")
 
     async def _accept_cookie_consent(self, page: Page) -> None:
         """Accept Zoom/OneTrust cookie consent if it is blocking the page."""
-        cookie_selectors = [
-            "#onetrust-accept-btn-handler",
-            'button:has-text("Accept Cookies")',
-            'button:has-text("ACCEPT COOKIES")',
-            'button:has-text("Accept")',
-            'button:has-text("接受")',
-            'button[aria-label*="Accept" i]',
-            '[id*="onetrust-accept"]',
-        ]
-        for selector in cookie_selectors:
-            try:
-                cookie_btn = page.locator(selector)
-                if await cookie_btn.count() > 0:
-                    try:
-                        await cookie_btn.first.click(timeout=3000)
-                    except Exception:
-                        await cookie_btn.first.click(timeout=3000, force=True)
-                    logger.info(f"Accepted cookie consent using: {selector}")
-                    await self._wait_until_hidden(page, ["#onetrust-banner-sdk", ".onetrust-pc-dark-filter"])
-                    break
-            except Exception:
-                continue
+        if await self._click_first(page, self.COOKIE_ACTION_SELECTORS, "cookie consent"):
+            await self._wait_until_hidden(page, self.COOKIE_BLOCKING_SELECTORS)
 
     async def _click_browser_join(self, page: Page) -> bool:
         """Click Zoom's browser-join fallback on launch pages."""
         # Look for "Join from Your Browser" link/button
         # Zoom often shows this as a fallback option
-        browser_join_selectors = [
-            'button:has-text("Join from browser")',
-            'button:has-text("Join from Browser")',
-            '[role="button"]:has-text("Join from browser")',
-            'a:has-text("Join from Your Browser")',
-            'a:has-text("從您的瀏覽器加入")',
-            'a:has-text("join from your browser")',
-            '[data-testid="join-from-browser-link"]',
-            'a.joinWindowBtn:has-text("browser")',
-            'button:has-text("瀏覽器")',
-            # Fallback: look for any link mentioning browser
-            'a[href*="wc/join"]',
-        ]
+        if await self._click_first(page, self.BROWSER_JOIN_SELECTORS, "Join from Browser"):
+            await self.wait_for_page_idle(
+                page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom browser join transition"
+            )
+            return True
 
-        for selector in browser_join_selectors:
+        match = await self.wait_for_any_selector(
+            self._targets(page),
+            self.BROWSER_JOIN_SELECTORS,
+            timeout_ms=2000,
+            reason="Zoom Join from Browser button",
+        )
+        if match:
+            locator = match.target.locator(match.selector)
             try:
-                btn = page.locator(selector)
-                if await btn.count() > 0:
-                    try:
-                        await btn.first.click(timeout=3000)
-                    except Exception:
-                        await btn.first.click(timeout=3000, force=True)
-                    logger.info(f"Clicked 'Join from Browser' using: {selector}")
-                    await self.wait_for_page_idle(
-                        page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom browser join transition"
-                    )
-                    return True
+                await locator.first.click(timeout=3000)
             except Exception:
-                continue
+                await locator.first.click(timeout=3000, force=True)
+            logger.info(f"Clicked 'Join from Browser' using: {match.selector}")
+            await self.wait_for_page_idle(
+                page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom browser join transition"
+            )
+            return True
 
-        logger.info("No 'Join from Browser' button found, assuming already on web client")
+        logger.info("No 'Join from Browser' button found")
         return False
 
     async def _has_any_selector(self, page: Page, selectors: list[str]) -> bool:
@@ -220,8 +292,13 @@ class ZoomProvider(BaseProvider):
         for target in self._targets(page):
             for selector in selectors:
                 try:
-                    if await target.locator(selector).count() > 0:
-                        return True
+                    locator = target.locator(selector)
+                    if await locator.count() <= 0:
+                        continue
+                    first_locator = self._first_locator(locator)
+                    if hasattr(first_locator, "is_visible") and not await first_locator.is_visible():
+                        continue
+                    return True
                 except Exception:
                     continue
         return False
@@ -281,6 +358,28 @@ class ZoomProvider(BaseProvider):
             return False
         return False
 
+    async def _navigate_to_web_client_if_possible(self, page: Page) -> bool:
+        """Navigate launch URLs to the Zoom web client path when a direct candidate exists."""
+        if "/wc/join/" in page.url:
+            return False
+
+        web_client_url = self.build_join_url(page.url)
+        if web_client_url == page.url or not hasattr(page, "goto"):
+            return False
+
+        logger.info(f"Navigating directly to Zoom web client: {self._sanitize_url_for_evidence(web_client_url)}")
+        await page.goto(web_client_url, wait_until="domcontentloaded")
+        await self.wait_for_page_idle(page, timeout_ms=5000, fallback_sec=0.5, reason="Zoom web client")
+        return True
+
+    def _password_for_page(self, page: Page, password: str | None) -> str | None:
+        """Return explicit password or a passcode embedded in the Zoom URL."""
+        if password:
+            return password
+        parsed = urlparse(page.url)
+        values = parse_qs(parsed.query).get("pwd", [])
+        return values[0] if values else None
+
     async def _wait_until_hidden(self, page: Page, selectors: list[str]) -> None:
         """Best-effort wait for blocking overlays to disappear."""
         await self.wait_until_selectors_hidden(
@@ -326,29 +425,20 @@ class ZoomProvider(BaseProvider):
             page: Playwright page instance
         """
         logger.info("Clicking Zoom join button")
-
-        join_selectors = [
-            "#joinBtn",
-            '[data-testid="join-btn"]',
-            "button.join-btn",
-            "button.preview-join-button",
-            ".preview-join-button",
-            'button:has-text("Join Meeting")',
-            'button:has-text("加入會議")',
-            'button[type="submit"]',
-        ]
-        if "/wc/" in page.url:
-            join_selectors.extend(
-                [
-                    'button:has-text("Join")',
-                    'button:has-text("加入")',
-                ]
-            )
-
-        if await self._click_first(page, join_selectors, "join button"):
-            return
-
-        logger.warning("Could not find join button")
+        state = await self._drive_join_flow(
+            page,
+            display_name=getattr(self, "_last_display_name", None),
+            password=getattr(self, "_last_password", None),
+            click_final_join=True,
+            max_steps=8,
+        )
+        if state.stage not in {
+            ZoomJoinStage.IN_MEETING,
+            ZoomJoinStage.LOBBY,
+            ZoomJoinStage.WEB_CLIENT_LOADING,
+            ZoomJoinStage.JOIN_READY,
+        }:
+            logger.warning(f"Could not complete Zoom join click flow; final stage={state.stage.value}")
 
     async def apply_password(self, page: Page, password: str) -> bool:
         """Apply password when prompted.
@@ -405,132 +495,331 @@ class ZoomProvider(BaseProvider):
 
     async def probe_state(self, page: Page) -> MeetingStateSnapshot:
         """Probe the current Zoom meeting state."""
-        lobby_selectors = [
-            'text="Please wait"',
-            'text="等待"',
-            'text="Waiting Room"',
-            'text="等候室"',
-            'text="host will let you in"',
-            'text="主持人將會讓您加入"',
-            '[data-testid="waiting-room"]',
-        ]
-        in_meeting_selectors = [
-            "#wc-footer",
-            '[data-testid="meeting-controls"]',
-            "#wc-container-left",
-            ".meeting-app",
-            '[data-testid="participants-btn"]',
-        ]
-        ended_selectors = [
-            'text="Meeting has ended"',
-            'text="會議已結束"',
-            'text="The host has ended this meeting"',
-            'text="主持人已結束此會議"',
-            'text="You have been removed"',
-            'text="您已被移除"',
-            '[data-testid="meeting-ended"]',
-        ]
-        error_selectors = [
-            ('text="Invalid meeting ID"', "MEETING_NOT_FOUND", "無效的會議 ID"),
-            ('text="無效的會議 ID"', "MEETING_NOT_FOUND", "無效的會議 ID"),
-            ('text="This meeting has been locked"', "MEETING_LOCKED", "此會議已鎖定"),
-            ('text="此會議已鎖定"', "MEETING_LOCKED", "此會議已鎖定"),
-            ('text="Meeting not started"', "MEETING_NOT_STARTED", "會議尚未開始"),
-            ('text="會議尚未開始"', "MEETING_NOT_STARTED", "會議尚未開始"),
-        ]
-        prejoin_selectors = [
-            "#input-for-name",
-            "#inputname",
-            'input[name="inputName"]',
-            "#joinBtn",
-            '[data-testid="join-btn"]',
-            "button.preview-join-button",
-            'text="Enter Meeting Info"',
-            'text="Your Name"',
-            'button:has-text("Join from browser")',
-            'button:has-text("Join from Zoom Workplace app")',
-        ]
-        password_selectors = [
-            "#inputpasscode",
-            'input[type="password"]',
-            'input[placeholder*="passcode" i]',
-        ]
+        return self._snapshot_from_zoom_state(page, await self._detect_zoom_state(page))
 
-        matched_in_meeting = []
-        for selector in in_meeting_selectors:
-            if await self._has_any_selector(page, [selector]):
-                matched_in_meeting.append(selector)
-        if matched_in_meeting:
-            return MeetingStateSnapshot(
-                state=MeetingState.IN_MEETING,
-                reason="Detected Zoom in-meeting UI",
-                evidence={"matched_selectors": matched_in_meeting, "url": page.url},
-            )
+    async def dismiss_transient_overlays(self, page: Page) -> bool:
+        """Dismiss Zoom in-meeting notices that can cover the captured content."""
+        has_target_notice = await self._has_any_selector(page, self.TRANSIENT_OVERLAY_TEXT_SELECTORS)
+        if not has_target_notice:
+            return False
 
-        matched_ended = []
-        for selector in ended_selectors:
-            if await self._has_any_selector(page, [selector]):
-                matched_ended.append(selector)
-        if matched_ended:
-            return MeetingStateSnapshot(
-                state=MeetingState.ENDED,
-                reason="Detected Zoom meeting ended UI",
-                evidence={"matched_selectors": matched_ended, "url": page.url},
+        if await self._dismiss_transient_overlay_via_dom(page):
+            await self.short_ui_settle(fallback_sec=0.2, reason="Zoom transient overlay dismissed")
+            return True
+
+        if await self._click_first(page, self.TRANSIENT_OVERLAY_CLOSE_SELECTORS, "transient overlay close button"):
+            await self.short_ui_settle(fallback_sec=0.2, reason="Zoom transient overlay dismissed")
+            return True
+
+        logger.info("Detected Zoom transient overlay but no close control was found")
+        return False
+
+    async def wait_until_joined(
+        self,
+        page: Page,
+        timeout_sec: int = 60,
+        password: str | None = None,
+        probe_callback=None,
+    ) -> JoinResult:
+        """Actively drive Zoom through launch/prejoin states until joined or terminal."""
+        logger.info(f"Waiting to join Zoom meeting (timeout={timeout_sec}s)")
+        deadline = monotonic() + timeout_sec
+        last_state: ZoomPageState | None = None
+        effective_password = password or getattr(self, "_last_password", None)
+        display_name = getattr(self, "_last_display_name", None)
+
+        while monotonic() < deadline:
+            state = await self._detect_zoom_state(page)
+            last_state = state
+            snapshot = self._snapshot_from_zoom_state(page, state)
+            if probe_callback:
+                probe_callback(snapshot)
+
+            if state.stage == ZoomJoinStage.IN_MEETING:
+                return JoinResult(success=True)
+            if state.stage == ZoomJoinStage.LOBBY:
+                return JoinResult(success=False, in_lobby=True)
+            if state.stage == ZoomJoinStage.ENDED:
+                return JoinResult(
+                    success=False,
+                    error_code=state.error_code or "MEETING_ENDED",
+                    error_message=state.error_message or "Meeting ended before recording could continue",
+                )
+            if state.stage == ZoomJoinStage.ERROR:
+                return JoinResult(
+                    success=False,
+                    error_code=state.error_code or "MEETING_ERROR",
+                    error_message=state.error_message or "Zoom reported a meeting error",
+                )
+
+            if await self._advance_zoom_state(
+                page,
+                state,
+                display_name=display_name,
+                password=effective_password,
+                click_final_join=True,
+            ):
+                continue
+
+            await self.short_ui_settle(fallback_sec=min(1, max(0.1, deadline - monotonic())), reason="Zoom join poll")
+
+        evidence = self._snapshot_from_zoom_state(page, last_state).evidence if last_state else {}
+        return JoinResult(
+            success=False,
+            error_code="JOIN_TIMEOUT",
+            error_message=f"Timeout after {timeout_sec} seconds; last Zoom stage={evidence.get('zoom_stage')}",
+        )
+
+    async def _detect_zoom_state(self, page: Page) -> ZoomPageState:
+        """Classify the current Zoom page into the next actionable stage."""
+        matched = await self._matched_selectors(page, self.IN_MEETING_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.IN_MEETING, matched)
+
+        matched = await self._matched_selectors(page, self.ENDED_SELECTORS)
+        if matched:
+            return ZoomPageState(
+                ZoomJoinStage.ENDED,
+                matched,
                 error_code="MEETING_ENDED",
                 error_message="Meeting ended before recording could continue",
             )
 
-        for selector, error_code, error_message in error_selectors:
+        for selector, error_code, error_message in self.ERROR_SELECTORS:
             if await self._has_any_selector(page, [selector]):
-                return MeetingStateSnapshot(
-                    state=MeetingState.ERROR,
-                    reason=f"Detected Zoom error selector: {selector}",
-                    evidence={"matched_selectors": [selector], "url": page.url},
-                    error_code=error_code,
-                    error_message=error_message,
+                return ZoomPageState(
+                    ZoomJoinStage.ERROR, [selector], error_code=error_code, error_message=error_message
                 )
 
-        matched_lobby = []
-        for selector in lobby_selectors:
-            if await self._has_any_selector(page, [selector]):
-                matched_lobby.append(selector)
-        if matched_lobby:
-            return MeetingStateSnapshot(
-                state=MeetingState.LOBBY,
-                reason="Detected Zoom waiting room UI",
-                evidence={"matched_selectors": matched_lobby, "url": page.url},
-            )
+        matched = await self._matched_selectors(page, self.LOBBY_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.LOBBY, matched)
 
-        matched_password = []
-        for selector in password_selectors:
-            if await self._has_any_selector(page, [selector]):
-                matched_password.append(selector)
-        if matched_password:
-            return MeetingStateSnapshot(
-                state=MeetingState.ERROR,
-                reason="Zoom password prompt detected",
-                evidence={"matched_selectors": matched_password, "password_prompt": True, "url": page.url},
-                error_code="PASSWORD_REQUIRED",
-                error_message="需要密碼",
-            )
+        matched = await self._matched_selectors(page, self.COOKIE_BLOCKING_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.COOKIE_BLOCKED, matched)
 
-        matched_prejoin = []
-        for selector in prejoin_selectors:
-            if await self._has_any_selector(page, [selector]):
-                matched_prejoin.append(selector)
-        if matched_prejoin:
-            return MeetingStateSnapshot(
-                state=MeetingState.PREJOIN,
-                reason="Detected Zoom prejoin UI",
-                evidence={"matched_selectors": matched_prejoin, "url": page.url},
+        matched = await self._matched_selectors(page, self.PASSWORD_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.PASSWORD_FORM, matched)
+
+        matched = await self._matched_selectors(page, self.NAME_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.NAME_FORM, matched)
+
+        matched = await self._matched_selectors(page, self.BROWSER_JOIN_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.BROWSER_JOIN_AVAILABLE, matched)
+
+        matched = await self._matched_selectors(page, self.JOIN_READY_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.JOIN_READY, matched)
+
+        matched = await self._matched_selectors(page, self.APP_LAUNCH_SELECTORS)
+        if matched:
+            return ZoomPageState(ZoomJoinStage.APP_LAUNCH_PAGE, matched)
+
+        return ZoomPageState(ZoomJoinStage.WEB_CLIENT_LOADING, [], confidence=0.5)
+
+    async def _dismiss_transient_overlay_via_dom(self, page: Page) -> bool:
+        """Click a close control inside the notice that contains the target text."""
+        evaluate = getattr(page, "evaluate", None)
+        if not evaluate:
+            return False
+
+        script = """
+        (texts) => {
+            const needles = texts.map((text) => text.toLowerCase());
+            const isVisible = (element) => {
+                if (!element || !(element instanceof HTMLElement)) return false;
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.visibility !== "hidden"
+                    && style.display !== "none"
+                    && rect.width > 0
+                    && rect.height > 0;
+            };
+            const matchesClose = (element) => {
+                const label = (element.getAttribute("aria-label") || "").toLowerCase();
+                const title = (element.getAttribute("title") || "").toLowerCase();
+                const className = String(element.className || "").toLowerCase();
+                const text = (element.textContent || "").trim().toLowerCase();
+                return label.includes("close")
+                    || label.includes("關閉")
+                    || label.includes("关闭")
+                    || title.includes("close")
+                    || className.includes("close")
+                    || text === "×"
+                    || text === "x";
+            };
+            const containers = Array.from(document.querySelectorAll(
+                '[role="alert"], [class*="toast"], [class*="notification"], [class*="notice"], [class*="tip"], div'
+            ));
+            for (const container of containers) {
+                if (!isVisible(container)) continue;
+                const text = (container.innerText || container.textContent || "").toLowerCase();
+                if (!needles.some((needle) => text.includes(needle))) continue;
+                const controls = Array.from(container.querySelectorAll('button, [role="button"], [aria-label], [title]'));
+                const close = controls.find((control) => isVisible(control) && matchesClose(control));
+                if (close) {
+                    close.click();
+                    return true;
+                }
+            }
+            return false;
+        }
+        """
+        try:
+            return bool(
+                await evaluate(script, ["better meeting experience", "hardware acceleration", "硬體加速", "硬件加速"])
             )
+        except Exception as e:
+            logger.debug(f"Could not dismiss Zoom transient overlay via DOM: {e}")
+            return False
+
+    async def _matched_selectors(self, page: Page, selectors: list[str]) -> list[str]:
+        """Return selectors present on the page or child frames."""
+        matched = []
+        for selector in selectors:
+            if await self._has_any_selector(page, [selector]):
+                matched.append(selector)
+        return matched
+
+    async def _drive_join_flow(
+        self,
+        page: Page,
+        *,
+        display_name: str | None,
+        password: str | None,
+        click_final_join: bool,
+        max_steps: int,
+    ) -> ZoomPageState:
+        """Bounded state/action loop for Zoom launch and prejoin pages."""
+        state = await self._detect_zoom_state(page)
+        for _step in range(max_steps):
+            state = await self._detect_zoom_state(page)
+            if state.stage in {
+                ZoomJoinStage.IN_MEETING,
+                ZoomJoinStage.LOBBY,
+                ZoomJoinStage.ENDED,
+                ZoomJoinStage.ERROR,
+            }:
+                return state
+            if state.stage == ZoomJoinStage.JOIN_READY and not click_final_join:
+                return state
+            advanced = await self._advance_zoom_state(
+                page,
+                state,
+                display_name=display_name,
+                password=password,
+                click_final_join=click_final_join,
+            )
+            if not advanced:
+                return state
+            if state.stage == ZoomJoinStage.NAME_FORM and not click_final_join:
+                return await self._detect_zoom_state(page)
+            await self.short_ui_settle(fallback_sec=0.2, reason=f"Zoom state {state.stage.value}")
+        return await self._detect_zoom_state(page)
+
+    async def _advance_zoom_state(
+        self,
+        page: Page,
+        state: ZoomPageState,
+        *,
+        display_name: str | None,
+        password: str | None,
+        click_final_join: bool,
+    ) -> bool:
+        """Perform the next action for an actionable Zoom stage."""
+        if state.stage == ZoomJoinStage.COOKIE_BLOCKED:
+            await self._accept_cookie_consent(page)
+            return True
+
+        if state.stage in {ZoomJoinStage.BROWSER_JOIN_AVAILABLE, ZoomJoinStage.APP_LAUNCH_PAGE}:
+            clicked = await self._click_browser_join(page)
+            return clicked or await self._navigate_to_web_client_if_possible(page)
+
+        if state.stage == ZoomJoinStage.NAME_FORM and display_name:
+            if await self._fill_display_name(page, self.NAME_SELECTORS, display_name):
+                await self._disable_media(page)
+                if click_final_join:
+                    await self._click_first(
+                        page,
+                        self.JOIN_READY_SELECTORS + ['button:has-text("Join")'],
+                        "join button",
+                    )
+                return True
+            return False
+
+        if state.stage == ZoomJoinStage.PASSWORD_FORM:
+            effective_password = self._password_for_page(page, password)
+            if effective_password:
+                return await self.apply_password(page, effective_password)
+            return False
+
+        if state.stage == ZoomJoinStage.JOIN_READY and click_final_join:
+            return await self._click_first(page, self.JOIN_READY_SELECTORS + ['button:has-text("Join")'], "join button")
+
+        if state.stage == ZoomJoinStage.WEB_CLIENT_LOADING:
+            return await self._navigate_to_web_client_if_possible(page)
+
+        return False
+
+    def _snapshot_from_zoom_state(self, page: Page, state: ZoomPageState | None) -> MeetingStateSnapshot:
+        """Convert a Zoom stage to the normalized provider state contract."""
+        if state is None:
+            state = ZoomPageState(ZoomJoinStage.WEB_CLIENT_LOADING, [], confidence=0.5)
+
+        state_map = {
+            ZoomJoinStage.IN_MEETING: MeetingState.IN_MEETING,
+            ZoomJoinStage.LOBBY: MeetingState.LOBBY,
+            ZoomJoinStage.ENDED: MeetingState.ENDED,
+            ZoomJoinStage.ERROR: MeetingState.ERROR,
+            ZoomJoinStage.PASSWORD_FORM: MeetingState.ERROR,
+            ZoomJoinStage.WEB_CLIENT_LOADING: MeetingState.JOINING,
+        }
+        meeting_state = state_map.get(state.stage, MeetingState.PREJOIN)
+        evidence = {
+            "matched_selectors": state.matched_selectors,
+            "zoom_stage": state.stage.value,
+            "url": self._sanitize_url_for_evidence(page.url),
+            "url_kind": self._url_kind(page.url),
+        }
+        if state.stage == ZoomJoinStage.PASSWORD_FORM:
+            evidence["password_prompt"] = True
+
+        error_code = state.error_code
+        error_message = state.error_message
+        if state.stage == ZoomJoinStage.PASSWORD_FORM:
+            error_code = "PASSWORD_REQUIRED"
+            error_message = "需要密碼"
 
         return MeetingStateSnapshot(
-            state=MeetingState.JOINING,
-            reason="Waiting for Zoom to transition to the next state",
-            confidence=0.5,
-            evidence={"url": page.url},
+            state=meeting_state,
+            reason=f"Detected Zoom stage: {state.stage.value}",
+            confidence=state.confidence,
+            evidence=evidence,
+            error_code=error_code,
+            error_message=error_message,
         )
+
+    def _sanitize_url_for_evidence(self, url: str) -> str:
+        """Return a Zoom URL without query/fragment secrets for diagnostics."""
+        parsed = urlparse(url)
+        return parsed._replace(query="", fragment="").geturl()
+
+    def _url_kind(self, url: str) -> str:
+        """Classify Zoom URL shape without exposing query parameters."""
+        path_parts = [part for part in urlparse(url).path.split("/") if part]
+        if len(path_parts) >= 3 and path_parts[0] == "wc" and path_parts[1] == "join":
+            return "web_client"
+        if len(path_parts) >= 3 and path_parts[0] == "wc" and path_parts[2] == "join":
+            return "web_client"
+        if len(path_parts) >= 2 and path_parts[0] == "w":
+            return "launch_w"
+        if len(path_parts) >= 2 and path_parts[0] == "j":
+            return "launch_j"
+        return "unknown"
 
     async def set_layout(self, page: Page, preset: str = "speaker") -> bool:
         """Attempt to set Zoom video layout.

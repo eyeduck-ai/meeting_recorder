@@ -159,6 +159,8 @@ uv run uvicorn api.main:app --reload
 - UI 子 router 不得 import `api.routes.ui`；需要 template rendering 或 UI settings 時依賴 `ui_common`，需要 job log helper 時依賴 `ui_job_diagnostics`。
 - `telegram_bot/conversations.py` 是相容 re-export 聚合器；create schedule、edit schedule、create meeting conversation 實作分別位於 `conversation_create_schedule.py`、`conversation_edit_schedule.py`、`conversation_create_meeting.py`，共用 cancel/time/duration helper 位於 `conversation_common.py`。
 - `providers/base.py` 是 provider bounded wait helper 的 owner；Jitsi/Webex/Zoom join/prejoin flow 不應新增裸 `asyncio.sleep()`，必要 debounce 要透過共用 helper 或註解說明。
+- `providers/zoom.py` 使用 Zoom 專用 page-stage/action loop 推進 launch page、cookie banner、Join from browser、name/password form、waiting room 與 in-meeting 狀態；不要再把 Zoom join 寫成固定頁面順序。
+- Provider 可實作 `dismiss_transient_overlays()` 清理進入會議後遮擋錄影的暫時 UI；`RecordingSession` 只呼叫 provider hook，不應知道各 provider DOM selector。
 - `scheduling/job_runner.py` 應專注在 queue orchestration、schedule lifecycle 與 upload 委派。Schedule queue、pending、duplicate 與 queue position 狀態已移到 `scheduling/schedule_queue.py`；recording retry、attempt DB 更新、status callback 與 stage notification 已移到 `scheduling/recording_executor.py`；YouTube upload 前的 remux/transcode、upload progress 與 YouTube metadata 已移到 `scheduling/upload_runner.py`。
 - `recording/monitor.py` 是錄製監控 loop owner，集中處理 duration、finish/cancel request、FFmpeg stall 與 auto-detect end 判斷；`RecordingWorker` 只負責 orchestration 並透過 wrapper 委派。
 - `services/recording_manager.py` 的 list、cleanup 與 disk usage 應共用單次 filesystem scan 產生的 entry/stat metadata；新增錄影檔功能時不要在同一 request 內重複 `rglob()` 或對同一影片重複 `stat()`。
@@ -221,6 +223,8 @@ uv run uvicorn api.main:app --reload
 - 目前正式支援：Jitsi、Webex、Zoom。
 - Zoom 建議使用完整邀請連結做 `meeting_code`，包含 URL 內的 `pwd` 參數時可由 provider 保留並帶入加入流程
 - provider join flow 應優先使用 Playwright selector/state/function bounded wait；需要固定 sleep 時要是短 fallback 或明確 debounce，避免在熱路徑累積無條件等待。
+- Zoom provider state evidence 只能記錄去除 query/fragment 的 URL 與 `url_kind`；不要把 `tk`、`pwd`、`uuid` 等 invite token 寫入 provider state log。
+- Zoom 進入會議後可能出現 hardware acceleration 等提示遮住共享畫面；錄製開始前應由 provider hook best-effort 關閉這類 transient overlay，而不是改 Docker Chromium GPU 策略。
 - 若未來新增或移除 provider，應先更新 `providers/__init__.py` 的 provider class registration 與 metadata，再同步 README、測試與 agent 文件。
 
 ## API 與功能面概觀

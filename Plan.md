@@ -37,6 +37,8 @@
 - 已將 recording monitor loop 抽到 `recording/monitor.py`，集中 duration、finish/cancel、FFmpeg stall 與 auto-detect 判斷。
 - 已將 `api/routes/ui.py` 的 auth/dashboard/meeting/schedule/settings route 群組拆到獨立子 router；`api.routes.ui.router` 保留為聚合入口。
 - 已將 Telegram create schedule、edit schedule、create meeting conversation 拆到獨立模組；`telegram_bot.conversations` 保留為相容 re-export 聚合器。
+- 已將 Zoom join/prejoin 改為 provider 專用狀態推進，處理 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支，避免假設固定頁面順序。
+- 已新增 provider transient overlay dismissal，讓 Zoom 進入會議後能在錄製前清除 hardware acceleration 等遮擋提示。
 
 ## P3：運作效率
 

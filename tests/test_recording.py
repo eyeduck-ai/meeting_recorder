@@ -238,6 +238,26 @@ class TestRecordingSession:
     """Tests for recording session runtime configuration."""
 
     @pytest.mark.asyncio
+    async def test_dismiss_provider_overlays_delegates_to_provider(self):
+        """RecordingSession should keep provider-specific overlay logic inside the provider."""
+        page = object()
+        provider = Mock()
+        provider.dismiss_transient_overlays = AsyncMock(return_value=True)
+        provider.probe_state = AsyncMock(return_value=Mock())
+
+        session = RecordingSession.__new__(RecordingSession)
+        session.page = page
+        session.provider = provider
+        session.record_provider_state = Mock()
+
+        dismissed = await session.dismiss_provider_overlays("dismiss_overlays_pre_capture")
+
+        assert dismissed is True
+        provider.dismiss_transient_overlays.assert_awaited_once_with(page)
+        provider.probe_state.assert_awaited_once_with(page)
+        session.record_provider_state.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_uses_job_resolution_for_runtime_and_capture(self, monkeypatch, tmp_path):
         """Virtual display, browser viewport, and FFmpeg should use job resolution."""
         captured = {}

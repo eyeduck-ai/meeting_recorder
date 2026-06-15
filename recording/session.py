@@ -167,6 +167,19 @@ class RecordingSession:
             raise RuntimeError("Runtime not prepared")
         return await self.provider.set_layout(self.page, preset)
 
+    async def dismiss_provider_overlays(self, stage: str) -> bool:
+        """Ask the provider to hide transient UI that could cover the recording."""
+        if not self.page or not self.provider:
+            raise RuntimeError("Runtime not prepared")
+        try:
+            dismissed = await self.provider.dismiss_transient_overlays(self.page)
+            if dismissed:
+                await self.probe_provider_state(stage)
+            return dismissed
+        except Exception as e:
+            logger.warning(f"Failed to dismiss provider overlays during {stage}: {e}")
+            return False
+
     async def start_capture(self) -> None:
         """Start FFmpeg capture."""
         if not self.virtual_env:

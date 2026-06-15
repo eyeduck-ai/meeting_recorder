@@ -29,11 +29,26 @@ class _FixtureHTMLParser(HTMLParser):
 class FixtureLocator:
     """Minimal async locator used by provider tests."""
 
-    def __init__(self, count: int):
+    def __init__(self, count: int, *, page: FixturePage, selector: str):
         self._count = count
+        self._page = page
+        self._selector = selector
 
     async def count(self) -> int:
         return self._count
+
+    @property
+    def first(self):
+        return self
+
+    def nth(self, _index: int):
+        return self
+
+    async def is_visible(self) -> bool:
+        return self._count > 0
+
+    async def click(self, *_args, **_kwargs):
+        self._page.clicked_selectors.append(self._selector)
 
 
 class FixturePage:
@@ -47,13 +62,19 @@ class FixturePage:
         self._text = " ".join(parser.text_parts)
         self._title = title
         self.url = url
+        self.clicked_selectors: list[str] = []
 
     @classmethod
     def from_file(cls, path: Path, *, title: str = "", url: str = "https://example.test/fixture") -> FixturePage:
         return cls(path.read_text(encoding="utf-8"), title=title, url=url)
 
     def locator(self, selector: str) -> FixtureLocator:
-        return FixtureLocator(self._count_selector(selector.strip()))
+        normalized_selector = selector.strip()
+        return FixtureLocator(
+            self._count_selector(normalized_selector),
+            page=self,
+            selector=normalized_selector,
+        )
 
     async def title(self) -> str:
         return self._title
@@ -74,6 +95,13 @@ class FixturePage:
         if selector.startswith("."):
             class_name = selector[1:]
             return sum(1 for _tag, attrs in self._nodes if class_name in attrs.get("class", "").split())
+
+        has_text_match = re.match(r'^([a-zA-Z0-9_-]+):has-text\("([^"]+)"\)$', selector)
+        if has_text_match:
+            tag_name, needle = has_text_match.groups()
+            if needle.lower() not in self._text.lower():
+                return 0
+            return sum(1 for tag, _attrs in self._nodes if tag == tag_name.lower())
 
         return sum(1 for tag, attrs in self._nodes if self._matches_compound_selector(tag, attrs, selector))
 

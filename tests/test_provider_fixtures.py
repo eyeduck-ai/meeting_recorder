@@ -150,6 +150,22 @@ class TestZoomProviderFixtures:
         assert snapshot.state == MeetingState.PREJOIN
 
     @pytest.mark.asyncio
+    async def test_launch_browser_join_fixture(self):
+        provider = ZoomProvider()
+        page = load_fixture(
+            "zoom",
+            "launch_browser_join",
+            title="Zoom Workplace join page",
+            url="https://zoom.us/w/123?tk=redacted&pwd=redacted&uuid=redacted#success",
+        )
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.PREJOIN
+        assert snapshot.evidence["zoom_stage"] == "cookie_blocked"
+        assert snapshot.evidence["url"] == "https://zoom.us/w/123"
+
+    @pytest.mark.asyncio
     async def test_lobby_fixture(self):
         provider = ZoomProvider()
         page = load_fixture("zoom", "lobby", title="Zoom Meeting", url="https://zoom.us/wc/join/123")
@@ -166,6 +182,21 @@ class TestZoomProviderFixtures:
         snapshot = await provider.probe_state(page)
 
         assert snapshot.state == MeetingState.IN_MEETING
+
+    @pytest.mark.asyncio
+    async def test_in_meeting_hardware_warning_fixture_can_be_dismissed(self):
+        provider = ZoomProvider()
+        page = load_fixture(
+            "zoom",
+            "in_meeting_hardware_warning",
+            title="Zoom Meeting",
+            url="https://app.zoom.us/wc/123/join",
+        )
+
+        dismissed = await provider.dismiss_transient_overlays(page)
+
+        assert dismissed is True
+        assert 'button[aria-label*="close" i]' in page.clicked_selectors
 
     @pytest.mark.asyncio
     async def test_password_fixture(self):

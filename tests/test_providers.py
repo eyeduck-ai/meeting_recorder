@@ -9,7 +9,7 @@ import pytest
 from providers.base import BaseProvider, DiagnosticData, JoinResult, MeetingState, MeetingStateSnapshot
 from providers.jitsi import JitsiProvider
 from providers.webex import WebexProvider
-from providers.zoom import ZoomProvider
+from providers.zoom import ZoomJoinStage, ZoomProvider
 
 
 class TestJitsiProvider:
@@ -132,6 +132,17 @@ class TestZoomProvider:
         assert "fromPWA=1" in url
         assert "zc=0" in url
 
+    def test_build_join_url_webinar_launch_url(self):
+        """Zoom /w launch URLs should also be converted to the web client candidate."""
+        provider = ZoomProvider()
+        input_url = "https://company.zoom.us/w/123456789?tk=redacted&pwd=abc123&uuid=redacted"
+        url = provider.build_join_url(input_url)
+
+        assert "company.zoom.us/wc/join/123456789" in url
+        assert "pwd=abc123" in url
+        assert "fromPWA=1" in url
+        assert "zc=0" in url
+
     def test_build_join_url_meeting_number(self):
         """Numeric meeting ID should generate a web-client URL."""
         provider = ZoomProvider()
@@ -218,15 +229,19 @@ class TestDiagnosticData:
 class FakeLocator:
     """Minimal async locator stub for provider probe tests."""
 
-    def __init__(self, count: int = 0, visible: bool | None = None):
+    def __init__(self, count: int = 0, visible: bool | None = None, *, page=None, selector: str | None = None):
         self._count = count
         self._visible = count > 0 if visible is None else visible
+        self._page = page
+        self._selector = selector
         self.clicked = False
         self.filled_value = None
         self.pressed_key = None
         self.wait_for_calls = []
 
     async def count(self) -> int:
+        if self._page is not None and self._selector is not None:
+            return self._page._counts.get(self._selector, self._count)
         return self._count
 
     @property
@@ -238,19 +253,26 @@ class FakeLocator:
 
     async def wait_for(self, *, state: str = "visible", timeout: int = 3000):
         self.wait_for_calls.append({"state": state, "timeout": timeout})
-        if self._count <= 0:
+        count = await self.count()
+        if count <= 0:
             raise TimeoutError("selector not found")
-        if state == "visible" and not self._visible:
+        if state == "visible" and not await self.is_visible():
             raise TimeoutError("selector not visible")
 
     async def is_visible(self) -> bool:
+        if self._page is not None and self._selector is not None:
+            return self._page._counts.get(self._selector, self._count) > 0
         return self._visible
 
     async def click(self, *_args, **_kwargs):
         self.clicked = True
+        if self._page is not None and self._selector in self._page._click_handlers:
+            self._page._click_handlers[self._selector](self._page)
 
     async def fill(self, value: str, *_args, **_kwargs):
         self.filled_value = value
+        if self._page is not None and self._selector in self._page._fill_handlers:
+            self._page._fill_handlers[self._selector](self._page, value)
 
     async def press(self, key: str):
         self.pressed_key = key
@@ -263,20 +285,37 @@ class FakePage:
     """Minimal Playwright page stub for provider probe tests."""
 
     def __init__(
-        self, counts: dict[str, int] | None = None, *, url: str = "https://example.test/room", title: str = ""
+        self,
+        counts: dict[str, int] | None = None,
+        *,
+        url: str = "https://example.test/room",
+        title: str = "",
+        click_handlers: dict | None = None,
+        fill_handlers: dict | None = None,
     ):
         self._counts = counts or {}
         self._locators = {}
         self.url = url
         self._title = title
+        self._click_handlers = click_handlers or {}
+        self._fill_handlers = fill_handlers or {}
+        self.goto_calls = []
+        self.wait_for_load_state_calls = []
 
     def locator(self, selector: str) -> FakeLocator:
         if selector not in self._locators:
-            self._locators[selector] = FakeLocator(self._counts.get(selector, 0))
+            self._locators[selector] = FakeLocator(self._counts.get(selector, 0), page=self, selector=selector)
         return self._locators[selector]
 
     async def title(self) -> str:
         return self._title
+
+    async def wait_for_load_state(self, state: str, timeout: int = 3000):
+        self.wait_for_load_state_calls.append({"state": state, "timeout": timeout})
+
+    async def goto(self, url: str, wait_until: str = "domcontentloaded"):
+        self.goto_calls.append({"url": url, "wait_until": wait_until})
+        self.url = url
 
 
 class FakeFrame:
@@ -460,6 +499,92 @@ class TestProviderBoundedWaitRegressions:
         assert result is True
         assert page.locator("#input-for-name").filled_value == "Recorder"
 
+    @pytest.mark.asyncio
+    async def test_zoom_prejoin_accepts_cookie_then_clicks_browser_join(self):
+        provider = ZoomProvider()
+        browser_selector = 'button:has-text("Join from browser")'
+
+        def accept_cookie(page):
+            page._counts["#onetrust-accept-btn-handler"] = 0
+            page._counts["#onetrust-banner-sdk"] = 0
+
+        def browser_join(page):
+            page._counts[browser_selector] = 0
+            page._counts["#input-for-name"] = 1
+            page._counts["#joinBtn"] = 1
+            page.url = "https://zoom.us/wc/join/123?pwd=passcode"
+
+        page = FakePage(
+            {
+                "#onetrust-accept-btn-handler": 1,
+                "#onetrust-banner-sdk": 1,
+                browser_selector: 1,
+            },
+            url="https://zoom.us/w/123?tk=secret&pwd=passcode&uuid=secret#success",
+            click_handlers={
+                "#onetrust-accept-btn-handler": accept_cookie,
+                browser_selector: browser_join,
+            },
+        )
+
+        await provider.prejoin(page, "Recorder", password=None)
+
+        assert page.locator("#onetrust-accept-btn-handler").clicked is True
+        assert page.locator(browser_selector).clicked is True
+        assert page.locator("#input-for-name").filled_value == "Recorder"
+
+    @pytest.mark.asyncio
+    async def test_zoom_password_form_uses_url_pwd_when_request_password_omitted(self):
+        provider = ZoomProvider()
+        page = FakePage(
+            {
+                "#inputpasscode": 1,
+                'button:has-text("Join")': 1,
+            },
+            url="https://zoom.us/wc/join/123?pwd=url-passcode",
+        )
+
+        state = await provider._detect_zoom_state(page)
+        result = await provider._advance_zoom_state(
+            page,
+            state,
+            display_name="Recorder",
+            password=None,
+            click_final_join=True,
+        )
+
+        assert result is True
+        assert page.locator("#inputpasscode").filled_value == "url-passcode"
+        assert page.locator('button:has-text("Join")').clicked is True
+
+    @pytest.mark.asyncio
+    async def test_zoom_dismisses_hardware_acceleration_toast(self):
+        provider = ZoomProvider()
+        close_selector = 'button[aria-label*="close" i]'
+        page = FakePage(
+            {
+                ':text("hardware acceleration")': 1,
+                close_selector: 1,
+            },
+            url="https://app.zoom.us/wc/123/join",
+        )
+
+        dismissed = await provider.dismiss_transient_overlays(page)
+
+        assert dismissed is True
+        assert page.locator(close_selector).clicked is True
+
+    @pytest.mark.asyncio
+    async def test_zoom_overlay_dismissal_does_not_click_close_without_target_notice(self):
+        provider = ZoomProvider()
+        close_selector = 'button[aria-label*="close" i]'
+        page = FakePage({close_selector: 1}, url="https://app.zoom.us/wc/123/join")
+
+        dismissed = await provider.dismiss_transient_overlays(page)
+
+        assert dismissed is False
+        assert page.locator(close_selector).clicked is False
+
 
 class TestProviderProbeState:
     """Tests for provider-specific probe_state implementations."""
@@ -538,3 +663,34 @@ class TestProviderProbeState:
 
         assert snapshot.state == MeetingState.IN_MEETING
         assert ".meeting-app" in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_zoom_probe_state_treats_success_launch_url_as_browser_join_prejoin(self):
+        provider = ZoomProvider()
+        page = FakePage(
+            {'button:has-text("Join from browser")': 1},
+            url="https://zoom.us/w/123?tk=secret-token&pwd=secret-pass&uuid=secret-uuid#success",
+        )
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.PREJOIN
+        assert snapshot.evidence["zoom_stage"] == ZoomJoinStage.BROWSER_JOIN_AVAILABLE.value
+        assert snapshot.evidence["url"] == "https://zoom.us/w/123"
+        evidence_text = str(snapshot.evidence)
+        assert "tk=" not in evidence_text
+        assert "pwd=" not in evidence_text
+        assert "uuid=" not in evidence_text
+        assert "secret-token" not in evidence_text
+        assert "secret-pass" not in evidence_text
+
+    @pytest.mark.asyncio
+    async def test_zoom_probe_state_classifies_app_zoom_web_client_url(self):
+        provider = ZoomProvider()
+        page = FakePage({".meeting-app": 1}, url="https://app.zoom.us/wc/123/join?pwd=secret")
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.IN_MEETING
+        assert snapshot.evidence["url"] == "https://app.zoom.us/wc/123/join"
+        assert snapshot.evidence["url_kind"] == "web_client"

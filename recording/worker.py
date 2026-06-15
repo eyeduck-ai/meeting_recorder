@@ -253,6 +253,9 @@ class RecordingWorker:
                 session.end_stage("admit_or_fail")
 
             result.joined_at = utc_now()
+            session.begin_stage("dismiss_overlays_joined")
+            await session.dismiss_provider_overlays("dismiss_overlays_joined")
+            session.end_stage("dismiss_overlays_joined")
 
             if self._cancel_requested:
                 raise asyncio.CancelledError("Job cancelled")
@@ -260,6 +263,10 @@ class RecordingWorker:
             session.begin_stage("set_layout")
             await session.set_layout("speaker")
             session.end_stage("set_layout")
+
+            session.begin_stage("dismiss_overlays_pre_capture")
+            await session.dismiss_provider_overlays("dismiss_overlays_pre_capture")
+            session.end_stage("dismiss_overlays_pre_capture")
 
             if job.duration_mode == "fixed" and job.deadline_at:
                 deadline_at = ensure_utc(job.deadline_at)
@@ -279,6 +286,10 @@ class RecordingWorker:
             session.begin_stage("start_capture")
             await session.start_capture()
             session.end_stage("start_capture")
+
+            session.begin_stage("dismiss_overlays_monitor")
+            await session.dismiss_provider_overlays("dismiss_overlays_monitor")
+            session.end_stage("dismiss_overlays_monitor")
 
             if job.duration_mode == "auto":
                 detection_config = self._load_detection_config()

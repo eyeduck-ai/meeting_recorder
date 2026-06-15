@@ -28,3 +28,5 @@
 - [x] P3：持續拆分 `api/routes/ui.py` 的 auth/dashboard/meeting/schedule/settings route 群組。
 - [x] P3：拆分 `telegram_bot/conversations.py` 的 create schedule、edit schedule、create meeting conversation 群組。
 - [x] P3：持續將 Jitsi/Webex/Zoom 剩餘固定 sleep 改成 selector/state/function bounded wait，僅保留必要 debounce/fallback。
+- [x] P3：將 Zoom join/prejoin 改成狀態推進流程，覆蓋 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支。
+- [x] P3：新增 provider transient overlay dismissal，讓 Zoom 錄製前清掉 hardware acceleration 等遮擋提示。

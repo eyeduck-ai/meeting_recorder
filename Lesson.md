@@ -30,3 +30,5 @@
 - 拆大型 conversation module 時先保留舊 import path 作 re-export 聚合器；測試要改 patch 真正 owner module，避免相容層遮蔽 helper 依賴。
 - 用 `asyncio.as_completed()` 做 bounded wait 時，成功返回前也要 cancel 並 gather 其他 task，否則已完成的失敗 task 可能在測試結束時印出 `Task exception was never retrieved`。
 - 測試通過但留下 deprecation warning 時不要視為完全乾淨；框架升級相關 warning 應盡早改成新 API，避免之後版本升級變成硬錯誤。
+- Zoom 這類第三方 join page 不要假設固定頁面順序；應先判斷目前頁面狀態，再依狀態推進 cookie、browser join、name/password、join、lobby 或 in-meeting，並避免在 provider state evidence 中保存 invite token。
+- Zoom 進入會議後仍可能出現遮擋共享畫面的 transient toast；錄影開始前要讓 provider best-effort 清理這類 UI，不要用改 Chromium GPU 參數取代 DOM 層 dismissal。

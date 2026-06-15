@@ -134,6 +134,10 @@ class BaseProvider(ABC):
         """Apply password when prompted after joining."""
         return False
 
+    async def dismiss_transient_overlays(self, page: Page) -> bool:
+        """Dismiss provider-specific transient overlays that may cover recordings."""
+        return False
+
     async def wait_for_page_idle(
         self,
         page: Page,
