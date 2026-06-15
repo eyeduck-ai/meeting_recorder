@@ -24,6 +24,8 @@ class UploadRequest:
     title: str
     privacy: str
     meeting_name: str | None = None
+    raw_video_path: Path | None = None
+    cleanup_video_path_after_success: Path | None = None
 
 
 class YouTubeUploadRunner:
@@ -57,12 +59,19 @@ class YouTubeUploadRunner:
                 return
 
             async with self._upload_lock:
-                await self.upload_to_youtube(
+                upload_succeeded = await self.upload_to_youtube(
                     job_id=upload_request.job_id,
                     video_path=upload_path,
                     title=upload_request.title,
                     privacy=upload_request.privacy,
                 )
+                if upload_succeeded and upload_request.cleanup_video_path_after_success:
+                    await self._cleanup_uploaded_trimmed_output(
+                        job_id=upload_request.job_id,
+                        cleanup_path=upload_request.cleanup_video_path_after_success,
+                        prepared_upload_path=upload_path,
+                        raw_video_path=upload_request.raw_video_path,
+                    )
         except Exception as e:
             logger.error(f"YouTube upload task failed for job {upload_request.job_id}: {e}")
         finally:
@@ -75,7 +84,7 @@ class YouTubeUploadRunner:
         video_path: Path,
         title: str,
         privacy: str = "unlisted",
-    ) -> None:
+    ) -> bool:
         """Upload recording to YouTube."""
         logger.info(f"Starting YouTube upload for job {job_id}")
         try:
@@ -96,10 +105,10 @@ class YouTubeUploadRunner:
         uploader = get_youtube_uploader()
         if not uploader.is_configured:
             logger.warning("YouTube upload skipped - not configured")
-            return
+            return False
         if not uploader.is_authorized:
             logger.warning("YouTube upload skipped - not authorized")
-            return
+            return False
 
         try:
             metadata = VideoMetadata(
@@ -135,10 +144,40 @@ class YouTubeUploadRunner:
                     db_job = repo.get_by_job_id(job_id)
                     if db_job and result.video_url:
                         await notify_youtube_upload_completed(db_job, result.video_url)
+                    return True
                 else:
                     logger.error(f"YouTube upload failed: {result.error_message}")
                     session.commit()
+                    return False
             finally:
                 session.close()
         except Exception as e:
             logger.error(f"YouTube upload error: {e}")
+            return False
+
+    async def _cleanup_uploaded_trimmed_output(
+        self,
+        *,
+        job_id: str,
+        cleanup_path: Path,
+        prepared_upload_path: Path,
+        raw_video_path: Path | None,
+    ) -> None:
+        """Delete local trimmed upload artifacts after a successful upload."""
+        for candidate in {cleanup_path, prepared_upload_path}:
+            try:
+                if candidate.exists() and (raw_video_path is None or candidate != raw_video_path):
+                    candidate.unlink()
+                    logger.info("Deleted uploaded trimmed artifact: %s", candidate)
+            except OSError as exc:
+                logger.warning("Failed to delete uploaded trimmed artifact %s: %s", candidate, exc)
+
+        if raw_video_path and raw_video_path.exists():
+            SessionLocal = get_session_local()
+            session = SessionLocal()
+            try:
+                repo = JobRepository(session)
+                repo.update_status(job_id, JobStatus.SUCCEEDED.value, output_path=str(raw_video_path))
+                session.commit()
+            finally:
+                session.close()

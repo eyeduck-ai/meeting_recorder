@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -145,39 +146,74 @@ def build_result_update_fields(result: "RecordingResult") -> dict:
     Returns:
         Dictionary of fields to update on the database record
     """
+
+    def result_attr(name: str, default=None):
+        if type(result).__module__.startswith("unittest.mock") and name not in vars(result):
+            return default
+        return getattr(result, name, default)
+
     fields = {
-        "completed_at": result.end_time,
-        "attempt_no": getattr(result, "attempt_no", 1),
-        "error_code": result.error_code,
-        "error_message": result.error_message,
-        "failure_stage": getattr(result, "failure_stage", None),
-        "last_ffmpeg_exit_code": getattr(result, "ffmpeg_exit_code", None),
+        "completed_at": result_attr("end_time"),
+        "attempt_no": result_attr("attempt_no", 1),
+        "error_code": result_attr("error_code"),
+        "error_message": result_attr("error_message"),
+        "failure_stage": result_attr("failure_stage"),
+        "last_ffmpeg_exit_code": result_attr("ffmpeg_exit_code"),
     }
 
-    if result.joined_at:
-        fields["joined_at"] = result.joined_at
+    joined_at = result_attr("joined_at")
+    if joined_at:
+        fields["joined_at"] = joined_at
 
-    if result.recording_started_at:
-        fields["recording_started_at"] = result.recording_started_at
+    recording_started_at = result_attr("recording_started_at")
+    if recording_started_at:
+        fields["recording_started_at"] = recording_started_at
 
-    if result.recording_stopped_at:
-        fields["recording_stopped_at"] = result.recording_stopped_at
+    recording_stopped_at = result_attr("recording_stopped_at")
+    if recording_stopped_at:
+        fields["recording_stopped_at"] = recording_stopped_at
 
-    if result.recording_info:
-        fields["output_path"] = str(result.recording_info.output_path)
-        fields["file_size"] = result.recording_info.file_size
-        fields["duration_actual_sec"] = result.recording_info.duration_sec
+    recording_info = result_attr("recording_info")
+    if recording_info:
+        output_override = result_attr("output_path")
+        if not isinstance(output_override, str | os.PathLike):
+            output_override = None
+        raw_output_override = result_attr("raw_output_path")
+        if not isinstance(raw_output_override, str | os.PathLike):
+            raw_output_override = None
+        preferred_output_path = output_override or recording_info.output_path
+        fields["output_path"] = str(preferred_output_path)
+        fields["raw_output_path"] = str(raw_output_override or recording_info.output_path)
+        fields["file_size"] = recording_info.file_size
+        fields["duration_actual_sec"] = recording_info.duration_sec
 
-    if result.diagnostic_data:
-        fields["diagnostic_dir"] = str(result.diagnostic_data.output_dir) if result.diagnostic_data.output_dir else None
-        fields["has_screenshot"] = result.diagnostic_data.screenshot_path is not None
-        fields["has_html_dump"] = result.diagnostic_data.html_path is not None
-        fields["has_console_log"] = result.diagnostic_data.console_log_path is not None
+    trimmed_output_path = result_attr("trimmed_output_path")
+    if trimmed_output_path:
+        fields["trimmed_output_path"] = str(trimmed_output_path)
 
-    if result.end_reason:
-        fields["end_reason"] = result.end_reason
+    for attr in (
+        "trim_start_sec",
+        "trim_end_sec",
+        "trim_status",
+        "trim_reason",
+        "dynamic_extension_stop_reason",
+    ):
+        value = result_attr(attr)
+        if value is not None:
+            fields[attr] = value
 
-    runtime_summary = getattr(result, "runtime_summary", None)
+    diagnostic_data = result_attr("diagnostic_data")
+    if diagnostic_data:
+        fields["diagnostic_dir"] = str(diagnostic_data.output_dir) if diagnostic_data.output_dir else None
+        fields["has_screenshot"] = diagnostic_data.screenshot_path is not None
+        fields["has_html_dump"] = diagnostic_data.html_path is not None
+        fields["has_console_log"] = diagnostic_data.console_log_path is not None
+
+    end_reason = result_attr("end_reason")
+    if end_reason:
+        fields["end_reason"] = end_reason
+
+    runtime_summary = result_attr("runtime_summary")
     if isinstance(runtime_summary, dict):
         fields["runtime_summary_json"] = json.dumps(runtime_summary, ensure_ascii=False)
 

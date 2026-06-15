@@ -8,8 +8,9 @@
 
 - 會議平台：Jitsi Meet、Cisco Webex、Zoom
 - 排程模式：單次排程、CRON 週期排程、手動立即觸發
-- 錄製控制：大廳等待、提前加入、自動偵測會議結束、手動停止/提前完成
+- 錄製控制：大廳等待、提前加入、自動偵測會議結束、動態延長結束時間、手動停止/提前完成
 - 錄製畫面：預設以 Chromium app window 開啟會議，避免錄到瀏覽器工具列；保留裁切 fallback
+- 智慧輸出：可依音訊/影像活動裁掉會議開始前與結束後的靜止片段，原始錄影仍會保留
 - 整合能力：Telegram Bot 通知與管理、YouTube Device Flow 授權與上傳
 - 除錯能力：診斷截圖、頁面 HTML、console log、FFmpeg/remux/transcode log
 
@@ -43,7 +44,7 @@ mkdir -p data recordings diagnostics logs
 - `TELEGRAM_BOT_TOKEN`: 要使用 Telegram Bot 時設定
 - `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`: 要使用 YouTube 上傳時設定
 
-其餘錄製與通知相關設定可先使用預設值。Web UI 的設定頁可調整錄製解析度、lobby 等待時間、瀏覽器啟動模式與上方裁切 fallback。解析度與 lobby 等待時間會套用到手動錄製與之後新建立的排程，既有排程會保留自己的錄製設定；瀏覽器模式與上方裁切是全域錄製設定，會套用到之後執行的錄製工作。
+其餘錄製與通知相關設定可先使用預設值。Web UI 的設定頁可調整錄製解析度、lobby 等待時間、瀏覽器啟動模式、上方裁切 fallback，以及 Detection & Activity 中的智慧裁剪與動態延長預設值。解析度與 lobby 等待時間會套用到手動錄製與之後新建立的排程，既有排程會保留自己的錄製設定；瀏覽器模式與上方裁切是全域錄製設定，會套用到之後執行的錄製工作。智慧裁剪與動態延長可用全域預設，也可在單一排程的 Advanced Options 覆寫。
 
 ### 4. 啟動服務
 
@@ -94,7 +95,7 @@ python -m scripts.dev_compose up --build -d
 | 路徑 | 內容 |
 | --- | --- |
 | `data/` | SQLite 資料庫、YouTube 授權資料 |
-| `recordings/` | 錄影輸出檔案 |
+| `recordings/` | 原始錄影檔與本地裁剪輸出檔 |
 | `diagnostics/` | 錄製失敗與除錯資料 |
 | `logs/` | 應用程式日誌 |
 
@@ -140,7 +141,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ### 錄製檔案會存成什麼格式？
 
-錄製原始輸出為 `.mkv`。在下載或 YouTube 上傳流程中，系統會視情況 remux 或轉成 `.mp4`。
+錄製原始輸出為 `.mkv`，原始檔不會因智慧裁剪被刪除。若智慧裁剪判斷需要剪掉開頭或結尾靜止片段，Web UI 會優先提供裁剪後的本地輸出；下載或 YouTube 上傳流程中，系統會視情況 remux 或轉成 `.mp4`。自動 YouTube 上傳成功後，若本次上傳使用本地裁剪檔，系統會刪除該裁剪檔並讓 Web UI 回退到原始錄影檔。
+
+### 動態延長如何決定何時停止？
+
+到達排程指定的錄製長度後，若啟用 Dynamic End Extension，系統會用音訊能量與畫面差異判斷是否仍有活動。只要音訊或影像其中之一仍有變化，就會繼續錄製；當音訊靜音且畫面固定連續達到設定的 Idle Stop 時間，或達到 Max Extension 上限時才停止。預設 Idle Stop 為 300 秒，Max Extension 為 3600 秒。
 
 ### 為什麼錄影畫面還看到瀏覽器工具列？
 

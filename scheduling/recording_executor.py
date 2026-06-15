@@ -102,7 +102,7 @@ class RecordingExecutor:
                 update_fields["youtube_enabled"] = youtube_enabled
 
                 if result.recording_info:
-                    output_path = result.recording_info.output_path
+                    output_path = getattr(result, "output_path", None) or result.recording_info.output_path
 
                 repo.update_status(job.job_id, result.status.value, **update_fields)
                 session.commit()
@@ -137,6 +137,11 @@ class RecordingExecutor:
                 session.close()
 
             if youtube_enabled and result.status == JobStatus.SUCCEEDED and output_path and output_path.exists():
+                raw_output_path = getattr(result, "raw_output_path", None)
+                trimmed_output_path = getattr(result, "trimmed_output_path", None)
+                cleanup_path = None
+                if trimmed_output_path and output_path == trimmed_output_path:
+                    cleanup_path = trimmed_output_path
                 recording_time = result.recording_started_at or result.start_time or utc_now()
                 local_time = to_local(recording_time)
                 time_str = local_time.strftime("%Y%m%d_%H%M")
@@ -150,6 +155,8 @@ class RecordingExecutor:
                     title=" - ".join(title_parts),
                     privacy=youtube_privacy,
                     meeting_name=meeting_name,
+                    raw_video_path=raw_output_path,
+                    cleanup_video_path_after_success=cleanup_path,
                 )
             break
 

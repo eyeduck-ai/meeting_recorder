@@ -32,6 +32,10 @@ class ScheduleCreate(BaseModel):
     override_display_name: str | None = None
     youtube_enabled: bool = False
     youtube_privacy: str = "unlisted"
+    smart_trim_enabled: bool | None = None
+    dynamic_extension_enabled: bool | None = None
+    dynamic_extension_idle_sec: int | None = Field(default=None, ge=1, le=14400)
+    dynamic_extension_max_sec: int | None = Field(default=None, ge=0, le=86400)
     enabled: bool = True
 
 
@@ -50,6 +54,10 @@ class ScheduleUpdate(BaseModel):
     override_display_name: str | None = None
     youtube_enabled: bool | None = None
     youtube_privacy: str | None = None
+    smart_trim_enabled: bool | None = None
+    dynamic_extension_enabled: bool | None = None
+    dynamic_extension_idle_sec: int | None = Field(default=None, ge=1, le=14400)
+    dynamic_extension_max_sec: int | None = Field(default=None, ge=0, le=86400)
     enabled: bool | None = None
 
 
@@ -71,6 +79,10 @@ class ScheduleResponse(BaseModel):
     override_display_name: str | None
     youtube_enabled: bool
     youtube_privacy: str
+    smart_trim_enabled: bool | None
+    dynamic_extension_enabled: bool | None
+    dynamic_extension_idle_sec: int | None
+    dynamic_extension_max_sec: int | None
     enabled: bool
     last_run_at: str | None
     last_triggered_at: str | None
@@ -98,6 +110,10 @@ def _to_response(schedule: Schedule) -> ScheduleResponse:
         override_display_name=schedule.override_display_name,
         youtube_enabled=schedule.youtube_enabled,
         youtube_privacy=schedule.youtube_privacy,
+        smart_trim_enabled=schedule.smart_trim_enabled,
+        dynamic_extension_enabled=schedule.dynamic_extension_enabled,
+        dynamic_extension_idle_sec=schedule.dynamic_extension_idle_sec,
+        dynamic_extension_max_sec=schedule.dynamic_extension_max_sec,
         enabled=schedule.enabled,
         last_run_at=schedule.last_run_at.isoformat() if schedule.last_run_at else None,
         last_triggered_at=schedule.last_triggered_at.isoformat() if schedule.last_triggered_at else None,
@@ -129,6 +145,10 @@ async def create_schedule(request: ScheduleCreate, http_request: Request, db: Se
                 override_display_name=request.override_display_name,
                 youtube_enabled=request.youtube_enabled,
                 youtube_privacy=request.youtube_privacy,
+                smart_trim_enabled=request.smart_trim_enabled,
+                dynamic_extension_enabled=request.dynamic_extension_enabled,
+                dynamic_extension_idle_sec=request.dynamic_extension_idle_sec,
+                dynamic_extension_max_sec=request.dynamic_extension_max_sec,
                 enabled=request.enabled,
             ),
         )

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from config.settings import Settings, get_settings
 from database.models import AppSettings
+from recording.activity import ActivityConfig, build_activity_config
 
 RUNTIME_DB_KEYS = {
     "resolution_w",
@@ -14,6 +15,16 @@ RUNTIME_DB_KEYS = {
     "recording_browser_mode",
     "recording_crop_mode",
     "recording_crop_top_px",
+    "smart_trim_enabled",
+    "dynamic_extension_enabled",
+    "dynamic_extension_idle_sec",
+    "dynamic_extension_max_sec",
+    "activity_audio_threshold_db",
+    "activity_video_diff_threshold",
+    "activity_sample_interval_sec",
+    "activity_sample_window_sec",
+    "smart_trim_pre_roll_sec",
+    "smart_trim_end_post_roll_sec",
     "lobby_wait_sec",
 }
 
@@ -39,6 +50,16 @@ class RuntimeRecordingConfig:
     recording_browser_mode: str = "app"
     recording_crop_mode: str = "off"
     recording_crop_top_px: int = 0
+    smart_trim_enabled: bool = True
+    dynamic_extension_enabled: bool = True
+    dynamic_extension_idle_sec: int = 300
+    dynamic_extension_max_sec: int = 3600
+    activity_audio_threshold_db: float = -45.0
+    activity_video_diff_threshold: float = 0.015
+    activity_sample_interval_sec: float = 5.0
+    activity_sample_window_sec: float = 1.0
+    smart_trim_pre_roll_sec: float = 2.0
+    smart_trim_end_post_roll_sec: float = 5.0
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -47,6 +68,17 @@ class RuntimeRecordingConfig:
     @property
     def resolution_str(self) -> str:
         return f"{self.resolution_w}x{self.resolution_h}"
+
+    @property
+    def activity_config(self) -> ActivityConfig:
+        return build_activity_config(
+            audio_threshold_db=self.activity_audio_threshold_db,
+            video_diff_threshold=self.activity_video_diff_threshold,
+            sample_interval_sec=self.activity_sample_interval_sec,
+            sample_window_sec=self.activity_sample_window_sec,
+            smart_trim_pre_roll_sec=self.smart_trim_pre_roll_sec,
+            smart_trim_end_post_roll_sec=self.smart_trim_end_post_roll_sec,
+        )
 
 
 class RuntimeConfigService:
@@ -62,6 +94,10 @@ class RuntimeConfigService:
         lobby_wait_sec: int | None = None,
         resolution_w: int | None = None,
         resolution_h: int | None = None,
+        smart_trim_enabled: bool | None = None,
+        dynamic_extension_enabled: bool | None = None,
+        dynamic_extension_idle_sec: int | None = None,
+        dynamic_extension_max_sec: int | None = None,
     ) -> RuntimeRecordingConfig:
         """Return effective config using override > DB > env precedence."""
         values = {
@@ -70,6 +106,16 @@ class RuntimeConfigService:
             "recording_browser_mode": self._setting_value("recording_browser_mode", "app"),
             "recording_crop_mode": self._setting_value("recording_crop_mode", "off"),
             "recording_crop_top_px": self._setting_value("recording_crop_top_px", 0),
+            "smart_trim_enabled": self._setting_value("smart_trim_enabled", True),
+            "dynamic_extension_enabled": self._setting_value("dynamic_extension_enabled", True),
+            "dynamic_extension_idle_sec": self._setting_value("dynamic_extension_idle_sec", 300),
+            "dynamic_extension_max_sec": self._setting_value("dynamic_extension_max_sec", 3600),
+            "activity_audio_threshold_db": self._setting_value("activity_audio_threshold_db", -45.0),
+            "activity_video_diff_threshold": self._setting_value("activity_video_diff_threshold", 0.015),
+            "activity_sample_interval_sec": self._setting_value("activity_sample_interval_sec", 5.0),
+            "activity_sample_window_sec": self._setting_value("activity_sample_window_sec", 1.0),
+            "smart_trim_pre_roll_sec": self._setting_value("smart_trim_pre_roll_sec", 2.0),
+            "smart_trim_end_post_roll_sec": self._setting_value("smart_trim_end_post_roll_sec", 5.0),
             "lobby_wait_sec": self._setting_value("lobby_wait_sec", 900),
         }
 
@@ -80,6 +126,10 @@ class RuntimeConfigService:
             "resolution_w": resolution_w,
             "resolution_h": resolution_h,
             "lobby_wait_sec": lobby_wait_sec,
+            "smart_trim_enabled": smart_trim_enabled,
+            "dynamic_extension_enabled": dynamic_extension_enabled,
+            "dynamic_extension_idle_sec": dynamic_extension_idle_sec,
+            "dynamic_extension_max_sec": dynamic_extension_max_sec,
         }
         for key, value in overrides.items():
             if value is not None:
@@ -101,6 +151,23 @@ class RuntimeConfigService:
             minimum=0,
             maximum=1800,
         )
+        resolved_dynamic_extension_idle_sec = self._parse_int_range(
+            "dynamic_extension_idle_sec",
+            values["dynamic_extension_idle_sec"],
+            minimum=1,
+            maximum=14400,
+        )
+        resolved_dynamic_extension_max_sec = self._parse_int_range(
+            "dynamic_extension_max_sec",
+            values["dynamic_extension_max_sec"],
+            minimum=0,
+            maximum=86400,
+        )
+        if (
+            resolved_dynamic_extension_max_sec > 0
+            and resolved_dynamic_extension_max_sec < resolved_dynamic_extension_idle_sec
+        ):
+            raise RuntimeConfigError("dynamic_extension_max_sec must be 0 or greater than dynamic_extension_idle_sec")
 
         return RuntimeRecordingConfig(
             resolution_w=resolved_resolution_w,
@@ -108,6 +175,45 @@ class RuntimeConfigService:
             recording_browser_mode=resolved_recording_browser_mode,
             recording_crop_mode=resolved_recording_crop_mode,
             recording_crop_top_px=resolved_recording_crop_top_px,
+            smart_trim_enabled=self._parse_bool("smart_trim_enabled", values["smart_trim_enabled"]),
+            dynamic_extension_enabled=self._parse_bool(
+                "dynamic_extension_enabled", values["dynamic_extension_enabled"]
+            ),
+            dynamic_extension_idle_sec=resolved_dynamic_extension_idle_sec,
+            dynamic_extension_max_sec=resolved_dynamic_extension_max_sec,
+            activity_audio_threshold_db=self._parse_float(
+                "activity_audio_threshold_db", values["activity_audio_threshold_db"]
+            ),
+            activity_video_diff_threshold=self._parse_float_range(
+                "activity_video_diff_threshold",
+                values["activity_video_diff_threshold"],
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            activity_sample_interval_sec=self._parse_float_range(
+                "activity_sample_interval_sec",
+                values["activity_sample_interval_sec"],
+                minimum=1.0,
+                maximum=300.0,
+            ),
+            activity_sample_window_sec=self._parse_float_range(
+                "activity_sample_window_sec",
+                values["activity_sample_window_sec"],
+                minimum=0.25,
+                maximum=30.0,
+            ),
+            smart_trim_pre_roll_sec=self._parse_float_range(
+                "smart_trim_pre_roll_sec",
+                values["smart_trim_pre_roll_sec"],
+                minimum=0.0,
+                maximum=60.0,
+            ),
+            smart_trim_end_post_roll_sec=self._parse_float_range(
+                "smart_trim_end_post_roll_sec",
+                values["smart_trim_end_post_roll_sec"],
+                minimum=0.0,
+                maximum=300.0,
+            ),
             lobby_wait_sec=resolved_lobby_wait_sec,
             recordings_dir=Path(self._setting_value("recordings_dir", Path("./recordings"))),
             diagnostics_dir=Path(self._setting_value("diagnostics_dir", Path("./diagnostics"))),
@@ -147,6 +253,28 @@ class RuntimeConfigService:
             return int(value)
         except (TypeError, ValueError) as exc:
             raise RuntimeConfigError(f"{key} must be an integer") from exc
+
+    def _parse_float_range(self, key: str, value: object, *, minimum: float, maximum: float) -> float:
+        parsed = self._parse_float(key, value)
+        if parsed < minimum or parsed > maximum:
+            raise RuntimeConfigError(f"{key} must be between {minimum} and {maximum}")
+        return parsed
+
+    def _parse_float(self, key: str, value: object) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeConfigError(f"{key} must be a number") from exc
+
+    def _parse_bool(self, key: str, value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        raise RuntimeConfigError(f"{key} must be a boolean")
 
     def _parse_crop_mode(self, value: object) -> str:
         mode = str(value).strip().lower()

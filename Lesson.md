@@ -37,3 +37,9 @@
 - Chromium `--app` 只有作用在實際錄製用的 app window；`--app=about:blank` 後再 `browser.new_context()` / `context.new_page()` 會產生普通 Chrome page，仍可能錄到 address bar。可行模式是 `launch_persistent_context(..., --app=<join_url>)` 後使用 `context.pages[0]`，再把同一個 page 交給 provider join flow。
 - Chromium app window hardening 時不要只依賴 `context.pages[0]` 立即存在；Playwright persistent context 啟動後應 bounded wait initial page，且 app mode 不需要再 request DOM fullscreen。`runtime.json` / `metadata.json` 也不能保存完整 join URL query/hash，否則 Zoom/Webex 的 `pwd` 或 token 會被 diagnostics 留下。
 - app window 已以 Jitsi live smoke 驗證；Webex/Zoom 因本輪沒有可加入的測試會議連結，只能先用單元測試保護啟動/diagnostics/fallback 行為。拿到有效 Webex/Zoom 測試連結後，要補抽幀確認 redirect、browser join 或 popup 不會脫離 app window。
+- smart trim 與 dynamic extension 不應依賴 provider DOM；起訖邊界要用媒體活動層判斷，provider end detector 仍只處理 provider 狀態。若混用，容易把瀏覽器 chrome 裁切、provider overlay、會議結束文字與內容活動混成一個不可測責任。
+- YouTube 上傳若使用裁剪檔，上傳成功後刪檔前要先保留 raw path，並把 DB `output_path` 回退到 raw；否則 Web UI 會指向已刪除的 preferred output。
+- schedule nullable 覆寫不只要在 job runner 執行時解析，也要在 create/update 當下用 effective config 驗證；否則使用者會得到「儲存成功但排程執行才失敗」的延遲錯誤。
+- 完成檔案的媒體活動分析不要用每個 sample 各啟動一次 FFmpeg 的策略；長錄影會把後處理放大成大量子程序，應以 batch audio/video probe 產生 sample 狀態。
+- 完成檔案 batch probe 也不要用 `communicate()` 一次保留整段 PCM/raw frames；長錄影應分塊讀 stdout，邊讀邊映射 sample window 與 frame diff，讓記憶體和 sample 數量解耦。
+- dynamic extension 的 live audio 不應每個 monitor interval 重新啟動 FFmpeg；延長期應使用長駐 audio meter 並在 monitor finally 清理，否則 process startup cost 與取消路徑容易失控。

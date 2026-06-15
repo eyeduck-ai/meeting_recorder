@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from database.models import Meeting, Schedule, ScheduleType
 from services.errors import NotFoundError, ValidationError
-from services.runtime_config import RuntimeConfigService, get_runtime_config_service
+from services.runtime_config import RuntimeConfigError, RuntimeConfigService, get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
 
 
@@ -37,6 +37,10 @@ class ScheduleCreateData:
     stillness_timeout_sec: int = 180
     auto_detect_mode: str | None = None
     dry_run: bool = False
+    smart_trim_enabled: bool | None = None
+    dynamic_extension_enabled: bool | None = None
+    dynamic_extension_idle_sec: int | None = None
+    dynamic_extension_max_sec: int | None = None
     enabled: bool = True
 
 
@@ -59,11 +63,15 @@ class ScheduleService:
         self._require_meeting(db, data.meeting_id)
         self._validate_cron(data.schedule_type, data.cron_expression)
 
-        runtime_config = self._runtime_config_service.get_recording_config(
+        runtime_config = self._resolve_runtime_config_for_schedule(
             db,
             lobby_wait_sec=data.lobby_wait_sec,
             resolution_w=data.resolution_w,
             resolution_h=data.resolution_h,
+            smart_trim_enabled=data.smart_trim_enabled,
+            dynamic_extension_enabled=data.dynamic_extension_enabled,
+            dynamic_extension_idle_sec=data.dynamic_extension_idle_sec,
+            dynamic_extension_max_sec=data.dynamic_extension_max_sec,
         )
 
         schedule = Schedule(
@@ -88,6 +96,10 @@ class ScheduleService:
             stillness_timeout_sec=data.stillness_timeout_sec,
             auto_detect_mode=data.auto_detect_mode,
             dry_run=data.dry_run,
+            smart_trim_enabled=data.smart_trim_enabled,
+            dynamic_extension_enabled=data.dynamic_extension_enabled,
+            dynamic_extension_idle_sec=data.dynamic_extension_idle_sec,
+            dynamic_extension_max_sec=data.dynamic_extension_max_sec,
             enabled=data.enabled,
         )
         db.add(schedule)
@@ -177,19 +189,59 @@ class ScheduleService:
         return self._get_job_runner().queue_schedule(schedule_id, manual_trigger=manual_trigger)
 
     def _apply_runtime_updates(self, db: Session, schedule: Schedule, update_data: dict[str, Any]) -> None:
-        runtime_keys = {"lobby_wait_sec", "resolution_w", "resolution_h"}
+        runtime_keys = {
+            "lobby_wait_sec",
+            "resolution_w",
+            "resolution_h",
+            "smart_trim_enabled",
+            "dynamic_extension_enabled",
+            "dynamic_extension_idle_sec",
+            "dynamic_extension_max_sec",
+        }
         if not runtime_keys.intersection(update_data):
             return
 
-        runtime_config = self._runtime_config_service.get_recording_config(
+        runtime_config = self._resolve_runtime_config_for_schedule(
             db,
             lobby_wait_sec=update_data.get("lobby_wait_sec", schedule.lobby_wait_sec),
             resolution_w=update_data.get("resolution_w", schedule.resolution_w),
             resolution_h=update_data.get("resolution_h", schedule.resolution_h),
+            smart_trim_enabled=update_data.get("smart_trim_enabled", schedule.smart_trim_enabled),
+            dynamic_extension_enabled=update_data.get("dynamic_extension_enabled", schedule.dynamic_extension_enabled),
+            dynamic_extension_idle_sec=update_data.get(
+                "dynamic_extension_idle_sec", schedule.dynamic_extension_idle_sec
+            ),
+            dynamic_extension_max_sec=update_data.get("dynamic_extension_max_sec", schedule.dynamic_extension_max_sec),
         )
         update_data["lobby_wait_sec"] = runtime_config.lobby_wait_sec
         update_data["resolution_w"] = runtime_config.resolution_w
         update_data["resolution_h"] = runtime_config.resolution_h
+
+    def _resolve_runtime_config_for_schedule(
+        self,
+        db: Session,
+        *,
+        lobby_wait_sec: int | None,
+        resolution_w: int | None,
+        resolution_h: int | None,
+        smart_trim_enabled: bool | None,
+        dynamic_extension_enabled: bool | None,
+        dynamic_extension_idle_sec: int | None,
+        dynamic_extension_max_sec: int | None,
+    ):
+        try:
+            return self._runtime_config_service.get_recording_config(
+                db,
+                lobby_wait_sec=lobby_wait_sec,
+                resolution_w=resolution_w,
+                resolution_h=resolution_h,
+                smart_trim_enabled=smart_trim_enabled,
+                dynamic_extension_enabled=dynamic_extension_enabled,
+                dynamic_extension_idle_sec=dynamic_extension_idle_sec,
+                dynamic_extension_max_sec=dynamic_extension_max_sec,
+            )
+        except RuntimeConfigError as exc:
+            raise ValidationError(str(exc)) from exc
 
     def _sync_after_save(self, schedule: Schedule) -> None:
         scheduler = self._get_scheduler()

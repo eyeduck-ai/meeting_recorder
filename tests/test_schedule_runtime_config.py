@@ -77,6 +77,45 @@ async def test_create_schedule_uses_db_runtime_defaults(db_session, meeting_id):
 
 
 @pytest.mark.asyncio
+async def test_create_schedule_accepts_smart_boundary_overrides(db_session, meeting_id):
+    response = await create_schedule(
+        ScheduleCreate(
+            meeting_id=meeting_id,
+            start_time=utc_now() + timedelta(hours=1),
+            smart_trim_enabled=False,
+            dynamic_extension_enabled=True,
+            dynamic_extension_idle_sec=300,
+            dynamic_extension_max_sec=3600,
+        ),
+        http_request=_request(scheduler=FakeScheduler()),
+        db=db_session,
+    )
+
+    assert response.smart_trim_enabled is False
+    assert response.dynamic_extension_enabled is True
+    assert response.dynamic_extension_idle_sec == 300
+    assert response.dynamic_extension_max_sec == 3600
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_rejects_invalid_dynamic_extension_override(db_session, meeting_id):
+    with pytest.raises(schedules_module.HTTPException) as exc:
+        await create_schedule(
+            ScheduleCreate(
+                meeting_id=meeting_id,
+                start_time=utc_now() + timedelta(hours=1),
+                dynamic_extension_idle_sec=300,
+                dynamic_extension_max_sec=120,
+            ),
+            http_request=_request(scheduler=FakeScheduler()),
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 400
+    assert "dynamic_extension_max_sec" in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_update_schedule_accepts_resolution_fields(db_session, meeting_id):
     schedule = Schedule(
         meeting_id=meeting_id,
@@ -99,6 +138,64 @@ async def test_update_schedule_accepts_resolution_fields(db_session, meeting_id)
 
     assert response.resolution_w == 1280
     assert response.resolution_h == 720
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_accepts_smart_boundary_overrides(db_session, meeting_id):
+    schedule = Schedule(
+        meeting_id=meeting_id,
+        schedule_type="once",
+        start_time=utc_now() + timedelta(hours=1),
+        duration_sec=3600,
+        resolution_w=1920,
+        resolution_h=1080,
+        lobby_wait_sec=900,
+    )
+    db_session.add(schedule)
+    db_session.commit()
+
+    response = await update_schedule(
+        schedule.id,
+        ScheduleUpdate(
+            smart_trim_enabled=True,
+            dynamic_extension_enabled=False,
+            dynamic_extension_idle_sec=600,
+            dynamic_extension_max_sec=1800,
+        ),
+        http_request=_request(scheduler=FakeScheduler()),
+        db=db_session,
+    )
+
+    assert response.smart_trim_enabled is True
+    assert response.dynamic_extension_enabled is False
+    assert response.dynamic_extension_idle_sec == 600
+    assert response.dynamic_extension_max_sec == 1800
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_rejects_invalid_dynamic_extension_override(db_session, meeting_id):
+    schedule = Schedule(
+        meeting_id=meeting_id,
+        schedule_type="once",
+        start_time=utc_now() + timedelta(hours=1),
+        duration_sec=3600,
+        resolution_w=1920,
+        resolution_h=1080,
+        lobby_wait_sec=900,
+    )
+    db_session.add(schedule)
+    db_session.commit()
+
+    with pytest.raises(schedules_module.HTTPException) as exc:
+        await update_schedule(
+            schedule.id,
+            ScheduleUpdate(dynamic_extension_idle_sec=300, dynamic_extension_max_sec=120),
+            http_request=_request(scheduler=FakeScheduler()),
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 400
+    assert "dynamic_extension_max_sec" in exc.value.detail
 
 
 @pytest.mark.asyncio

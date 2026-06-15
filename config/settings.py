@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     recording_browser_mode: Literal["app", "normal"] = "app"
     recording_crop_mode: Literal["auto", "manual", "off"] = "off"
     recording_crop_top_px: int = 0
+    smart_trim_enabled: bool = True
+    dynamic_extension_enabled: bool = True
+    dynamic_extension_idle_sec: int = 300
+    dynamic_extension_max_sec: int = 3600
+    activity_audio_threshold_db: float = -45.0
+    activity_video_diff_threshold: float = 0.015
+    activity_sample_interval_sec: float = 5.0
+    activity_sample_window_sec: float = 1.0
+    smart_trim_pre_roll_sec: float = 2.0
+    smart_trim_end_post_roll_sec: float = 5.0
     lobby_wait_sec: int = 900
     max_recording_sec: int = 14400  # 4 hours default max
 

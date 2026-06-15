@@ -26,6 +26,11 @@
                 <div class="flex justify-between items-start mb-2">
                     <div>
                         <div class="font-bold text-white truncate max-w-[200px]">{{ job.meeting_code }}</div>
+                        {% if job.trimmed_artifact_removed %}
+                        <div class="text-xs text-warning mt-1">Trimmed artifact removed after upload</div>
+                        {% elif job.trim_status == 'trimmed' %}
+                        <div class="badge badge-info badge-xs mt-1">Trimmed</div>
+                        {% endif %}
                         <div class="text-xs text-gray-500 font-mono mt-0.5">{{ job.completed_at | localtime('%m/%d
                             %H:%M') }}</div>
                     </div>
@@ -95,7 +100,16 @@
                 <tbody>
                     {% for job in jobs %}
                     <tr class="hover:bg-[#1d1f23] border-b border-[#2f3336] last:border-0 transition-colors">
-                        <td class="font-medium text-white pl-6">{{ job.meeting_code }}</td>
+                        <td class="font-medium text-white pl-6">
+                            <div class="flex items-center gap-2">
+                                <span>{{ job.meeting_code }}</span>
+                                {% if job.trimmed_artifact_removed %}
+                                <span class="badge badge-warning badge-xs">Trimmed removed after upload</span>
+                                {% elif job.trim_status == 'trimmed' %}
+                                <span class="badge badge-info badge-xs">Trimmed</span>
+                                {% endif %}
+                            </div>
+                        </td>
                         <td class="text-sm text-gray-400">{{ job.completed_at.strftime('%Y-%m-%d %H:%M') if
                             job.completed_at else '-' }}</td>
                         <td class="text-sm text-gray-400">{{ (job.duration_actual_sec / 60) | int if

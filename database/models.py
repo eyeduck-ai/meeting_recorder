@@ -184,6 +184,12 @@ class Schedule(Base):
     )  # 'immediate' | 'after_min' | None (None = fixed mode)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)  # Log only, don't stop
 
+    # Smart recording boundary overrides (None = inherit global default)
+    smart_trim_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    dynamic_extension_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    dynamic_extension_idle_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dynamic_extension_max_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Status
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -221,6 +227,10 @@ class Schedule(Base):
             "stillness_timeout_sec": self.stillness_timeout_sec,
             "auto_detect_mode": self.auto_detect_mode,
             "dry_run": self.dry_run,
+            "smart_trim_enabled": self.smart_trim_enabled,
+            "dynamic_extension_enabled": self.dynamic_extension_enabled,
+            "dynamic_extension_idle_sec": self.dynamic_extension_idle_sec,
+            "dynamic_extension_max_sec": self.dynamic_extension_max_sec,
             "enabled": self.enabled,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "last_triggered_at": self.last_triggered_at.isoformat() if self.last_triggered_at else None,
@@ -284,8 +294,15 @@ class RecordingJob(Base):
 
     # Recording output
     output_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    raw_output_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    trimmed_output_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_actual_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trim_start_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trim_end_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trim_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    trim_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dynamic_extension_stop_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Diagnostics
     diagnostic_dir: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -331,8 +348,15 @@ class RecordingJob(Base):
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "youtube_uploaded_at": self.youtube_uploaded_at.isoformat() if self.youtube_uploaded_at else None,
             "output_path": self.output_path,
+            "raw_output_path": self.raw_output_path,
+            "trimmed_output_path": self.trimmed_output_path,
             "file_size": self.file_size,
             "duration_actual_sec": self.duration_actual_sec,
+            "trim_start_sec": self.trim_start_sec,
+            "trim_end_sec": self.trim_end_sec,
+            "trim_status": self.trim_status,
+            "trim_reason": self.trim_reason,
+            "dynamic_extension_stop_reason": self.dynamic_extension_stop_reason,
             "diagnostic_dir": self.diagnostic_dir,
             "has_screenshot": self.has_screenshot,
             "has_html_dump": self.has_html_dump,

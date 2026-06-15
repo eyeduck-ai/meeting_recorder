@@ -290,6 +290,51 @@
                     <div class="font-mono text-sm truncate">{{ job.output_path }}</div>
                 </div>
             </div>
+            {% if job.trim_status or job.dynamic_extension_stop_reason %}
+            <div class="divider">Smart Boundaries</div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <div class="text-sm text-base-content/60">Trim Status</div>
+                    <div class="font-medium">{{ job.trim_status or '-' }}</div>
+                    {% if job.trim_reason %}
+                    <div class="text-xs text-base-content/60">{{ job.trim_reason }}</div>
+                    {% endif %}
+                </div>
+                <div>
+                    <div class="text-sm text-base-content/60">Trim Window</div>
+                    <div class="font-mono text-sm">
+                        {% if job.trim_start_sec is not none and job.trim_end_sec is not none %}
+                        {{ job.trim_start_sec | round(1) }}s - {{ job.trim_end_sec | round(1) }}s
+                        {% else %}
+                        -
+                        {% endif %}
+                    </div>
+                </div>
+                <div>
+                    <div class="text-sm text-base-content/60">Extension Stop</div>
+                    <div class="font-medium">{{ job.dynamic_extension_stop_reason or '-' }}</div>
+                </div>
+            </div>
+            {% if job.raw_output_path or job.trimmed_output_path %}
+            <div class="mt-4 space-y-2">
+                {% if job.raw_output_path %}
+                <div>
+                    <div class="text-sm text-base-content/60">Raw Output</div>
+                    <div class="font-mono text-sm truncate">{{ job.raw_output_path }}</div>
+                </div>
+                {% endif %}
+                {% if job.trimmed_output_path %}
+                <div>
+                    <div class="text-sm text-base-content/60">Trimmed Output</div>
+                    <div class="font-mono text-sm truncate">{{ job.trimmed_output_path }}</div>
+                    {% if job.trimmed_artifact_removed %}
+                    <div class="text-xs text-warning mt-1">Trimmed artifact removed after upload; raw output retained.</div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+            {% endif %}
             <div class="card-actions justify-end mt-4">
                 <a href="/recordings/{{ job.job_id }}/download"
                     class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none">

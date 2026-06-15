@@ -92,7 +92,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 目前真實狀態是：
 
 - `.env` / `config.settings`：資料庫、認證、Telegram、YouTube、FFmpeg 進階參數、路徑
-- `services.app_settings` + `app_settings` table：部分 UI 可調整設定，包括錄製解析度、lobby 等待、`recording_browser_mode`、`recording_crop_mode` 與 `recording_crop_top_px`
+- `services.app_settings` + `app_settings` table：部分 UI 可調整設定，包括錄製解析度、lobby 等待、`recording_browser_mode`、`recording_crop_mode`、`recording_crop_top_px`、smart trim 與 dynamic extension/activity thresholds
 - `detection_config`、`notification_config`：JSON 形式存於 `app_settings`
 
 ### 錄製畫面與裁切
@@ -109,6 +109,16 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `runtime.json` 與 failure `metadata.json` 的 URL/meeting code 必須 redacted query/fragment；Zoom/Webex invite token、`pwd` 或 meeting secret 不應寫入 diagnostics。
 - v1 不做 provider-aware dynamic content crop；不要把 Jitsi/Webex/Zoom DOM selector 塞進 recording runtime 來計算裁切區域。
 - provider 自身 overlay 或控制列仍由 provider layout/overlay hook 處理，不要把它和瀏覽器 chrome 裁切混成同一層責任。
+
+### 智慧錄影邊界
+
+- `recording/activity.py` 負責媒體活動分析、live extension probe 與 post-recording trim helper；不要把 provider DOM selector 放進這一層。
+- `smart_trim_enabled` 與 `dynamic_extension_enabled` 有全域預設，也可由 schedule nullable 欄位覆寫；`None` 代表繼承全域設定。schedule create/update 必須驗證有效組合，特別是 `dynamic_extension_max_sec == 0 or dynamic_extension_max_sec >= dynamic_extension_idle_sec`。
+- `RecordingMonitor` 到達 `duration_sec` 後才進入 dynamic extension phase；音訊或影像任一 active 就繼續錄，兩者都 inactive 達 `dynamic_extension_idle_sec` 或達 `dynamic_extension_max_sec` 才停止。
+- 原始錄影檔必須保留；`raw_output_path` 指向原始檔，`output_path` 是 Web UI/API preferred local output，`trimmed_output_path` 是裁剪檔 metadata。
+- 完成檔案的 smart trim analysis 應使用 batch media probes；不要回到每個 sample 各自啟動 FFmpeg 子程序的做法。
+- 自動 YouTube 上傳使用 preferred output；若裁剪檔上傳成功，會刪除本地裁剪檔與其 MP4 artifact，並將 DB `output_path` 回退到 raw output。
+- 媒體活動偵測與 provider-level end detection 是不同層；不要把 screen top crop、provider overlay、provider end state 與 smart trim 混成同一責任。
 
 ### Provider 支援現況
 
