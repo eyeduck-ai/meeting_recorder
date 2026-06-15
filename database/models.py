@@ -286,6 +286,8 @@ class RecordingJob(Base):
     output_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_actual_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    local_recording_deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    local_recording_cleanup_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Diagnostics
     diagnostic_dir: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -333,6 +335,10 @@ class RecordingJob(Base):
             "output_path": self.output_path,
             "file_size": self.file_size,
             "duration_actual_sec": self.duration_actual_sec,
+            "local_recording_deleted_at": self.local_recording_deleted_at.isoformat()
+            if self.local_recording_deleted_at
+            else None,
+            "local_recording_cleanup_reason": self.local_recording_cleanup_reason,
             "diagnostic_dir": self.diagnostic_dir,
             "has_screenshot": self.has_screenshot,
             "has_html_dump": self.has_html_dump,

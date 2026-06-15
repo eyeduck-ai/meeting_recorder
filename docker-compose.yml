@@ -23,6 +23,11 @@ services:
     privileged: true
     shm_size: '2gb'
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     # DNS configuration for resilience against transient DNS failures
     dns:
       - 8.8.8.8 # Google Primary DNS

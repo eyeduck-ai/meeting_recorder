@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.routes import ui_common
@@ -32,6 +33,19 @@ def _delete_recording_files(output_path: str) -> None:
             candidate.unlink()
 
 
+def _resolve_local_download_path(job: RecordingJob) -> Path | None:
+    """Return the downloadable local recording path if it still exists."""
+    if not job.output_path or job.local_recording_deleted_at:
+        return None
+
+    file_path = Path(job.output_path)
+    if not file_path.exists():
+        return None
+
+    preferred_path = pick_preferred_video_path(file_path)
+    return preferred_path if preferred_path.exists() else None
+
+
 @router.get("/recordings", response_class=HTMLResponse)
 async def recordings_list(request: Request, db: Session = Depends(get_db)):
     """Recordings list page."""
@@ -41,11 +55,14 @@ async def recordings_list(request: Request, db: Session = Depends(get_db)):
         db.query(RecordingJob)
         .filter(
             RecordingJob.status == JobStatus.SUCCEEDED,
-            RecordingJob.output_path != None,
+            or_(RecordingJob.output_path != None, RecordingJob.youtube_video_id != None),
         )
         .order_by(RecordingJob.completed_at.desc())
         .all()
     )
+
+    for job in jobs:
+        job.local_download_available = _resolve_local_download_path(job) is not None
 
     # Get YouTube status for upload button visibility
     uploader = get_youtube_uploader()
@@ -68,7 +85,7 @@ async def recordings_delete_all(db: Session = Depends(get_db)):
         db.query(RecordingJob)
         .filter(
             RecordingJob.status == JobStatus.SUCCEEDED,
-            RecordingJob.output_path != None,
+            or_(RecordingJob.output_path != None, RecordingJob.youtube_video_id != None),
         )
         .all()
     )
@@ -92,15 +109,11 @@ async def recordings_delete_all(db: Session = Depends(get_db)):
 async def recordings_download(job_id: str, db: Session = Depends(get_db)):
     """Download recording file."""
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
-    if not job or not job.output_path:
+    if not job:
         raise HTTPException(status_code=404, detail="Recording not found")
 
-    file_path = Path(job.output_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Recording file not found")
-
-    file_path = pick_preferred_video_path(file_path)
-    if not file_path.exists():
+    file_path = _resolve_local_download_path(job)
+    if not file_path:
         raise HTTPException(status_code=404, detail="Recording file not found")
 
     media_type = "video/mp4" if file_path.suffix.lower() == ".mp4" else "video/x-matroska"

@@ -36,8 +36,13 @@
 
                 <div class="flex items-center justify-between mt-3">
                     <!-- Size -->
-                    <div class="text-xs text-gray-600">{{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else
-                        0 }} MB</div>
+                    <div class="text-xs text-gray-600">
+                        {% if job.local_download_available %}
+                        {{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else 0 }} MB
+                        {% else %}
+                        Local removed
+                        {% endif %}
+                    </div>
 
                     <!-- Actions -->
                     <div class="flex gap-2">
@@ -49,7 +54,7 @@
                                     d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 3.993-8 4.007z" />
                             </svg>
                         </a>
-                        {% elif youtube_configured and youtube_authorized %}
+                        {% elif youtube_configured and youtube_authorized and job.local_download_available %}
                         <button onclick="uploadToYouTube('{{ job.job_id }}', '{{ job.meeting_code }}')"
                             id="upload-btn-m-{{ job.job_id }}" class="text-gray-500 hover:text-white">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
@@ -59,12 +64,21 @@
                         </button>
                         {% endif %}
 
+                        {% if job.local_download_available %}
                         <a href="/recordings/{{ job.job_id }}/download" class="text-[#1d9bf0] hover:text-[#1a8cd8]">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
                                 <path stroke-linecap="round" stroke-linejoin="round"
                                     d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
                             </svg>
                         </a>
+                        {% else %}
+                        <span class="text-gray-700">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                            </svg>
+                        </span>
+                        {% endif %}
 
                         <button hx-delete="/recordings/{{ job.job_id }}" hx-target="closest div.p-4" hx-swap="outerHTML"
                             hx-confirm="Delete?" class="text-error hover:text-red-400">
@@ -100,8 +114,13 @@
                             job.completed_at else '-' }}</td>
                         <td class="text-sm text-gray-400">{{ (job.duration_actual_sec / 60) | int if
                             job.duration_actual_sec else 0 }} min</td>
-                        <td class="text-sm text-gray-400 font-mono">{{ (job.file_size / 1024 / 1024) | round(1) if
-                            job.file_size else 0 }} MB</td>
+                        <td class="text-sm text-gray-400 font-mono">
+                            {% if job.local_download_available %}
+                            {{ (job.file_size / 1024 / 1024) | round(1) if job.file_size else 0 }} MB
+                            {% else %}
+                            Local removed
+                            {% endif %}
+                        </td>
                         <td>
                             {% if job.youtube_video_id %}
                             <a href="https://youtu.be/{{ job.youtube_video_id }}" target="_blank"
@@ -112,7 +131,7 @@
                                 </svg>
                                 YouTube
                             </a>
-                            {% elif youtube_configured and youtube_authorized %}
+                            {% elif youtube_configured and youtube_authorized and job.local_download_available %}
                             <button onclick="uploadToYouTube('{{ job.job_id }}', '{{ job.meeting_code }}')"
                                 id="upload-btn-{{ job.job_id }}"
                                 class="text-gray-500 hover:text-white btn btn-ghost btn-xs">
@@ -124,8 +143,12 @@
                         </td>
                         <td class="text-right pr-6">
                             <div class="flex items-center justify-end gap-3">
+                                {% if job.local_download_available %}
                                 <a href="/recordings/{{ job.job_id }}/download"
                                     class="text-[#1d9bf0] hover:text-[#1a8cd8] btn btn-ghost btn-xs">Download</a>
+                                {% else %}
+                                <span class="text-gray-600 btn btn-ghost btn-xs cursor-default">Removed</span>
+                                {% endif %}
                                 <button hx-delete="/recordings/{{ job.job_id }}" hx-target="closest tr"
                                     hx-swap="outerHTML" hx-confirm="Delete?"
                                     class="text-error hover:text-red-400 btn btn-ghost btn-xs">Delete</button>

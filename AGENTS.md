@@ -85,6 +85,17 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - 共用 cancel handler、時間與時長解析 helper 由 `telegram_bot/conversation_common.py` 負責
 - Conversation domain module 不應互相 import；若需要共用能力，先放到 `conversation_common.py`
 
+### 儲存與保留策略
+
+- 本機長期錄影格式是 `.mp4`；錄製仍先輸出 `.mkv`，成功 fast remux 並驗證 `.mp4` 後刪除 `.mkv` 並更新 `recording_jobs.output_path/file_size/runtime_summary_json`。
+- 本機 MP4 canonicalization 不等於 YouTube upload compression；本機 canonical 固定用 fast remux，不讀 `FFMPEG_TRANSCODE_ON_UPLOAD`。只有 YouTube upload helper 可依該設定產生 temporary transcode upload file，且不可覆寫本機 canonical MP4。
+- MP4 canonicalization 失敗不可讓成功錄影改成 failed；保留 `.mkv` 並讓每日 maintenance 或後續上傳流程重試。remux/transcode 必須先寫 temporary MP4，驗證成功後才 replace 正式 MP4；不得因 partial/corrupt MP4 刪除 MKV。
+- `services.storage_maintenance.StorageMaintenanceService` 是本機錄影、diagnostics、rotated app logs、detection logs 與 SQLite `VACUUM` 清理邏輯 owner；不要把清理細節分散塞回 API route、Web UI 或 scheduler。
+- Scheduler 會用 internal job id `storage_maintenance_daily` 每日 03:30 local time 執行 maintenance；它不是使用者 schedule，不應參與 schedule lifecycle 或 `next_run_at` 同步。
+- 已上傳 YouTube 的本機錄影檔保存 14 天後可刪除；DB job、YouTube video id 與歷史狀態仍保留，並以 `local_recording_deleted_at` / `local_recording_cleanup_reason` 標記。
+- `diagnostics/` 不分 provider 統一保留 14 天；刪除 diagnostics 後要同步清掉 DB diagnostic path/flags，但保留 `runtime_summary_json`。
+- `logs/app.log` 由 Python rotating handler 控制，maintenance 只清 rotated log，不刪目前的 `app.log`；Docker container log rotation 由 Compose `json-file` `20m x 5` 控制。
+
 ### 設定來源不是單一層
 
 不要把所有設定都描述成「只在 `.env`」或「都已移到 DB」。

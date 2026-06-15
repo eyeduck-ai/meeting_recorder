@@ -13,6 +13,7 @@
 - 讓 schedule/job 狀態語意更精準，拆出 `triggered_at`、`started_at`、`completed_at` 等欄位，讓 missed/catch-up 判斷更可靠。
 - 修正 schedule 解析度、lobby wait 等可設定但未完整套用到 worker/session 的問題。
 - 修正 recording manager 掃描錄影檔目錄與 `recordings_dir` 設定不一致的問題。
+- 已新增 storage maintenance，統一本機 MP4 canonicalization、YouTube 後錄影保留、diagnostics/log/detection log retention 與 Docker log rotation；本機 canonicalization 已 harden 為 temporary MP4 + ffprobe validation + fast remux-only。
 
 ## P1：服務層與入口一致性
 

@@ -7,6 +7,8 @@
 - [x] P1：建立 `RuntimeConfigService`，定義 env / DB / schedule override precedence。
 - [x] P1：讓 worker/session 使用解析後的 runtime config，套用 schedule resolution 與 lobby wait。
 - [x] P1：修 recording manager 使用 `settings.recordings_dir`，並能處理 job 子目錄。
+- [x] P1：新增 storage maintenance，讓本機錄影 canonical MP4、YouTube 後 14 天刪本機檔、diagnostics/log/detection log retention 與 Docker log rotation 一致。
+- [x] P1：強化 MP4 canonicalization，使用 temporary output、ffprobe validation、remux-only 本機 canonical 與 upload-only transcode，避免 partial MP4 造成 MKV 資料遺失。
 - [x] P1：重整 schedule/job 狀態欄位與 catch-up 判斷。
 - [x] P1：建立 `MeetingService`、`ScheduleService`、`JobService`，讓 API/Web UI/Telegram 行為一致。
 - [x] P2：改用 FastAPI lifespan 管理 worker/scheduler/job runner。

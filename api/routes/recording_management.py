@@ -11,6 +11,7 @@ from database.models import AppSettings
 from database.session import get_db
 from services.recording_manager import get_recording_manager
 from services.secrets import mask_secret, preserve_masked_secret
+from services.storage_maintenance import get_storage_maintenance_service
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
@@ -74,6 +75,16 @@ async def cleanup_recordings(
         max_count=max_count,
         dry_run=dry_run,
     )
+    return JSONResponse(content=result)
+
+
+@router.post("/maintenance")
+async def run_storage_maintenance(
+    dry_run: bool = Query(True),
+    db: Session = Depends(get_db),
+):
+    """Run storage maintenance across recordings, diagnostics, logs, and DB logs."""
+    result = await get_storage_maintenance_service().run(db, dry_run=dry_run)
     return JSONResponse(content=result)
 
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from scripts.docker_runtime_guard import (
     ContainerInfo,
     RuntimeIdentity,
@@ -5,6 +7,14 @@ from scripts.docker_runtime_guard import (
     validate_dev_runtime,
     workspace_hash,
 )
+
+
+def test_compose_app_service_configures_docker_log_rotation():
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "driver: json-file" in compose
+    assert 'max-size: "20m"' in compose
+    assert 'max-file: "5"' in compose
 
 
 def _container(

@@ -72,6 +72,17 @@ def test_settings_template_exposes_recording_crop_top_field():
     assert "recording_crop_top_px: parseInt" in template
 
 
+def test_storage_templates_use_maintenance_and_local_removed_state():
+    repo_root = Path(__file__).resolve().parents[1]
+    settings_template = (repo_root / "web" / "templates" / "settings.html").read_text(encoding="utf-8")
+    recordings_template = (repo_root / "web" / "templates" / "recordings" / "list.html").read_text(encoding="utf-8")
+
+    assert "/api/recordings/maintenance" in settings_template
+    assert "runMaintenance(true)" in settings_template
+    assert "job.local_download_available" in recordings_template
+    assert "Local removed" in recordings_template
+
+
 @pytest.fixture
 def fake_settings():
     """Settings shared by UI routes and auth middleware during tests."""

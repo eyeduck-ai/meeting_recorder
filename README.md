@@ -11,7 +11,7 @@
 - 錄製控制：大廳等待、提前加入、自動偵測會議結束、手動停止/提前完成
 - 錄製畫面：預設以 Chromium app window 開啟會議，避免錄到瀏覽器工具列；保留裁切 fallback
 - 整合能力：Telegram Bot 通知與管理、YouTube Device Flow 授權與上傳
-- 除錯能力：診斷截圖、頁面 HTML、console log、FFmpeg/remux/transcode log
+- 除錯能力：診斷截圖、頁面 HTML、console log、FFmpeg/remux/transcode log，並自動清理過期資料
 
 ## 快速開始
 
@@ -100,6 +100,14 @@ python -m scripts.dev_compose up --build -d
 
 這些目錄都會掛載到容器外部，重新部署後仍會保留。
 
+### 資料保留與清理
+
+- 本機錄影長期保存為 `.mp4`；系統錄製時會先產生 `.mkv`，成功 fast remux 成 validated `.mp4` 後刪除 `.mkv`。YouTube 上傳壓縮才會依設定使用臨時轉檔檔案，不改變本機 canonical MP4。
+- 每日 03:30 會自動執行 storage maintenance，也可在 Web UI `/settings` 的 Storage Management 手動預覽或執行。
+- 已成功上傳 YouTube 的本機錄影檔，若已保存 14 天以上會刪除本機檔案，但保留工作紀錄與 YouTube 連結。
+- `diagnostics/`、rotated app logs 與 detection logs 預設保留 14 天。
+- Docker container log 已設定 `json-file` rotation：每個 container 最多 `20m x 5`。既有 container 需要 recreate 後才會套用新的 log rotation 設定。
+
 ### Secret 保存提醒
 
 會議密碼、通知 webhook secret 與 YouTube token 目前由本機 `.env`、SQLite DB 或 `data/youtube_token.json` 保存；Web UI/API 會遮罩顯示，但不是加密儲存。部署時請保護 `.env`、`data/` volume 與備份檔案的讀取權限。
@@ -140,7 +148,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ### 錄製檔案會存成什麼格式？
 
-錄製原始輸出為 `.mkv`。在下載或 YouTube 上傳流程中，系統會視情況 remux 或轉成 `.mp4`。
+錄製流程會先產生 `.mkv`，完成後成功 fast remux 並通過 MP4 驗證時，`.mp4` 會成為本機保存與下載格式，原 `.mkv` 會被刪除。YouTube 上傳壓縮是 upload-only temporary file 行為，不影響本機 canonical MP4。
 
 ### 為什麼錄影畫面還看到瀏覽器工具列？
 

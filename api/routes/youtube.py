@@ -6,11 +6,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from config.settings import get_settings
-from recording.remux import ensure_mp4
+from recording.mp4_validation import discard_file
+from services.storage_maintenance import prepare_upload_recording_file
 from uploading.youtube import (
     AuthorizationError,
     get_youtube_uploader,
 )
+from utils.timezone import utc_now
 
 router = APIRouter(prefix="/youtube", tags=["YouTube"])
 
@@ -188,15 +190,18 @@ async def upload_video(request: UploadRequest):
             remux_log = settings.diagnostics_dir / job.job_id / "remux.log"
             transcode_log = settings.diagnostics_dir / job.job_id / "transcode.log"
 
-        mp4_path = await ensure_mp4(
+        canonical = await prepare_upload_recording_file(
             video_path,
             remux_log_path=remux_log,
             transcode_log_path=transcode_log,
         )
-        if not mp4_path or not mp4_path.exists():
-            raise HTTPException(status_code=500, detail="MP4 remux failed")
+        if not canonical or not canonical.output_path.exists():
+            raise HTTPException(status_code=500, detail="MP4 preparation failed")
 
-        video_path = mp4_path
+        job.output_path = str(canonical.output_path)
+        job.file_size = canonical.file_size
+        session.commit()
+        video_path = canonical.upload_path or canonical.output_path
 
         # Prepare metadata
         title = request.title or f"Recording - {job.meeting_code}"
@@ -209,14 +214,19 @@ async def upload_video(request: UploadRequest):
         )
 
         # Upload
-        result = await uploader.upload_video(
-            video_path=video_path,
-            metadata=metadata,
-        )
+        try:
+            result = await uploader.upload_video(
+                video_path=video_path,
+                metadata=metadata,
+            )
+        finally:
+            if canonical.temporary_upload_path:
+                discard_file(canonical.temporary_upload_path)
 
         if result.status == UploadStatus.SUCCEEDED:
             # Update job with video ID
             job.youtube_video_id = result.video_id
+            job.youtube_uploaded_at = utc_now()
             session.commit()
 
             return {

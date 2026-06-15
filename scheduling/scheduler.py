@@ -16,6 +16,12 @@ from sqlalchemy.orm import Session
 from config.settings import get_settings
 from database.models import Schedule, ScheduleType
 from database.session import get_session_local
+from services.storage_maintenance import (
+    MAINTENANCE_HOUR,
+    MAINTENANCE_JOB_ID,
+    MAINTENANCE_MINUTE,
+    get_storage_maintenance_service,
+)
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -114,6 +120,15 @@ class SchedulerService:
             id="schedule_sync",
             name="Sync next_run_at times",
             replace_existing=True,
+        )
+
+        self._scheduler.add_job(
+            self._run_storage_maintenance,
+            trigger=CronTrigger(hour=MAINTENANCE_HOUR, minute=MAINTENANCE_MINUTE, timezone=tz),
+            id=MAINTENANCE_JOB_ID,
+            name="Storage maintenance",
+            replace_existing=True,
+            max_instances=1,
         )
 
         # Immediate sync after loading schedules
@@ -440,6 +455,29 @@ class SchedulerService:
         finally:
             session.close()
 
+    async def _run_storage_maintenance(self) -> None:
+        """Run daily storage maintenance without affecting user schedules."""
+        SessionLocal = get_session_local()
+        session = SessionLocal()
+        try:
+            result = await get_storage_maintenance_service().run(session, dry_run=False)
+            logger.info(
+                "Storage maintenance complete: canonicalized=%s deleted_recordings=%s "
+                "deleted_diagnostics=%s deleted_logs=%s deleted_detection_logs=%s freed=%.1f MB errors=%s",
+                len(result["canonicalized"]),
+                len(result["deleted_recordings"]),
+                len(result["deleted_diagnostics"]),
+                len(result["deleted_logs"]),
+                result["deleted_detection_logs"],
+                result["freed_bytes"] / 1024 / 1024,
+                len(result["errors"]),
+            )
+        except Exception as exc:
+            session.rollback()
+            logger.error("Storage maintenance failed: %s", exc)
+        finally:
+            session.close()
+
     def get_next_run_time(self, schedule_id: int) -> datetime | None:
         """Get next run time for a schedule.
 
@@ -467,6 +505,8 @@ class SchedulerService:
 
         jobs = []
         for job in self._scheduler.get_jobs():
+            if not job.id.startswith("schedule_") or job.id == "schedule_sync":
+                continue
             jobs.append(
                 {
                     "id": job.id,

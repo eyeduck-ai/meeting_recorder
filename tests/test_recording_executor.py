@@ -15,6 +15,7 @@ from database.session import JobRepository
 from recording.ffmpeg_pipeline import RecordingInfo
 from recording.worker import RecordingJob, RecordingResult
 from scheduling.recording_executor import RecordingExecutor
+from services.storage_maintenance import CanonicalRecording
 from utils.timezone import utc_now
 
 
@@ -137,7 +138,7 @@ async def test_retryable_failure_retries_same_job_row(executor_session_local, mo
 
 
 @pytest.mark.asyncio
-async def test_success_with_youtube_enabled_returns_upload_request(executor_session_local, tmp_path):
+async def test_success_with_youtube_enabled_returns_upload_request(executor_session_local, monkeypatch, tmp_path):
     """Successful YouTube-enabled recordings should return an upload request."""
     output_path = tmp_path / "recording.mkv"
     output_path.write_bytes(b"video")
@@ -151,6 +152,7 @@ async def test_success_with_youtube_enabled_returns_upload_request(executor_sess
         output_dir=tmp_path,
     )
     _create_db_job(executor_session_local, job)
+    monkeypatch.setattr(executor_module, "canonicalize_recording_file", AsyncMock(return_value=None))
 
     fake_worker = FakeWorker(
         [
@@ -193,5 +195,73 @@ async def test_success_with_youtube_enabled_returns_upload_request(executor_sess
         db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "upload123").first()
         assert db_job.status == JobStatus.SUCCEEDED.value
         assert db_job.youtube_enabled is True
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_recording_canonicalization_updates_runtime_summary(
+    executor_session_local, monkeypatch, tmp_path
+):
+    mkv_path = tmp_path / "recording.mkv"
+    mp4_path = tmp_path / "recording.mp4"
+    mkv_path.write_bytes(b"mkv")
+    mp4_path.write_bytes(b"mp4")
+    now = utc_now()
+    job = RecordingJob(
+        job_id="canon123",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Recorder Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job(executor_session_local, job)
+
+    monkeypatch.setattr(
+        executor_module,
+        "canonicalize_recording_file",
+        AsyncMock(return_value=CanonicalRecording(output_path=mp4_path, file_size=mp4_path.stat().st_size)),
+    )
+    fake_worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.SUCCEEDED,
+                attempt_no=1,
+                recording_info=RecordingInfo(
+                    output_path=mkv_path,
+                    file_size=mkv_path.stat().st_size,
+                    duration_sec=60.0,
+                    start_time=now,
+                    end_time=now + timedelta(seconds=60),
+                ),
+                runtime_summary={
+                    "recording_info": {
+                        "output_path": str(mkv_path),
+                        "file_size": mkv_path.stat().st_size,
+                    }
+                },
+                end_time=now + timedelta(seconds=60),
+            )
+        ]
+    )
+
+    await RecordingExecutor(worker_provider=lambda: fake_worker).run_with_retry(
+        job=job,
+        schedule_id=None,
+        meeting_end_time=utc_now() + timedelta(minutes=5),
+        youtube_enabled=False,
+        youtube_privacy="unlisted",
+        meeting_name=None,
+    )
+
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "canon123").first()
+        assert db_job.output_path == str(mp4_path)
+        assert db_job.file_size == mp4_path.stat().st_size
+        assert db_job.runtime_summary["recording_info"]["output_path"] == str(mp4_path)
+        assert db_job.runtime_summary["recording_info"]["file_size"] == mp4_path.stat().st_size
     finally:
         session.close()

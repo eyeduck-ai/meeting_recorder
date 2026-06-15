@@ -61,8 +61,10 @@ def test_schema_migration_adds_schedule_lifecycle_columns(tmp_path):
 
     with engine.connect() as connection:
         columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(schedules)").fetchall()}
+        job_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(recording_jobs)").fetchall()}
 
     assert {"last_triggered_at", "last_started_at", "last_completed_at"} <= columns
+    assert {"local_recording_deleted_at", "local_recording_cleanup_reason"} <= job_columns
 
 
 @pytest.mark.asyncio

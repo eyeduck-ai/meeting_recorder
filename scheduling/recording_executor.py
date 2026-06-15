@@ -3,12 +3,14 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 
 from database.models import JobStatus
 from database.session import JobRepository, build_result_update_fields, get_session_local
 from recording.worker import RecordingJob
 from scheduling.upload_runner import UploadRequest
+from services.storage_maintenance import canonicalize_recording_file
 from telegram_bot.notifications import (
     notify_recording_completed,
     notify_recording_failed,
@@ -91,6 +93,8 @@ class RecordingExecutor:
             job.attempt_no = attempt
             self._mark_retry_attempt(job)
             result = await worker.record(job)
+            if result.status == JobStatus.SUCCEEDED and result.recording_info:
+                await self._canonicalize_successful_recording(job, result)
 
             session = SessionLocal()
             output_path = None
@@ -158,6 +162,38 @@ class RecordingExecutor:
     def _is_retryable_error(self, error_message: str) -> bool:
         error_str = str(error_message)
         return any(pattern in error_str for pattern in RETRYABLE_ERRORS)
+
+    async def _canonicalize_successful_recording(self, job: RecordingJob, result) -> None:
+        """Best-effort conversion to the local MP4 canonical file."""
+        recording_info = result.recording_info
+        if not recording_info or recording_info.output_path.suffix.lower() != ".mkv":
+            return
+
+        remux_log = job.diagnostics_dir / "remux.log" if job.diagnostics_dir else None
+        transcode_log = job.diagnostics_dir / "transcode.log" if job.diagnostics_dir else None
+        try:
+            canonical = await canonicalize_recording_file(
+                recording_info.output_path,
+                remux_log_path=remux_log,
+                transcode_log_path=transcode_log,
+            )
+        except Exception as exc:
+            logger.warning("Recording canonicalization failed for job %s: %s", job.job_id, exc)
+            return
+
+        if not canonical:
+            logger.warning("Recording canonicalization did not produce MP4 for job %s", job.job_id)
+            return
+
+        result.recording_info = replace(
+            recording_info,
+            output_path=canonical.output_path,
+            file_size=canonical.file_size,
+        )
+        runtime_summary = getattr(result, "runtime_summary", None)
+        if isinstance(runtime_summary, dict) and isinstance(runtime_summary.get("recording_info"), dict):
+            runtime_summary["recording_info"]["output_path"] = str(canonical.output_path)
+            runtime_summary["recording_info"]["file_size"] = canonical.file_size
 
     def _mark_retry_attempt(self, job: RecordingJob) -> None:
         """Persist the current attempt before starting the worker."""

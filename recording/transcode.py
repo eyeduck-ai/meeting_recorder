@@ -4,6 +4,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+from recording.mp4_validation import discard_file, replace_with_validated_mp4, temporary_mp4_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +47,7 @@ async def transcode_to_mp4(
         return None
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = temporary_mp4_path(output_path)
 
     duration_sec = await _probe_duration_sec(input_path)
     total_ms = int(duration_sec * 1000) if duration_sec else None
@@ -78,14 +81,18 @@ async def transcode_to_mp4(
         "-progress",
         "pipe:1",
         "-nostats",
-        str(output_path),
+        str(temp_path),
     ]
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception:
+        discard_file(temp_path)
+        raise
 
     async def _read_progress():
         if not process.stdout:
@@ -134,9 +141,15 @@ async def transcode_to_mp4(
     await progress_task
     await stderr_task
 
-    if returncode != 0 or not output_path.exists():
+    if returncode != 0 or not temp_path.exists():
+        discard_file(temp_path)
         logger.error(f"Transcode failed with return code {returncode}")
         return None
 
+    published_path = await replace_with_validated_mp4(temp_path, output_path)
+    if not published_path:
+        logger.error("Transcode output failed MP4 validation: %s", output_path)
+        return None
+
     logger.info(f"Transcoded MP4 created: {output_path}")
-    return output_path
+    return published_path

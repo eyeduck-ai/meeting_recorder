@@ -8,7 +8,8 @@ from pathlib import Path
 from config.settings import get_settings
 from database.models import JobStatus
 from database.session import JobRepository, get_session_local
-from recording.remux import ensure_mp4
+from recording.mp4_validation import discard_file
+from services.storage_maintenance import CanonicalRecording, prepare_upload_recording_file
 from telegram_bot.notifications import notify_youtube_upload_completed
 from uploading.progress import clear_progress, update_progress
 from uploading.youtube import UploadStatus, VideoMetadata, get_youtube_uploader
@@ -46,23 +47,29 @@ class YouTubeUploadRunner:
             def transcode_progress(current_ms: int | None, total_ms: int | None) -> None:
                 update_progress(upload_job_id, "compressing", current_ms, total_ms, "ms")
 
-            upload_path = await ensure_mp4(
+            canonical = await prepare_upload_recording_file(
                 video_path,
                 remux_log_path=remux_log,
                 transcode_log_path=transcode_log,
                 progress_callback=transcode_progress,
             )
-            if not upload_path or not upload_path.exists():
+            if not canonical or not canonical.output_path.exists():
                 logger.error(f"MP4 preparation failed, skipping YouTube upload for job {upload_request.job_id}")
                 return
+            self._persist_local_recording_path(upload_request.job_id, canonical)
+            upload_path = canonical.upload_path or canonical.output_path
 
-            async with self._upload_lock:
-                await self.upload_to_youtube(
-                    job_id=upload_request.job_id,
-                    video_path=upload_path,
-                    title=upload_request.title,
-                    privacy=upload_request.privacy,
-                )
+            try:
+                async with self._upload_lock:
+                    await self.upload_to_youtube(
+                        job_id=upload_request.job_id,
+                        video_path=upload_path,
+                        title=upload_request.title,
+                        privacy=upload_request.privacy,
+                    )
+            finally:
+                if canonical.temporary_upload_path:
+                    discard_file(canonical.temporary_upload_path)
         except Exception as e:
             logger.error(f"YouTube upload task failed for job {upload_request.job_id}: {e}")
         finally:
@@ -78,6 +85,18 @@ class YouTubeUploadRunner:
     ) -> None:
         """Upload recording to YouTube."""
         logger.info(f"Starting YouTube upload for job {job_id}")
+        uploader = get_youtube_uploader()
+        if not uploader.is_configured:
+            logger.warning("YouTube upload skipped - not configured")
+            self._restore_succeeded_status(job_id)
+            clear_progress(job_id)
+            return
+        if not uploader.is_authorized:
+            logger.warning("YouTube upload skipped - not authorized")
+            self._restore_succeeded_status(job_id)
+            clear_progress(job_id)
+            return
+
         try:
             file_size = video_path.stat().st_size
         except OSError:
@@ -92,14 +111,6 @@ class YouTubeUploadRunner:
             session.commit()
         finally:
             session.close()
-
-        uploader = get_youtube_uploader()
-        if not uploader.is_configured:
-            logger.warning("YouTube upload skipped - not configured")
-            return
-        if not uploader.is_authorized:
-            logger.warning("YouTube upload skipped - not authorized")
-            return
 
         try:
             metadata = VideoMetadata(
@@ -137,8 +148,39 @@ class YouTubeUploadRunner:
                         await notify_youtube_upload_completed(db_job, result.video_url)
                 else:
                     logger.error(f"YouTube upload failed: {result.error_message}")
+                    repo.update_status(job_id, JobStatus.SUCCEEDED.value)
                     session.commit()
+                    clear_progress(job_id)
             finally:
                 session.close()
         except Exception as e:
             logger.error(f"YouTube upload error: {e}")
+            self._restore_succeeded_status(job_id)
+            clear_progress(job_id)
+
+    def _persist_local_recording_path(self, job_id: str, canonical: CanonicalRecording) -> None:
+        """Persist the canonical local recording path after MP4 preparation."""
+        SessionLocal = get_session_local()
+        session = SessionLocal()
+        try:
+            repo = JobRepository(session)
+            repo.update_status(
+                job_id,
+                JobStatus.SUCCEEDED.value,
+                output_path=str(canonical.output_path),
+                file_size=canonical.file_size,
+            )
+            session.commit()
+        finally:
+            session.close()
+
+    def _restore_succeeded_status(self, job_id: str) -> None:
+        """Restore recording success when upload cannot complete."""
+        SessionLocal = get_session_local()
+        session = SessionLocal()
+        try:
+            repo = JobRepository(session)
+            repo.update_status(job_id, JobStatus.SUCCEEDED.value)
+            session.commit()
+        finally:
+            session.close()

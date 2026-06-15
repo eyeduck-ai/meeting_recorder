@@ -85,10 +85,10 @@
 
                 <div class="flex flex-wrap gap-3 justify-end">
                     <button onclick="refreshDiskUsage()" class="btn btn-sm btn-ghost rounded-full">Refresh</button>
-                    <button onclick="cleanupRecordings(true)" class="btn btn-sm btn-outline rounded-full">Preview
-                        Cleanup</button>
-                    <button onclick="cleanupRecordings(false)"
-                        class="btn btn-sm btn-error btn-outline rounded-full">Clean Old (>30d)</button>
+                    <button onclick="runMaintenance(true)" class="btn btn-sm btn-outline rounded-full">Preview
+                        Maintenance</button>
+                    <button onclick="runMaintenance(false)"
+                        class="btn btn-sm btn-error btn-outline rounded-full">Run Maintenance</button>
                 </div>
             </div>
         </div>
@@ -630,11 +630,13 @@
         document.getElementById('disk-usage').textContent = d.usage_percent.toFixed(1) + '%';
     }
 
-    async function cleanupRecordings(dry) {
+    async function runMaintenance(dry) {
         if (!dry && !confirm('Sure?')) return;
-        const res = await fetch(`/api/recordings/cleanup?max_age_days=30&dry_run=${dry}`, { method: 'POST' });
+        const res = await fetch(`/api/recordings/maintenance?dry_run=${dry}`, { method: 'POST' });
         const d = await res.json();
-        alert(`Deleted: ${d.deleted_count}`);
+        const freedMb = (d.freed_bytes / 1024 / 1024).toFixed(1);
+        const canonicalLabel = dry ? 'Would canonicalize' : 'Canonicalized';
+        alert(`${canonicalLabel}: ${d.canonicalized.length}\nRecordings: ${d.deleted_recordings.length}\nDiagnostics: ${d.deleted_diagnostics.length}\nLogs: ${d.deleted_logs.length}\nDetection logs: ${d.deleted_detection_logs}\nFreed: ${freedMb} MB\nWarnings: ${d.warnings.length}\nErrors: ${d.errors.length}`);
         refreshDiskUsage();
     }
 

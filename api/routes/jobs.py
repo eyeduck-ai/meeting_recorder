@@ -63,6 +63,8 @@ class JobResponse(BaseModel):
     output_path: str | None = None
     file_size: int | None = None
     duration_actual_sec: float | None = None
+    local_recording_deleted_at: str | None = None
+    local_recording_cleanup_reason: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     failure_stage: str | None = None
@@ -98,6 +100,10 @@ def _model_to_response(job: RecordingJobModel) -> JobResponse:
         output_path=job.output_path,
         file_size=job.file_size,
         duration_actual_sec=job.duration_actual_sec,
+        local_recording_deleted_at=job.local_recording_deleted_at.isoformat()
+        if job.local_recording_deleted_at
+        else None,
+        local_recording_cleanup_reason=job.local_recording_cleanup_reason,
         error_code=job.error_code,
         error_message=job.error_message,
         failure_stage=job.failure_stage,

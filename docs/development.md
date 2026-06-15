@@ -33,7 +33,7 @@ FastAPI 使用 lifespan 管理 runtime ownership。Route import 不應初始化 
 5. `RecordingSession` 準備固定尺寸 browser capture surface，必要時套用上方裁切 offset
 6. `FFmpegPipeline` 進行錄製
 7. 依固定時長或自動偵測條件結束
-8. 寫回 job 狀態、診斷資料、通知與可選的 YouTube 上傳
+8. 成功錄影會 best-effort fast remux 成本機 canonical `.mp4`，再寫回 job 狀態、診斷資料、通知與可選的 YouTube 上傳
 
 ## 開發環境
 
@@ -154,6 +154,7 @@ uv run uvicorn api.main:app --reload
 - `services/meeting_service.py` 集中 meeting create/update/delete，包含 request `password` 到 ORM `meeting_password_plaintext` 的映射。
 - `services/schedule_service.py` 集中 schedule create/update/delete/toggle/trigger，負責 meeting validation、cron validation、RuntimeConfigService 解析，以及 APScheduler 同步。
 - `services/job_service.py` 集中 immediate recording start，負責 `JobRunner` busy 判斷、`run_immediate()` 呼叫與 DB job 回讀。
+- `services/storage_maintenance.py` 集中本機 MP4 canonicalization、uploaded recording retention、diagnostics/log cleanup、detection log cleanup 與 SQLite `VACUUM`。本機 canonicalization 固定使用 fast remux；YouTube upload path 才依 `FFMPEG_TRANSCODE_ON_UPLOAD` 決定是否產生臨時壓縮上傳檔。
 - API routes、Web UI 與 Telegram 的 write/trigger path 應呼叫 service；read-only list/detail query 可暫時留在入口層。
 - FastAPI routes 應透過 `api/runtime.py` 從 `request.app.state` 建立 app-state-backed service；非 FastAPI 入口可使用 service 的 compatibility fallback。
 
@@ -181,6 +182,7 @@ uv run uvicorn api.main:app --reload
 - `recording.worker.get_worker()`、`scheduling.job_runner.get_job_runner()`、`scheduling.scheduler.get_scheduler()` 保留為相容 accessor，主要供 Telegram、測試與非 FastAPI 入口 fallback 使用。
 - `api/routes/*.py` 不應在 import 階段呼叫 `init_db()` 或啟動任何 runtime。
 - FastAPI shutdown 需要停止 scheduler/Telegram 並關閉已建立的 YouTube uploader HTTP client；不要為了 close 而建立新的 uploader singleton。
+- APScheduler 會新增 internal job `storage_maintenance_daily`，每日 03:30 local time 執行 storage maintenance；它不是使用者 recording schedule，不應寫入 schedule lifecycle 欄位。
 
 ### Database Layer
 
@@ -237,6 +239,17 @@ uv run uvicorn api.main:app --reload
 - 螢幕凍結
 
 偵測結果會寫入 `detection_logs`，並可經由 `/api/detection/*` 查詢、匯出、標記準確度與清空。
+Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪除後會 best-effort `VACUUM` 回收 DB 檔案空間。
+
+### Storage maintenance
+
+- 本機長期錄影格式是 `.mp4`。錄製仍先輸出 `.mkv` 以提高錄製穩定性；錄製成功後，`RecordingExecutor` 會 best-effort fast remux 成 validated `.mp4`，成功後刪除 `.mkv` 並把 `recording_jobs.output_path/file_size/runtime_summary_json` 改指 MP4。
+- Remux/transcode 都必須先寫入 same-directory temporary MP4，ffprobe 驗證可讀且有合理 video duration 後才 atomic replace 正式 MP4；任一失敗路徑都要刪 temporary file，且不得刪原 MKV。
+- 若 MP4 canonicalization 失敗，錄影 job 不會因此失敗；DB 保留原 `.mkv`，每日 maintenance 下次會重試 legacy MKV canonicalization。
+- YouTube 自動與手動上傳成功都必須寫入 `youtube_video_id` 與 `youtube_uploaded_at`。Legacy MKV 在上傳前會先建立本機 canonical MP4；只有 upload path 會依 `FFMPEG_TRANSCODE_ON_UPLOAD` 產生 temporary upload MP4，完成或失敗後都不應長期留下第二份影片。
+- 已上傳 YouTube 且本機錄影已存在 14 天以上時，maintenance 會刪除本機影片與 thumbnail，保留 DB job 與 YouTube link，並寫入 `local_recording_deleted_at` / `local_recording_cleanup_reason`。
+- `diagnostics/` 不分 provider 統一保留 14 天；刪除後會清掉 job 的 `diagnostic_dir` 與 diagnostic flags。`runtime_summary_json` 仍保留在 DB。
+- Rotated app logs 保留 14 天，當前 `logs/app.log` 永遠不由 maintenance 刪除。Docker container logs 由 Compose `json-file` rotation 控制，預設 `20m x 5`。
 
 ### Provider 現況
 
@@ -287,6 +300,7 @@ uv run uvicorn api.main:app --reload
 - `/api/v1/settings`
 - `/api/detection/*`
 - `/api/recordings/*`
+- `/api/recordings/maintenance`
 
 ### Telegram / YouTube
 
@@ -334,6 +348,7 @@ docker compose logs -f app
 - `diagnostics/<job_id>/transcode.log`
 
 `runtime.json` 會保留 browser mode、crop/capture frame 與 browser surface dimensions；`runtime.json` 與 `metadata.json` 的 URL 欄位只保留不含 query/fragment 的 redacted form。
+Diagnostics 目錄會由每日 storage maintenance 保留 14 天；需要長期保存時應在期限內匯出或備份。
 
 ### Provider 測試腳本
 

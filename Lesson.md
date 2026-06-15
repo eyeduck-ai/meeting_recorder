@@ -22,6 +22,9 @@
 - 移動像 `QueueScheduleResult` 這類已被 API、Telegram 或 tests import 的 internal-public 型別時，要先在舊模組保留 re-export，再逐步改呼叫端，避免一次性破壞相容 import。
 - 子 router 不應反向 import 聚合 router 來取 render/settings/helper；這會形成雙向依賴，應抽 `ui_common` 這類共用層讓依賴方向維持單向。
 - 錄影檔 list/cleanup/disk usage 不要各自重新掃描 filesystem 或重複 `stat()`；先建立帶 metadata 的 entry，再由排序、分頁與 response 組裝共用。
+- 刪除已上傳 YouTube 的本機錄影檔不等於刪除 recording job；應保留 DB job 與 YouTube link，並用 local cleanup 欄位標記本機檔案狀態，否則 UI/API 會把「雲端仍可看」誤變成「紀錄消失」。
+- 衍生 MP4 不可直接寫正式檔名後再驗證；remux/transcode 必須先寫 same-directory temporary file，ffprobe 驗證成功後才 atomic replace，失敗時刪 temp 並保留 MKV，否則 partial/corrupt MP4 可能在下次 maintenance 被誤認為 fresh。
+- 本機 canonical MP4 和 YouTube upload compression 是兩個不同決策；`FFMPEG_TRANSCODE_ON_UPLOAD` 只應影響 upload path，不應讓錄影完成或每日 maintenance 進行長時間 transcode、卡住單工錄製流程。
 - FastAPI shutdown 關閉 singleton 資源時，不要為了 close 而呼叫會 lazy-create 的 getter；應提供只關閉既有 instance 的 helper。
 - provider 固定 sleep 不能一次全部機械替換；先用 bounded wait 搭短 fallback，保留必要 UI debounce，否則容易把等待不足變成間歇性 join failure。
 - 用 PowerShell 測試會 redirect 的 Web UI POST 時，不要用 `Invoke-WebRequest -MaximumRedirection 0` 後直接假設請求失敗；它可能已經送出 POST 但在處理 303 redirect 時丟例外，重試前要先查 job/schedule 狀態避免重複觸發。

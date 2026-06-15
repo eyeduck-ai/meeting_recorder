@@ -24,6 +24,8 @@ def run_schema_migrations(engine: Engine) -> None:
         ensure_column(connection, "recording_jobs", "failure_stage", "VARCHAR(64)")
         ensure_column(connection, "recording_jobs", "last_ffmpeg_exit_code", "INTEGER")
         ensure_column(connection, "recording_jobs", "runtime_summary_json", "TEXT")
+        ensure_column(connection, "recording_jobs", "local_recording_deleted_at", "DATETIME")
+        ensure_column(connection, "recording_jobs", "local_recording_cleanup_reason", "VARCHAR(128)")
         ensure_column(connection, "schedules", "last_triggered_at", "DATETIME")
         ensure_column(connection, "schedules", "last_started_at", "DATETIME")
         ensure_column(connection, "schedules", "last_completed_at", "DATETIME")
