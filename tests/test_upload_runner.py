@@ -82,7 +82,14 @@ def _build_upload_session(tmp_path, monkeypatch, *, status=JobStatus.SUCCEEDED.v
     return SessionLocal
 
 
-def _create_upload_job(SessionLocal, video_path, *, status=JobStatus.SUCCEEDED.value):
+def _create_upload_job(
+    SessionLocal,
+    video_path,
+    *,
+    status=JobStatus.SUCCEEDED.value,
+    raw_output_path=None,
+    trimmed_output_path=None,
+):
     session = SessionLocal()
     try:
         session.add(
@@ -94,6 +101,8 @@ def _create_upload_job(SessionLocal, video_path, *, status=JobStatus.SUCCEEDED.v
                 duration_sec=120,
                 status=status,
                 output_path=str(video_path),
+                raw_output_path=str(raw_output_path) if raw_output_path else None,
+                trimmed_output_path=str(trimmed_output_path) if trimmed_output_path else None,
             )
         )
         session.commit()
@@ -271,3 +280,63 @@ async def test_run_upload_task_cleans_trimmed_artifact_after_success(tmp_path, m
         prepared_upload_path=upload_path,
         raw_video_path=raw_path,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_upload_task_deletes_canonical_trimmed_mp4_when_upload_transcode_uses_temp(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    raw_path = tmp_path / "recording.mkv"
+    trimmed_mkv_path = tmp_path / "recording.trimmed.mkv"
+    trimmed_mp4_path = tmp_path / "recording.trimmed.mp4"
+    temporary_upload_path = tmp_path / "recording.trimmed.upload.mp4"
+    raw_path.write_bytes(b"raw")
+    trimmed_mkv_path.write_bytes(b"trimmed")
+    trimmed_mp4_path.write_bytes(b"mp4")
+    temporary_upload_path.write_bytes(b"upload")
+    _create_upload_job(
+        SessionLocal,
+        trimmed_mkv_path,
+        raw_output_path=raw_path,
+        trimmed_output_path=trimmed_mkv_path,
+    )
+
+    prepare_upload = AsyncMock(
+        return_value=CanonicalRecording(
+            output_path=trimmed_mp4_path,
+            file_size=trimmed_mp4_path.stat().st_size,
+            upload_path=temporary_upload_path,
+            temporary_upload_path=temporary_upload_path,
+        )
+    )
+    monkeypatch.setattr(upload_runner_module, "get_settings", lambda: SimpleNamespace(diagnostics_dir=tmp_path))
+    monkeypatch.setattr(upload_runner_module, "prepare_upload_recording_file", prepare_upload)
+    monkeypatch.setattr(upload_runner_module, "clear_progress", Mock())
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+
+    runner = YouTubeUploadRunner()
+    runner.upload_to_youtube = AsyncMock(return_value=True)
+
+    await runner.run_upload_task(
+        UploadRequest(
+            job_id="job123",
+            video_path=trimmed_mkv_path,
+            title="Meeting",
+            privacy="unlisted",
+            raw_video_path=raw_path,
+            cleanup_video_path_after_success=trimmed_mkv_path,
+        )
+    )
+
+    runner.upload_to_youtube.assert_awaited_once_with(
+        job_id="job123",
+        video_path=temporary_upload_path,
+        title="Meeting",
+        privacy="unlisted",
+    )
+    assert raw_path.exists()
+    assert not trimmed_mkv_path.exists()
+    assert not trimmed_mp4_path.exists()
+    assert not temporary_upload_path.exists()
+
+    job = _get_upload_job(SessionLocal)
+    assert job.output_path == str(raw_path)

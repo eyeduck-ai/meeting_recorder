@@ -1,5 +1,7 @@
 """YouTube API routes for authorization and upload management."""
 
+from contextlib import suppress
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -15,6 +17,29 @@ from uploading.youtube import (
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/youtube", tags=["YouTube"])
+
+VIDEO_ARTIFACT_SUFFIXES = {".mkv", ".mp4"}
+
+
+def _same_recording_artifact(left: Path | None, right: Path | None) -> bool:
+    """Return true when two paths represent the same local recording artifact."""
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    if left.suffix.lower() in VIDEO_ARTIFACT_SUFFIXES and right.suffix.lower() in VIDEO_ARTIFACT_SUFFIXES:
+        return left.with_suffix(".mp4") == right.with_suffix(".mp4")
+    return False
+
+
+def _delete_trimmed_upload_artifacts(candidates: set[Path | None], raw_path: Path | None) -> None:
+    """Best-effort delete local artifacts for a trimmed upload while keeping raw."""
+    for candidate in {path for path in candidates if path is not None}:
+        if raw_path is not None and candidate == raw_path:
+            continue
+        with suppress(OSError):
+            if candidate.exists():
+                candidate.unlink()
 
 
 class AuthStatusResponse(BaseModel):
@@ -148,8 +173,6 @@ async def upload_video(request: UploadRequest):
 
     The job must have a successful recording with an output file.
     """
-    from pathlib import Path
-
     from database.models import RecordingJob
     from database.session import get_session_local
     from uploading.youtube import UploadStatus, VideoMetadata
@@ -183,6 +206,10 @@ async def upload_video(request: UploadRequest):
         if not video_path.exists():
             raise HTTPException(status_code=400, detail="Recording file not found")
 
+        trimmed_path = Path(job.trimmed_output_path) if job.trimmed_output_path else None
+        raw_path = Path(job.raw_output_path) if job.raw_output_path else None
+        using_trimmed_output = _same_recording_artifact(video_path, trimmed_path)
+
         remux_log = None
         transcode_log = None
         if video_path.suffix.lower() == ".mkv":
@@ -200,8 +227,10 @@ async def upload_video(request: UploadRequest):
 
         job.output_path = str(canonical.output_path)
         job.file_size = canonical.file_size
+        if using_trimmed_output:
+            job.trimmed_output_path = str(canonical.output_path)
         session.commit()
-        video_path = canonical.upload_path or canonical.output_path
+        upload_path = canonical.upload_path or canonical.output_path
 
         # Prepare metadata
         title = request.title or f"Recording - {job.meeting_code}"
@@ -216,7 +245,7 @@ async def upload_video(request: UploadRequest):
         # Upload
         try:
             result = await uploader.upload_video(
-                video_path=video_path,
+                video_path=upload_path,
                 metadata=metadata,
             )
         finally:
@@ -227,12 +256,16 @@ async def upload_video(request: UploadRequest):
             # Update job with video ID
             job.youtube_video_id = result.video_id
             job.youtube_uploaded_at = utc_now()
-            trimmed_path = Path(job.trimmed_output_path) if job.trimmed_output_path else None
-            raw_path = Path(job.raw_output_path) if job.raw_output_path else None
-            if trimmed_path and Path(job.output_path) == trimmed_path:
-                for candidate in {trimmed_path, video_path}:
-                    if candidate.exists() and (raw_path is None or candidate != raw_path):
-                        candidate.unlink()
+            if using_trimmed_output:
+                _delete_trimmed_upload_artifacts(
+                    {
+                        trimmed_path,
+                        canonical.output_path,
+                        upload_path,
+                        canonical.temporary_upload_path,
+                    },
+                    raw_path,
+                )
                 if raw_path and raw_path.exists():
                     job.output_path = str(raw_path)
             session.commit()

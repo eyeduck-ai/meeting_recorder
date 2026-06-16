@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 
 from database.models import JobStatus
 from database.session import JobRepository, build_result_update_fields, get_session_local
@@ -176,11 +177,12 @@ class RecordingExecutor:
         if not recording_info or recording_info.output_path.suffix.lower() != ".mkv":
             return
 
+        original_output_path = recording_info.output_path
         remux_log = job.diagnostics_dir / "remux.log" if job.diagnostics_dir else None
         transcode_log = job.diagnostics_dir / "transcode.log" if job.diagnostics_dir else None
         try:
             canonical = await canonicalize_recording_file(
-                recording_info.output_path,
+                original_output_path,
                 remux_log_path=remux_log,
                 transcode_log_path=transcode_log,
             )
@@ -197,10 +199,33 @@ class RecordingExecutor:
             output_path=canonical.output_path,
             file_size=canonical.file_size,
         )
+        self._replace_result_path_if_original(result, "output_path", original_output_path, canonical.output_path)
+        self._replace_result_path_if_original(
+            result, "trimmed_output_path", original_output_path, canonical.output_path
+        )
+        self._replace_result_path_if_original(result, "raw_output_path", original_output_path, canonical.output_path)
         runtime_summary = getattr(result, "runtime_summary", None)
         if isinstance(runtime_summary, dict) and isinstance(runtime_summary.get("recording_info"), dict):
             runtime_summary["recording_info"]["output_path"] = str(canonical.output_path)
             runtime_summary["recording_info"]["file_size"] = canonical.file_size
+        if isinstance(runtime_summary, dict) and isinstance(runtime_summary.get("trim"), dict):
+            trim_summary = runtime_summary["trim"]
+            for key in ("raw_output_path", "trimmed_output_path"):
+                if self._path_value_matches(trim_summary.get(key), original_output_path):
+                    trim_summary[key] = str(canonical.output_path)
+
+    @staticmethod
+    def _replace_result_path_if_original(result, attr: str, original_path: Path, canonical_path: Path) -> None:
+        """Update result path overrides that still point at the pre-canonical file."""
+        value = getattr(result, attr, None)
+        if RecordingExecutor._path_value_matches(value, original_path):
+            setattr(result, attr, canonical_path)
+
+    @staticmethod
+    def _path_value_matches(value, expected: Path) -> bool:
+        if not isinstance(value, str | Path):
+            return False
+        return Path(value) == expected
 
     def _mark_retry_attempt(self, job: RecordingJob) -> None:
         """Persist the current attempt before starting the worker."""

@@ -16,6 +16,7 @@
 - 已新增 storage maintenance，統一本機 MP4 canonicalization、YouTube 後錄影保留、diagnostics/log/detection log retention 與 Docker log rotation；本機 canonicalization 已 harden 為 temporary MP4 + ffprobe validation + fast remux-only。
 - 已新增 smart trim 與 dynamic extension 設定解析，支援全域預設與 schedule nullable 覆寫。
 - smart/dynamic schedule 覆寫已在 create/update 當下驗證有效組合，避免 invalid config 延後到 job runner 才失敗。
+- 已修正 storage retention canonical MP4 與 smart trim preferred/raw/trimmed metadata 的合併後 path propagation，避免 YouTube 上傳或 DB 狀態指向已刪除 MKV。
 
 ## P1：服務層與入口一致性
 

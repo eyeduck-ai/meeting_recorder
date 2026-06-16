@@ -337,3 +337,95 @@ async def test_success_with_trimmed_output_uploads_trimmed_and_keeps_raw_cleanup
         assert db_job.trim_status == "trimmed"
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_trimmed_recording_canonicalization_normalizes_upload_and_db_paths(
+    executor_session_local, monkeypatch, tmp_path
+):
+    raw_path = tmp_path / "recording.mkv"
+    trimmed_mkv_path = tmp_path / "recording.trimmed.mkv"
+    trimmed_mp4_path = tmp_path / "recording.trimmed.mp4"
+    raw_path.write_bytes(b"raw")
+    trimmed_mkv_path.write_bytes(b"trimmed")
+    trimmed_mp4_path.write_bytes(b"mp4")
+    now = utc_now()
+    job = RecordingJob(
+        job_id="trimcanon",
+        provider="jitsi",
+        meeting_code="trim-canon-room",
+        display_name="Recorder Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job(executor_session_local, job)
+
+    monkeypatch.setattr(
+        executor_module,
+        "canonicalize_recording_file",
+        AsyncMock(
+            return_value=CanonicalRecording(
+                output_path=trimmed_mp4_path,
+                file_size=trimmed_mp4_path.stat().st_size,
+            )
+        ),
+    )
+    fake_worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.SUCCEEDED,
+                attempt_no=1,
+                recording_info=RecordingInfo(
+                    output_path=trimmed_mkv_path,
+                    file_size=trimmed_mkv_path.stat().st_size,
+                    duration_sec=45.0,
+                    start_time=now,
+                    end_time=now + timedelta(seconds=45),
+                ),
+                output_path=trimmed_mkv_path,
+                raw_output_path=raw_path,
+                trimmed_output_path=trimmed_mkv_path,
+                trim_status="trimmed",
+                trim_start_sec=10.0,
+                trim_end_sec=55.0,
+                runtime_summary={
+                    "recording_info": {
+                        "output_path": str(trimmed_mkv_path),
+                        "file_size": trimmed_mkv_path.stat().st_size,
+                    },
+                    "trim": {
+                        "raw_output_path": str(raw_path),
+                        "trimmed_output_path": str(trimmed_mkv_path),
+                    },
+                },
+                recording_started_at=now,
+                end_time=now + timedelta(seconds=60),
+            )
+        ]
+    )
+
+    upload_request = await RecordingExecutor(worker_provider=lambda: fake_worker).run_with_retry(
+        job=job,
+        schedule_id=123,
+        meeting_end_time=utc_now() + timedelta(minutes=5),
+        youtube_enabled=True,
+        youtube_privacy="unlisted",
+        meeting_name="Trimmed Canonical Review",
+    )
+
+    assert upload_request is not None
+    assert upload_request.video_path == trimmed_mp4_path
+    assert upload_request.raw_video_path == raw_path
+    assert upload_request.cleanup_video_path_after_success == trimmed_mp4_path
+
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "trimcanon").first()
+        assert db_job.output_path == str(trimmed_mp4_path)
+        assert db_job.raw_output_path == str(raw_path)
+        assert db_job.trimmed_output_path == str(trimmed_mp4_path)
+        assert db_job.runtime_summary["recording_info"]["output_path"] == str(trimmed_mp4_path)
+        assert db_job.runtime_summary["trim"]["trimmed_output_path"] == str(trimmed_mp4_path)
+    finally:
+        session.close()

@@ -73,7 +73,7 @@ class YouTubeUploadRunner:
                         await self._cleanup_uploaded_trimmed_output(
                             job_id=upload_request.job_id,
                             cleanup_path=upload_request.cleanup_video_path_after_success,
-                            prepared_upload_path=upload_path,
+                            prepared_upload_path=canonical.output_path,
                             raw_video_path=upload_request.raw_video_path,
                         )
             finally:

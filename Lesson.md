@@ -46,3 +46,4 @@
 - 完成檔案的媒體活動分析不要用每個 sample 各啟動一次 FFmpeg 的策略；長錄影會把後處理放大成大量子程序，應以 batch audio/video probe 產生 sample 狀態。
 - 完成檔案 batch probe 也不要用 `communicate()` 一次保留整段 PCM/raw frames；長錄影應分塊讀 stdout，邊讀邊映射 sample window 與 frame diff，讓記憶體和 sample 數量解耦。
 - dynamic extension 的 live audio 不應每個 monitor interval 重新啟動 FFmpeg；延長期應使用長駐 audio meter 並在 monitor finally 清理，否則 process startup cost 與取消路徑容易失控。
+- storage canonicalization 會刪除或替換來源檔時，不要只更新 `recording_info.output_path`；所有 result path override、runtime trim metadata、upload request cleanup path 與手動/自動 YouTube cleanup 判斷都要同步指向 canonical artifact，否則 DB 或 UI 可能保留已刪除的 MKV path。
