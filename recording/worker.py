@@ -9,8 +9,10 @@ from pathlib import Path
 from config.settings import get_settings
 from database.models import ErrorCode, JobStatus
 from recording.activity import ActivityConfig, LiveMediaActivityProbe, RecordingActivityAnalyzer, trim_recording
+from recording.capacity_guard import RecordingCapacityError, RecordingCapacityGuard, RecordingCapacityReservation
 from recording.ffmpeg_pipeline import RecordingInfo
 from recording.monitor import RecordingMonitor
+from recording.runtime_resources import RuntimeResourceAllocator, RuntimeResourceLease
 from recording.session import RecordingSession
 from services.runtime_config import RuntimeRecordingConfig, get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
@@ -140,19 +142,46 @@ class RecordingJob:
         )
 
 
+@dataclass
+class ActiveRecordingState:
+    """Mutable runtime state for one active recording job."""
+
+    job: RecordingJob
+    status: JobStatus = JobStatus.QUEUED
+    cancel_requested: bool = False
+    finish_requested: bool = False
+    started_at: datetime = field(default_factory=utc_now)
+
+
 class RecordingWorker:
     """Recording worker that orchestrates the entire recording process."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        resource_allocator: RuntimeResourceAllocator | None = None,
+        capacity_guard: RecordingCapacityGuard | None = None,
+    ):
+        self._active_jobs: dict[str, ActiveRecordingState] = {}
         self._current_job: RecordingJob | None = None
         self._status: JobStatus = JobStatus.QUEUED
         self._cancel_requested: bool = False
         self._finish_requested: bool = False
         self._status_callback: Callable[[str, JobStatus], None] | None = None
+        self._resource_allocator = resource_allocator or RuntimeResourceAllocator()
+        self._capacity_guard = capacity_guard or RecordingCapacityGuard()
 
     @property
     def is_busy(self) -> bool:
-        return self._current_job is not None
+        return bool(self._active_jobs) or self._current_job is not None
+
+    @property
+    def active_jobs(self) -> list[RecordingJob]:
+        return [state.job for state in self._active_jobs.values()]
+
+    @property
+    def active_count(self) -> int:
+        return len(self._active_jobs)
 
     @property
     def current_status(self) -> JobStatus:
@@ -161,25 +190,70 @@ class RecordingWorker:
     def set_status_callback(self, callback: Callable[[str, JobStatus], None]) -> None:
         self._status_callback = callback
 
-    def _update_status(self, status: JobStatus) -> None:
+    def _update_status(self, status: JobStatus, job_id: str | None = None) -> None:
         self._status = status
-        if self._status_callback and self._current_job:
+        target_job_id = job_id or (self._current_job.job_id if self._current_job else None)
+        if target_job_id and target_job_id in self._active_jobs:
+            self._active_jobs[target_job_id].status = status
+        if self._status_callback and target_job_id:
             try:
-                self._status_callback(self._current_job.job_id, status)
+                self._status_callback(target_job_id, status)
             except Exception as e:
                 logger.warning(f"Status callback error: {e}")
 
-    def request_cancel(self) -> bool:
-        if self._current_job:
+    def request_cancel(self, job_id: str | None = None) -> bool:
+        state = self._resolve_active_state(job_id)
+        if state:
+            state.cancel_requested = True
+            if not job_id or (self._current_job and self._current_job.job_id == state.job.job_id):
+                self._cancel_requested = True
+            return True
+        if self._current_job and not job_id:
             self._cancel_requested = True
             return True
         return False
 
-    def request_finish(self) -> bool:
-        if self._current_job:
+    def request_finish(self, job_id: str | None = None) -> bool:
+        state = self._resolve_active_state(job_id)
+        if state:
+            state.finish_requested = True
+            if not job_id or (self._current_job and self._current_job.job_id == state.job.job_id):
+                self._finish_requested = True
+            return True
+        if self._current_job and not job_id:
             self._finish_requested = True
             return True
         return False
+
+    def is_job_active(self, job_id: str) -> bool:
+        return job_id in self._active_jobs
+
+    def _resolve_active_state(self, job_id: str | None = None) -> ActiveRecordingState | None:
+        if job_id:
+            return self._active_jobs.get(job_id)
+        if self._current_job and self._current_job.job_id in self._active_jobs:
+            return self._active_jobs[self._current_job.job_id]
+        if self._active_jobs:
+            return max(self._active_jobs.values(), key=lambda state: state.started_at)
+        return None
+
+    def _is_cancel_requested(self, job_id: str) -> bool:
+        state = self._active_jobs.get(job_id)
+        return bool(state.cancel_requested if state else False)
+
+    def _is_finish_requested(self, job_id: str) -> bool:
+        state = self._active_jobs.get(job_id)
+        return bool(state.finish_requested if state else False)
+
+    def _set_current_job(self, job: RecordingJob | None) -> None:
+        self._current_job = job
+        if job is None:
+            self._cancel_requested = False
+            self._finish_requested = False
+            return
+        state = self._active_jobs.get(job.job_id)
+        self._cancel_requested = bool(state.cancel_requested if state else False)
+        self._finish_requested = bool(state.finish_requested if state else False)
 
     def _can_fallback_to_normal_browser(self, job: RecordingJob, result: RecordingResult) -> bool:
         return (
@@ -202,8 +276,6 @@ class RecordingWorker:
 
     async def record(self, job: RecordingJob) -> RecordingResult:
         """Execute a recording job."""
-        self._cancel_requested = False
-        self._finish_requested = False
         result = RecordingResult(
             job_id=job.job_id,
             status=JobStatus.STARTING,
@@ -211,20 +283,50 @@ class RecordingWorker:
             start_time=utc_now(),
         )
         current_job = job
+        runtime_resources: RuntimeResourceLease | None = None
+        capacity_reservation: RecordingCapacityReservation | None = None
 
         try:
+            try:
+                capacity_reservation = await self._capacity_guard.reserve(job)
+            except RecordingCapacityError as e:
+                result.status = JobStatus.FAILED
+                result.error_code = ErrorCode.DISK_FULL.value
+                result.error_message = str(e)
+                result.failure_stage = "prepare_runtime"
+                result.end_reason = "failed"
+                result.end_time = utc_now()
+                return result
+
+            try:
+                runtime_resources = await self._resource_allocator.acquire(job.job_id)
+            except Exception as e:
+                result.status = JobStatus.FAILED
+                result.error_code = ErrorCode.VIRTUAL_ENV_ERROR.value
+                result.error_message = str(e)
+                result.failure_stage = "prepare_runtime"
+                result.end_reason = "failed"
+                result.end_time = utc_now()
+                return result
+            self._active_jobs[job.job_id] = ActiveRecordingState(job=current_job, status=JobStatus.STARTING)
             while True:
-                self._current_job = current_job
+                self._active_jobs[job.job_id].job = current_job
+                self._set_current_job(current_job)
                 self._reset_result_for_attempt(result, current_job)
                 current_job.output_dir.mkdir(parents=True, exist_ok=True)
-                self._update_status(JobStatus.STARTING)
+                self._update_status(JobStatus.STARTING, current_job.job_id)
 
-                fallback_job = await self._record_attempt(current_job, result)
+                fallback_job = await self._record_attempt(current_job, result, runtime_resources)
                 if fallback_job is None:
                     return result
                 current_job = fallback_job
         finally:
-            self._current_job = None
+            self._active_jobs.pop(job.job_id, None)
+            await self._resource_allocator.release(job.job_id)
+            if capacity_reservation is not None:
+                await self._capacity_guard.release(job.job_id)
+            latest = self._resolve_active_state()
+            self._set_current_job(latest.job if latest else None)
 
     def _reset_result_for_attempt(self, result: RecordingResult, job: RecordingJob) -> None:
         result.status = JobStatus.STARTING
@@ -251,20 +353,35 @@ class RecordingWorker:
         result.ffmpeg_exit_code = None
         result.runtime_summary = None
 
-    async def _record_attempt(self, job: RecordingJob, result: RecordingResult) -> RecordingJob | None:
+    async def _record_attempt(
+        self,
+        job: RecordingJob,
+        result: RecordingResult,
+        runtime_resources: RuntimeResourceLease | None = None,
+    ) -> RecordingJob | None:
         """Execute one browser attempt for a recording job."""
 
-        session = RecordingSession(job)
+        try:
+            session = RecordingSession(job, runtime_resources=runtime_resources)
+        except Exception as e:
+            result.status = JobStatus.FAILED
+            result.error_code = ErrorCode.INTERNAL_ERROR.value
+            result.error_message = str(e)
+            result.failure_stage = "prepare_runtime"
+            result.end_reason = "failed"
+            result.end_time = utc_now()
+            self._update_status(JobStatus.FAILED, job.job_id)
+            return None
 
         try:
             session.begin_stage("prepare_runtime")
             await session.prepare_runtime()
             session.end_stage("prepare_runtime")
 
-            if self._cancel_requested:
+            if self._is_cancel_requested(job.job_id):
                 raise asyncio.CancelledError("Job cancelled")
 
-            self._update_status(JobStatus.JOINING)
+            self._update_status(JobStatus.JOINING, job.job_id)
             session.begin_stage("join_meeting")
             join_result = await session.join_meeting()
             if join_result.in_lobby:
@@ -278,7 +395,7 @@ class RecordingWorker:
                 session.end_stage("join_meeting")
 
             if join_result.in_lobby:
-                self._update_status(JobStatus.WAITING_LOBBY)
+                self._update_status(JobStatus.WAITING_LOBBY, job.job_id)
                 session.begin_stage("admit_or_fail")
                 admitted = await session.wait_for_lobby_admission()
                 if not admitted:
@@ -300,7 +417,7 @@ class RecordingWorker:
             await session.dismiss_provider_overlays("dismiss_overlays_joined")
             session.end_stage("dismiss_overlays_joined")
 
-            if self._cancel_requested:
+            if self._is_cancel_requested(job.job_id):
                 raise asyncio.CancelledError("Job cancelled")
 
             session.begin_stage("set_layout")
@@ -324,10 +441,10 @@ class RecordingWorker:
                     job.duration_sec = remaining
                     logger.info(f"Fixed duration deadline: {deadline_at.isoformat()} (remaining {remaining}s)")
 
-            if self._finish_requested:
+            if self._is_finish_requested(job.job_id):
                 raise asyncio.CancelledError("Finish requested before recording started")
 
-            self._update_status(JobStatus.RECORDING)
+            self._update_status(JobStatus.RECORDING, job.job_id)
             result.recording_started_at = utc_now()
 
             session.begin_stage("start_capture")
@@ -354,7 +471,7 @@ class RecordingWorker:
             result.dynamic_extension_stop_reason = monitor_result[2] if len(monitor_result) > 2 else None
             session.end_stage("monitor_recording")
 
-            self._update_status(JobStatus.FINALIZING)
+            self._update_status(JobStatus.FINALIZING, job.job_id)
             session.begin_stage("finalize_capture")
             result.recording_info = await session.finalize_capture()
             session.end_stage("finalize_capture")
@@ -369,7 +486,7 @@ class RecordingWorker:
                 trim_summary=self._build_trim_summary(result),
                 dynamic_extension_stop_reason=result.dynamic_extension_stop_reason,
             )
-            self._update_status(JobStatus.SUCCEEDED)
+            self._update_status(JobStatus.SUCCEEDED, job.job_id)
 
             logger.info(f"Recording completed successfully: {result.recording_info.output_path}")
 
@@ -391,7 +508,7 @@ class RecordingWorker:
                 error_code=result.error_code,
                 error_message=result.error_message,
             )
-            self._update_status(JobStatus.CANCELED)
+            self._update_status(JobStatus.CANCELED, job.job_id)
             logger.info("Recording cancelled")
 
         except Exception as e:
@@ -433,8 +550,8 @@ class RecordingWorker:
                 error_code=result.error_code,
                 error_message=result.error_message,
             )
-            self._update_status(JobStatus.FAILED)
             diagnostics_dir = getattr(session, "diagnostics_dir", None)
+            self._update_status(JobStatus.FAILED, job.job_id)
             logger.error(f"Recording failed: {e} (stage={result.failure_stage}, diagnostics={diagnostics_dir})")
             result.diagnostic_data = await session.collect_diagnostics(
                 error_code=result.error_code,
@@ -516,8 +633,8 @@ class RecordingWorker:
             session=session,
             job=job,
             media_activity_probe=media_activity_probe,
-            is_cancel_requested=lambda: self._cancel_requested,
-            is_finish_requested=lambda: self._finish_requested,
+            is_cancel_requested=lambda: self._is_cancel_requested(job.job_id),
+            is_finish_requested=lambda: self._is_finish_requested(job.job_id),
             ffmpeg_stall_timeout_sec=ffmpeg_stall_timeout_sec,
             ffmpeg_stall_grace_sec=ffmpeg_stall_grace_sec,
         )

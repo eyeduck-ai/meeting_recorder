@@ -11,7 +11,7 @@
 - Windows 的 git ignore 比對可能讓 `plan.md` 擋住 `Plan.md`；官方追蹤文件若大小寫相近，要在 `.gitignore` 用 `!Plan.md` 這類規則明確 unignore。
 - 測試設定解析邏輯時，不要用未規格化的 `Mock` 當完整 settings；`Mock` 會為未定義屬性產生假值，應使用 `SimpleNamespace` 或只讀 `__dict__`/Pydantic field 內實際存在的欄位。
 - 不要把 trigger accepted 視為 recording started；排程生命週期要分開記錄 trigger、實際開始與完成，否則 queue 或 lock 等待期間會污染 catch-up 判斷。
-- 去重 manual trigger 時不要只看 queue 容器；立即觸發的 task 在取得 lock 前也需要 pending 狀態，否則同一 schedule 可能在短時間內重複入列。
+- 去重 manual trigger 時不要只看 queue 容器；立即觸發的 task 在取得錄製 slot 前也需要 pending 狀態，否則同一 schedule 可能在短時間內重複入列。
 - 抽 service 層時要順手檢查三個入口的欄位名稱是否真的存在；Telegram meeting creation 曾使用不存在的 `meeting_url`，應統一走 `MeetingService` 的 model 欄位映射。
 - 將 runtime 移到 FastAPI lifespan 時要保留 router-only 測試 fallback；否則單獨 include router 的 TestClient 會因缺少 `app.state` runtime 而失敗。
 - 拆 DB 模組時，`init_db()` 必須在 `Base.metadata.create_all()` 前 import `database.models` 讓 metadata 註冊完整；只 import `database.base.Base` 會讓 create_all 看不到任何 ORM table。
@@ -52,3 +52,19 @@
 - 移除 legacy 執行路徑時不要只拆 UI/API/runtime 呼叫；若舊 detector module 與 tests 還留著，後續 agent 會誤以為仍是支援功能，應同步刪除死碼、更新 docs，並保留只有 logs/metadata 的相容邊界。
 - stream-copy trim 的實際邊界會受 keyframe 影響；若偵測已精修到 1 秒，錄影 GOP 也要維持約 1 秒，並用 ffprobe actual duration 寫入 diagnostics，否則使用者看到的裁剪結果可能比偵測 metadata 粗。
 - Detection Logs 一旦改成 server-side filters，就要同步補 filtered summary、filter-aware export 與 SQLite indexes；否則 UI stats 會只反映當頁資料，資料量增加後 count/order/filter 也會變慢。
+- 並行錄製不能只移除 `JobRunner` 的 lock；每個 active job 必須隔離 Xvfb display、browser profile、FFmpeg process 與 PipeWire/Pulse sink，否則會出現 display lock 衝突或不同會議音訊混錄。
+- status callback 不能用綁定單一 job 的 closure；同一個 worker 並行錄製時後啟動的 callback 會覆蓋前一個，應以 `job_id` 查 per-job attempt/status 狀態。
+- 並行 queue 不要拆成 schedule queue 與 direct queue 兩條容器；只要 queue position 和 drain priority 不是同一個 owner，就會出現 UI 顯示順序與實際啟動順序不一致。
+- job lifecycle 操作不要在 REST route、Web UI route 和 template 各自維護 status list；queued cancel、active stop/finish、uploading 保護與 terminal-only delete 應由單一 service 決策，否則按鈕會顯示但 route 實際 no-op 或誤改 DB。
+- upload 不是錄影本身的終態；YouTube 未設定、未授權或失敗時，不應讓已成功錄影的 job 永久停在 `uploading`，應回到 `succeeded` 並記錄 upload issue。
+- upload 成功、metadata 寫入與 Telegram 通知要分開錯誤邊界；一旦 `youtube_video_id` / `youtube_uploaded_at` 已寫入，通知失敗只能記 warning，不能再改寫成 upload failed 或清掉成功結果。
+- UI 顯示 Stop/Finish 時不能只信 worker registry；必須同時確認 DB status 仍在 `ACTIVE_RECORDING_STATUSES`，避免 job 已轉 `uploading` / `succeeded` 的短暫 race 顯示錯誤操作。
+- retry wait 不應留在 active recording task 裡 `sleep`；網路錯誤等待重試時應釋放 slot，透過 delayed requeue 回到 FIFO，否則低並行部署會被沒有錄影的等待任務卡住。
+- 多路錄製的磁碟保護不能只看單一 job 啟動時 free space；active job 需要 process-local reservation，否則兩場長錄製可同時通過檢查後一起耗盡磁碟。
+- Telegram 多 job 操作不能直接呼叫 worker global cancel；必須先解析 job id 或最新 active DB job，再走 `JobActionService`，避免 `_current_job` 相容狀態停錯錄製。
+- upload task 不能 fire-and-forget；shutdown 或 restart 中斷後要把 stale `uploading` 恢復為 `succeeded` 並記錄 upload interrupted，保留錄影成功語意。
+- retry waiting 如果另放在 process-local bucket，就不能只讓 `ScheduleRunQueue` 暴露 queue view；API/UI/Telegram 仍需要可觀測與可取消的 retry waiting view，否則 DB 顯示 `queued` 但使用者找不到取消入口。
+- 取消帶 `schedule_id` 的 immediate queue item 時，要同步釋放 pending schedule state；否則 queue item 已消失但 duplicate set 殘留，會讓同一 schedule 長期被誤判為 running/queued。
+- active / queued / retry waiting 是 runtime view，不只是 template helper；若 API、Web UI、Telegram 各自重建 ids 和 countdown maps，很容易出現 stale DB active row、retry waiting 不可見或 queued cancel 文案不一致，應由單一 snapshot service 產生。
+- 相容測試用的 broad `TypeError` fallback 會吞掉 constructor 內部真正錯誤；若要支援新參數，應更新 fake/test double，而不是在 production path 靜默退回舊資源模型。
+- runtime startup cleanup 不應只看 `_started` flag；Xvfb、audio keepalive 或 sink module 可能在 `_started=True` 前已建立，取消或例外路徑也必須逐項回收。

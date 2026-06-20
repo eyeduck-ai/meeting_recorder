@@ -1,5 +1,6 @@
 """Tests for the unified job runner execution paths."""
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -15,6 +16,7 @@ import scheduling.upload_runner as upload_runner_module
 from database.migrations import run_schema_migrations
 from database.models import (
     Base,
+    ErrorCode,
     JobStatus,
     Meeting,
     Schedule,
@@ -24,6 +26,9 @@ from database.models import (
 )
 from recording.worker import RecordingJob, RecordingResult
 from scheduling.job_runner import JobRunner, QueueScheduleResult, calculate_retry_window_end
+from scheduling.recording_executor import RecordingRetryRequest
+from scheduling.schedule_queue import QueuedRunItem
+from scheduling.upload_runner import UploadRequest
 from services.runtime_config import RuntimeRecordingConfig
 from utils.timezone import utc_now
 
@@ -154,15 +159,19 @@ class TestJobRunner:
         assert len(scheduled) == 1
 
         scheduled_coro = scheduled[0]
-        assert scheduled_coro.cr_code.co_name == "_run_direct_job"
-        assert scheduled_coro.cr_frame.f_locals["job"].job_id == job_id
-        assert scheduled_coro.cr_frame.f_locals["job"].lobby_wait_sec == 450
-        assert scheduled_coro.cr_frame.f_locals["job"].resolution == (1600, 900)
-        assert scheduled_coro.cr_frame.f_locals["job"].recording_browser_mode == "app"
-        assert scheduled_coro.cr_frame.f_locals["job"].recording_crop_mode == "manual"
-        assert scheduled_coro.cr_frame.f_locals["job"].recording_crop_top_px == 66
-        deadline = scheduled_coro.cr_frame.f_locals["meeting_end_time"]
-        assert before + timedelta(seconds=3720) <= deadline <= after + timedelta(seconds=3720)
+        assert scheduled_coro.cr_code.co_name == "_run_queue_item"
+        queue_item = scheduled_coro.cr_frame.f_locals["queue_item"]
+        assert queue_item.kind == "immediate"
+        assert queue_item.job_id == job_id
+        queued_payload = runner._direct_payloads[job_id]
+        queued_job = queued_payload.job
+        assert queued_job.job_id == job_id
+        assert queued_job.lobby_wait_sec == 450
+        assert queued_job.resolution == (1600, 900)
+        assert queued_job.recording_browser_mode == "app"
+        assert queued_job.recording_crop_mode == "manual"
+        assert queued_job.recording_crop_top_px == 66
+        assert before + timedelta(seconds=3720) <= queued_payload.meeting_end_time <= after + timedelta(seconds=3720)
         scheduled_coro.close()
 
         session = session_local()
@@ -239,34 +248,32 @@ class TestJobRunner:
             session.close()
 
     def test_queue_schedule_returns_queued_when_busy(self, monkeypatch):
-        """Busy runner should accept a different schedule into the queue."""
-        runner = JobRunner()
+        """Runner at capacity should accept a different schedule into the queue."""
+        runner = JobRunner(max_concurrent_recordings=1)
         scheduled = []
+
+        class FakeTask:
+            def add_done_callback(self, _callback):
+                return None
 
         def fake_create_task(coro):
             scheduled.append(coro)
-            return Mock()
+            return FakeTask()
 
         monkeypatch.setattr(job_runner_module.asyncio, "create_task", fake_create_task)
 
-        async def hold_lock():
-            await runner._lock.acquire()
+        first = runner.queue_schedule(1, manual_trigger=True)
+        second = runner.queue_schedule(2, manual_trigger=True)
 
-        import asyncio
-
-        asyncio.run(hold_lock())
-        try:
-            result = runner.queue_schedule(1, manual_trigger=True)
-            assert result == QueueScheduleResult(
-                accepted=True,
-                status="queued",
-                schedule_id=1,
-                queue_position=1,
-            )
-            assert runner.queue_length == 1
-            scheduled[0].close()
-        finally:
-            runner._lock.release()
+        assert first.status == "triggered"
+        assert second == QueueScheduleResult(
+            accepted=True,
+            status="queued",
+            schedule_id=2,
+            queue_position=1,
+        )
+        assert runner.queue_length == 1
+        scheduled[0].close()
 
     def test_queue_schedule_rejects_duplicate_pending_schedule(self, monkeypatch):
         """A schedule accepted but not yet running should not be accepted twice."""
@@ -288,14 +295,14 @@ class TestJobRunner:
         assert second.status == "duplicate"
         scheduled[0].close()
 
-    def test_queue_schedule_treats_pending_processor_as_busy(self, monkeypatch):
-        """A second schedule should queue while the first accepted schedule is still pending."""
-        runner = JobRunner()
+    def test_queue_schedule_starts_until_capacity_then_queues(self, monkeypatch):
+        """Schedules should start until capacity is full, then queue."""
+        runner = JobRunner(max_concurrent_recordings=2)
         scheduled = []
 
         class FakeTask:
-            def done(self):
-                return False
+            def add_done_callback(self, _callback):
+                return None
 
         def fake_create_task(coro):
             scheduled.append(coro)
@@ -305,6 +312,7 @@ class TestJobRunner:
 
         first = runner.queue_schedule(1, manual_trigger=True)
         second = runner.queue_schedule(2, manual_trigger=True)
+        third = runner.queue_schedule(3, manual_trigger=True)
 
         assert first == QueueScheduleResult(
             accepted=True,
@@ -314,13 +322,64 @@ class TestJobRunner:
         )
         assert second == QueueScheduleResult(
             accepted=True,
-            status="queued",
+            status="triggered",
             schedule_id=2,
+            queue_position=0,
+        )
+        assert third == QueueScheduleResult(
+            accepted=True,
+            status="queued",
+            schedule_id=3,
             queue_position=1,
         )
-        assert runner.queue_length == 2
-        assert len(scheduled) == 1
-        scheduled[0].close()
+        assert runner.queue_length == 1
+        assert len(scheduled) == 2
+        for coro in scheduled:
+            coro.close()
+
+    @pytest.mark.asyncio
+    async def test_fifo_queue_does_not_let_schedule_jump_queued_immediate(self, session_local, monkeypatch):
+        """Mixed immediate/schedule work should drain in enqueue order."""
+        runner = JobRunner(max_concurrent_recordings=1)
+        scheduled = []
+        tasks = []
+
+        class FakeTask:
+            def add_done_callback(self, _callback):
+                return None
+
+            def result(self):
+                return None
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            task = FakeTask()
+            tasks.append(task)
+            return task
+
+        monkeypatch.setattr(job_runner_module.asyncio, "create_task", fake_create_task)
+
+        first = runner.queue_schedule(1, manual_trigger=True)
+        job_id = await runner.run_immediate(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=120,
+        )
+        second_schedule = runner.queue_schedule(2, manual_trigger=True)
+
+        assert first.status == "triggered"
+        assert second_schedule.status == "queued"
+        assert [item.kind for item in runner.queued_items] == ["immediate", "schedule"]
+        assert [item.queue_position for item in runner.queued_items] == [1, 2]
+
+        runner._recording_task_done(tasks[0])
+
+        next_item = scheduled[1].cr_frame.f_locals["queue_item"]
+        assert next_item.kind == "immediate"
+        assert next_item.job_id == job_id
+        for coro in scheduled:
+            coro.close()
 
     @pytest.mark.asyncio
     async def test_manual_schedule_trigger_deadline_uses_trigger_time(self, session_local, monkeypatch):
@@ -402,15 +461,9 @@ class TestJobRunner:
         assert before + timedelta(seconds=3720) <= deadline <= after + timedelta(seconds=3720)
 
     @pytest.mark.asyncio
-    async def test_retry_keeps_same_job_id_and_single_db_row(self, session_local, monkeypatch):
-        """Retryable failures should reuse one logical job_id and update the same recording_jobs row."""
+    async def test_retry_returns_delayed_request_then_keeps_same_job_id(self, session_local, monkeypatch):
+        """Retryable failures should release the slot and resume with one logical job row."""
         runner = JobRunner()
-
-        async def fast_sleep(_seconds):
-            return None
-
-        monkeypatch.setattr(recording_executor_module.asyncio, "sleep", fast_sleep)
-
         job = RecordingJob.create(
             provider="jitsi",
             meeting_code="room-123",
@@ -454,7 +507,7 @@ class TestJobRunner:
         finally:
             session.close()
 
-        upload_request = await runner._run_recording_with_retry(
+        retry_request = await runner._run_recording_with_retry(
             job=job,
             schedule_id=None,
             meeting_end_time=utc_now() + timedelta(minutes=5),
@@ -463,16 +516,459 @@ class TestJobRunner:
             meeting_name=None,
         )
 
-        assert upload_request is None
-        assert fake_worker.calls == [("stable123", 1), ("stable123", 2)]
+        assert isinstance(retry_request, RecordingRetryRequest)
+        assert runner.available_slots == runner.max_concurrent_recordings
+        assert fake_worker.calls == [("stable123", 1)]
 
         session = session_local()
         try:
             rows = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "stable123").all()
             assert len(rows) == 1
             db_job = rows[0]
+            assert db_job.status == JobStatus.QUEUED.value
+            assert db_job.attempt_no == 1
+            assert db_job.retry_count == 0
+        finally:
+            session.close()
+
+        final_outcome = await runner._run_recording_with_retry(
+            job=retry_request.job,
+            schedule_id=retry_request.schedule_id,
+            meeting_end_time=retry_request.meeting_end_time,
+            youtube_enabled=retry_request.youtube_enabled,
+            youtube_privacy=retry_request.youtube_privacy,
+            meeting_name=retry_request.meeting_name,
+            retry_delay_sec=retry_request.next_retry_delay_sec,
+        )
+
+        assert final_outcome is None
+        assert fake_worker.calls == [("stable123", 1), ("stable123", 2)]
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "stable123").one()
             assert db_job.status == JobStatus.SUCCEEDED.value
             assert db_job.attempt_no == 2
             assert db_job.retry_count == 1
+        finally:
+            session.close()
+
+    @pytest.mark.asyncio
+    async def test_delayed_retry_requeues_same_job_without_occupying_slot(self, monkeypatch):
+        """Delayed retry wait should not count as an active recording slot."""
+        runner = JobRunner(max_concurrent_recordings=1)
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="retryqueue",
+        )
+        retry_request = RecordingRetryRequest(
+            job=job,
+            schedule_id=42,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+            delay_sec=0,
+            next_retry_delay_sec=30,
+            error_message="ERR_NAME_NOT_RESOLVED",
+        )
+        monkeypatch.setattr(runner, "_drain_queues", lambda: None)
+
+        runner._schedule_retry(retry_request)
+        assert runner.active_count == 0
+        assert runner.available_slots == 1
+        assert runner.is_schedule_active_or_queued(42) is True
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert runner.queue_length == 1
+        assert runner.queued_items[0].job_id == "retryqueue"
+        assert runner.queued_items[0].schedule_id == 42
+        assert runner._direct_payloads["retryqueue"].retry_delay_sec == 30
+
+    @pytest.mark.asyncio
+    async def test_cancel_delayed_retry_prevents_job_revival(self):
+        """Queued retry payloads should be cancelable before they re-enter FIFO."""
+        runner = JobRunner(max_concurrent_recordings=1)
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="retrycancel",
+        )
+        retry_request = RecordingRetryRequest(
+            job=job,
+            schedule_id=None,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+            delay_sec=300,
+            next_retry_delay_sec=30,
+            error_message="ERR_NAME_NOT_RESOLVED",
+        )
+
+        runner._schedule_retry(retry_request)
+
+        assert runner.cancel_queued_job("retrycancel") is True
+        await asyncio.sleep(0)
+
+        assert runner.queue_length == 0
+        assert "retrycancel" not in runner._retry_requests
+        assert "retrycancel" not in runner._direct_payloads
+
+    @pytest.mark.asyncio
+    async def test_structured_cancel_reports_retry_waiting_source(self, session_local):
+        """Action callers should know whether a queued cancel came from retry waiting."""
+        runner = JobRunner(max_concurrent_recordings=1)
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="retry-structured",
+        )
+        retry_request = RecordingRetryRequest(
+            job=job,
+            schedule_id=42,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+            delay_sec=300,
+            next_retry_delay_sec=30,
+            error_message="ERR_NAME_NOT_RESOLVED",
+        )
+
+        runner._schedule_retry(retry_request)
+
+        result = runner.cancel_queued_job_for_action("retry-structured")
+        await asyncio.sleep(0)
+
+        assert result.removed is True
+        assert result.source == "retry_waiting"
+        assert result.schedule_id == 42
+        assert runner.retry_waiting_count == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_waiting_items_expose_delayed_retry_without_fifo_position(self, session_local):
+        """Delayed retries should be observable before they re-enter the FIFO queue."""
+        runner = JobRunner(max_concurrent_recordings=1)
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="retrywait",
+        )
+        retry_request = RecordingRetryRequest(
+            job=job,
+            schedule_id=42,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+            delay_sec=300,
+            next_retry_delay_sec=300,
+            error_message="ERR_NAME_NOT_RESOLVED",
+        )
+
+        runner._schedule_retry(retry_request)
+
+        waiting_items = runner.retry_waiting_items
+        assert runner.queue_length == 0
+        assert runner.retry_waiting_count == 1
+        assert waiting_items[0].job_id == "retrywait"
+        assert waiting_items[0].schedule_id == 42
+        assert waiting_items[0].status == "retry_waiting"
+        assert waiting_items[0].retry_after_sec > 0
+
+        runner.cancel_queued_job("retrywait")
+        await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_marks_interrupted_upload_succeeded(self, session_local, monkeypatch, tmp_path):
+        """Shutdown should not leave an upload task stuck in uploading."""
+        runner = JobRunner()
+        video_path = tmp_path / "recording.mkv"
+        video_path.write_bytes(b"video")
+        session = session_local()
+        try:
+            session.add(
+                RecordingJobModel(
+                    job_id="upload-shutdown",
+                    provider="jitsi",
+                    meeting_code="room-123",
+                    display_name="Recorder Bot",
+                    duration_sec=300,
+                    status=JobStatus.UPLOADING.value,
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        async def blocked_upload(_request):
+            await asyncio.sleep(300)
+
+        monkeypatch.setattr(runner, "_run_upload_task", blocked_upload)
+
+        runner._start_upload_task(
+            UploadRequest(
+                job_id="upload-shutdown",
+                video_path=video_path,
+                title="Meeting",
+                privacy="unlisted",
+            )
+        )
+        await runner.shutdown(upload_timeout_sec=0)
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "upload-shutdown").one()
+            assert db_job.status == JobStatus.SUCCEEDED.value
+            assert db_job.error_message == "YouTube upload interrupted by server shutdown"
+        finally:
+            session.close()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_clears_pending_retry_state(self):
+        """Shutdown should cancel delayed retry tasks and clear process-local retry state."""
+        runner = JobRunner()
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="retryshutdown",
+        )
+        retry_request = RecordingRetryRequest(
+            job=job,
+            schedule_id=42,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+            delay_sec=300,
+            next_retry_delay_sec=300,
+            error_message="ERR_NAME_NOT_RESOLVED",
+        )
+
+        runner._schedule_retry(retry_request)
+        await runner.shutdown(upload_timeout_sec=0, recording_timeout_sec=0)
+
+        assert runner.retry_waiting_count == 0
+        assert runner.retry_waiting_items == []
+        assert runner._retry_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_active_recording_tasks(self):
+        """Shutdown should request active recording cancellation and cancel tasks after timeout."""
+
+        class ShutdownWorker:
+            def __init__(self):
+                self.active_jobs = [SimpleNamespace(job_id="active-shutdown")]
+                self.canceled: list[str] = []
+
+            def request_cancel(self, job_id):
+                self.canceled.append(job_id)
+                return True
+
+        worker = ShutdownWorker()
+        runner = JobRunner(worker=worker)
+        task = asyncio.create_task(asyncio.sleep(300))
+        runner._track_active_task(task)
+
+        await runner.shutdown(upload_timeout_sec=0, recording_timeout_sec=0)
+
+        assert worker.canceled == ["active-shutdown"]
+        assert task.cancelled()
+        assert runner.active_count == 0
+
+    @pytest.mark.asyncio
+    async def test_shutdown_retry_outcome_marks_job_failed_without_new_retry(self, session_local):
+        """A retry result produced during shutdown should not create new delayed retry state."""
+        runner = JobRunner()
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="retry-no-shutdown",
+        )
+        session = session_local()
+        try:
+            runner._persist_job_created(
+                session=session,
+                job=job,
+                schedule_id=None,
+                provider=job.provider,
+                meeting_code=job.meeting_code,
+                display_name=job.display_name,
+                base_url=job.base_url,
+                duration_sec=job.duration_sec,
+                lobby_wait_sec=job.lobby_wait_sec,
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        retry_request = RecordingRetryRequest(
+            job=job,
+            schedule_id=None,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+            delay_sec=300,
+            next_retry_delay_sec=300,
+            error_message="ERR_NAME_NOT_RESOLVED",
+        )
+
+        runner._shutting_down = True
+        runner._handle_recording_outcome(retry_request)
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == job.job_id).one()
+            assert db_job.status == JobStatus.FAILED.value
+            assert db_job.error_code == ErrorCode.INTERNAL_ERROR.value
+            assert runner.retry_waiting_count == 0
+        finally:
+            session.close()
+
+    @pytest.mark.asyncio
+    async def test_direct_queue_item_marks_job_failed_when_payload_missing(self, session_local):
+        """A queued DB row should not remain queued if its in-memory payload is gone."""
+        runner = JobRunner()
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="lostpayload",
+        )
+
+        session = session_local()
+        try:
+            runner._persist_job_created(
+                session=session,
+                job=job,
+                schedule_id=None,
+                provider=job.provider,
+                meeting_code=job.meeting_code,
+                display_name=job.display_name,
+                base_url=job.base_url,
+                duration_sec=job.duration_sec,
+                lobby_wait_sec=job.lobby_wait_sec,
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        await runner._run_direct_queue_item(QueuedRunItem(kind="immediate", created_at=utc_now(), job_id=job.job_id))
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == job.job_id).one()
+            assert db_job.status == JobStatus.FAILED.value
+            assert db_job.error_code == ErrorCode.INTERNAL_ERROR.value
+            assert db_job.failure_stage == "dispatch_recording"
+            assert db_job.completed_at is not None
+        finally:
+            session.close()
+
+    @pytest.mark.asyncio
+    async def test_direct_queue_item_marks_job_failed_on_executor_crash(self, session_local, monkeypatch):
+        """Unexpected executor exceptions should leave a terminal DB state."""
+        runner = JobRunner()
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            job_id="crashjob",
+        )
+
+        session = session_local()
+        try:
+            runner._persist_job_created(
+                session=session,
+                job=job,
+                schedule_id=None,
+                provider=job.provider,
+                meeting_code=job.meeting_code,
+                display_name=job.display_name,
+                base_url=job.base_url,
+                duration_sec=job.duration_sec,
+                lobby_wait_sec=job.lobby_wait_sec,
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        runner._direct_payloads[job.job_id] = job_runner_module.DirectRecordingQueueItem(
+            job=job,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+        monkeypatch.setattr(runner, "_run_recording_with_retry", AsyncMock(side_effect=RuntimeError("boom")))
+
+        await runner._run_direct_queue_item(QueuedRunItem(kind="immediate", created_at=utc_now(), job_id=job.job_id))
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == job.job_id).one()
+            assert db_job.status == JobStatus.FAILED.value
+            assert db_job.error_code == ErrorCode.INTERNAL_ERROR.value
+            assert db_job.failure_stage == "recording_executor"
+            assert "boom" in db_job.error_message
+        finally:
+            session.close()
+
+    @pytest.mark.asyncio
+    async def test_schedule_executor_crash_marks_created_job_failed(self, session_local, monkeypatch):
+        """A scheduled DB row should not remain queued if executor startup crashes."""
+        runner = JobRunner()
+        monkeypatch.setattr(runner, "_run_recording_with_retry", AsyncMock(side_effect=RuntimeError("boom")))
+
+        session = session_local()
+        try:
+            meeting = Meeting(
+                name="Crash Schedule",
+                provider="jitsi",
+                site_base_url="https://meet.jit.si",
+                meeting_code="room-123",
+                default_display_name="Recorder Bot",
+            )
+            schedule = Schedule(
+                meeting=meeting,
+                schedule_type="once",
+                duration_sec=180,
+                enabled=True,
+            )
+            session.add(meeting)
+            session.add(schedule)
+            session.commit()
+            schedule_id = schedule.id
+        finally:
+            session.close()
+
+        await runner._execute_schedule(schedule_id)
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.schedule_id == schedule_id).one()
+            assert db_job.status == JobStatus.FAILED.value
+            assert db_job.error_code == ErrorCode.INTERNAL_ERROR.value
+            assert db_job.failure_stage == "recording_executor"
+            assert "boom" in db_job.error_message
         finally:
             session.close()

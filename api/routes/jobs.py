@@ -2,16 +2,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from api.runtime import get_app_job_service, get_app_worker
-from database.models import (
-    JobStatus,
+from api.runtime import (
+    get_app_job_action_service,
+    get_app_job_runner,
+    get_app_job_runtime_state_service,
+    get_app_job_service,
+    get_app_worker,
 )
 from database.models import (
     RecordingJob as RecordingJobModel,
 )
 from database.session import JobRepository, get_db
 from providers import list_providers, validate_provider_name
-from services.errors import ConflictError, ServiceError
+from services.errors import ConflictError, NotFoundError, ServiceError, ValidationError
+from services.job_actions import ACTIVE_RECORDING_STATUSES
+from services.job_runtime_state import active_job_payload
 from services.job_service import ImmediateRecordingData
 from uploading.progress import get_latest_progress, get_progress
 
@@ -77,6 +82,58 @@ class JobResponse(BaseModel):
     failure_stage: str | None = None
     runtime_summary: dict | None = None
     diagnostics: DiagnosticInfo | None = None
+
+
+class ActiveJobPayload(BaseModel):
+    """Active recording item in the /jobs/active response."""
+
+    job_id: str
+    status: str
+    meeting_code: str
+    display_name: str
+    duration_sec: int
+    started_at: str | None = None
+    recording_started_at: str | None = None
+    detectors: dict = Field(default_factory=dict)
+
+
+class QueuedJobPayload(BaseModel):
+    """FIFO queued item in the /jobs/active response."""
+
+    kind: str
+    queue_position: int
+    job_id: str | None = None
+    schedule_id: int | None = None
+    status: str
+    meeting_code: str | None = None
+    display_name: str | None = None
+    manual_trigger: bool = False
+    created_at: str | None = None
+
+
+class RetryWaitingJobPayload(BaseModel):
+    """Delayed retry waiting item in the /jobs/active response."""
+
+    job_id: str
+    schedule_id: int | None = None
+    status: str
+    retry_after_sec: int
+    meeting_code: str | None = None
+    display_name: str | None = None
+
+
+class ActiveRecordingsResponse(BaseModel):
+    """Capacity and runtime state for currently active or queued recordings."""
+
+    active: bool
+    active_jobs: list[ActiveJobPayload]
+    active_count: int
+    queued_items: list[QueuedJobPayload] = Field(default_factory=list)
+    retry_waiting_items: list[RetryWaitingJobPayload] = Field(default_factory=list)
+    retry_waiting_count: int = 0
+    queue_length: int
+    max_concurrent_recordings: int
+    available_slots: int
 
 
 def _model_to_response(job: RecordingJobModel) -> JobResponse:
@@ -161,42 +218,34 @@ async def start_recording(
 async def get_current_recording(http_request: Request, db: Session = Depends(get_db)):
     """Get currently active recording status for dashboard."""
     worker = get_app_worker(http_request)
+    runner = get_app_job_runner(http_request)
+    snapshot = get_app_job_runtime_state_service(http_request).build_snapshot(db, worker=worker, runner=runner)
+    jobs = snapshot.active_jobs
 
-    # Check if worker is busy
-    if not worker.is_busy or not worker._current_job:
-        return {"active": False, "job": None}
+    if not jobs and getattr(worker, "is_busy", False) and getattr(worker, "_current_job", None):
+        repo = JobRepository(db)
+        db_job = repo.get_by_job_id(worker._current_job.job_id)
+        jobs = [db_job] if db_job and db_job.status in ACTIVE_RECORDING_STATUSES else []
 
-    # Get database record for the current job
-    repo = JobRepository(db)
-    current_job_id = worker._current_job.job_id
-    db_job = repo.get_by_job_id(current_job_id)
+    if not jobs:
+        return {"active": False, "job": None, "active_count": 0}
 
-    if not db_job:
-        return {"active": False, "job": None}
+    db_job = jobs[0]
 
-    terminal_statuses = {
-        JobStatus.SUCCEEDED.value,
-        JobStatus.FAILED.value,
-        JobStatus.CANCELED.value,
-    }
-    if db_job.status in terminal_statuses:
-        return {"active": False, "job": None}
-
-    # Build response with live status
     return {
         "active": True,
-        "job": {
-            "job_id": db_job.job_id,
-            "status": db_job.status,
-            "meeting_code": db_job.meeting_code,
-            "display_name": db_job.display_name,
-            "duration_sec": db_job.duration_sec,
-            "started_at": db_job.started_at.isoformat() if db_job.started_at else None,
-            "recording_started_at": db_job.recording_started_at.isoformat() if db_job.recording_started_at else None,
-            # Detector status placeholder - will be populated when detection is active
-            "detectors": {},
-        },
+        "job": active_job_payload(db_job),
+        "active_count": len(jobs),
     }
+
+
+@router.get("/active", response_model=ActiveRecordingsResponse)
+async def get_active_recordings(http_request: Request, db: Session = Depends(get_db)):
+    """Get all active recording jobs and queue capacity state."""
+    worker = get_app_worker(http_request)
+    runner = get_app_job_runner(http_request)
+    snapshot = get_app_job_runtime_state_service(http_request).build_snapshot(db, worker=worker, runner=runner)
+    return snapshot.to_active_response()
 
 
 @router.get("/progress/active")
@@ -266,70 +315,29 @@ async def get_job(job_id: str, db: Session = Depends(get_db)):
 @router.post("/{job_id}/stop")
 async def stop_job(job_id: str, http_request: Request, db: Session = Depends(get_db)):
     """Request to stop a running job."""
-    repo = JobRepository(db)
-    job = repo.get_by_job_id(job_id)
-
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    # Check if job can be stopped
-    terminal_statuses = [
-        JobStatus.SUCCEEDED.value,
-        JobStatus.FAILED.value,
-        JobStatus.CANCELED.value,
-    ]
-    if job.status in terminal_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job is already in terminal state: {job.status}",
-        )
-
-    worker = get_app_worker(http_request)
-    if not worker.is_busy or not worker._current_job or worker._current_job.job_id != job_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Job is not currently running",
-        )
-    if worker.request_cancel():
-        return {"message": "Cancellation requested", "job_id": job_id}
-    raise HTTPException(
-        status_code=400,
-        detail="Could not request cancellation",
-    )
+    try:
+        result = get_app_job_action_service(http_request).stop_job(db, job_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"message": result.message, "job_id": job_id}
 
 
 @router.post("/{job_id}/finish")
 async def finish_job(job_id: str, http_request: Request, db: Session = Depends(get_db)):
     """Request to finish a running job early (success path)."""
-    repo = JobRepository(db)
-    job = repo.get_by_job_id(job_id)
-
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    terminal_statuses = [
-        JobStatus.SUCCEEDED.value,
-        JobStatus.FAILED.value,
-        JobStatus.CANCELED.value,
-    ]
-    if job.status in terminal_statuses:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job is already in terminal state: {job.status}",
-        )
-
-    worker = get_app_worker(http_request)
-    if not worker.is_busy or not worker._current_job or worker._current_job.job_id != job_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Job is not currently running",
-        )
-    if worker.request_finish():
-        return {"message": "Finish requested", "job_id": job_id}
-    raise HTTPException(
-        status_code=400,
-        detail="Could not request finish",
-    )
+    try:
+        result = get_app_job_action_service(http_request).finish_job(db, job_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"message": result.message, "job_id": job_id}
 
 
 @router.get("/", response_model=list[JobResponse])

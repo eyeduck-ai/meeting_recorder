@@ -8,7 +8,7 @@ from database.models import RecordingJob
 from database.session import JobRepository
 from services.errors import ConflictError, ServiceError
 
-BUSY_DETAIL = "Worker is busy with another recording. Only one recording at a time is supported."
+BUSY_DETAIL = "Recording could not be queued."
 
 
 @dataclass(frozen=True)
@@ -33,9 +33,6 @@ class JobService:
     async def start_immediate_recording(self, db: Session, data: ImmediateRecordingData) -> RecordingJob:
         """Start an immediate recording and return the persisted DB job."""
         runner = self._get_job_runner()
-        if runner.is_busy:
-            raise ConflictError(BUSY_DETAIL)
-
         job_id = await runner.run_immediate(
             provider=data.provider,
             meeting_code=data.meeting_code,

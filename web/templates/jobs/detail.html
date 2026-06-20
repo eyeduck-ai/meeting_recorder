@@ -16,8 +16,7 @@
         <h1 class="text-2xl md:text-3xl font-bold">Job Details</h1>
         <div class="flex-1"></div>
         {% set status_val = job.status.value if job.status is not string else job.status %}
-        {% set running_statuses = ['starting', 'joining', 'waiting_lobby', 'recording', 'finalizing', 'uploading'] %}
-        {% if status_val in running_statuses %}
+        {% if can_control_job %}
         <div class="flex items-center gap-2">
             <form method="POST" action="/jobs/{{ job.job_id }}/finish">
                 <button type="submit" class="btn btn-warning btn-outline btn-sm">Finish</button>
@@ -26,7 +25,20 @@
                 <button type="submit" class="btn btn-error btn-outline btn-sm">Stop</button>
             </form>
         </div>
+        {% elif is_retry_waiting_job %}
+        <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+            <button type="submit" class="btn btn-error btn-outline btn-sm">Cancel retry</button>
+        </form>
+        {% elif is_queued_job %}
+        <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+            <button type="submit" class="btn btn-error btn-outline btn-sm">Cancel queued</button>
+        </form>
+        {% elif status_val == 'uploading' %}
+        <span class="badge badge-info badge-outline gap-1">
+            <span class="loading loading-spinner loading-xs"></span> Processing
+        </span>
         {% endif %}
+        {% if can_delete_job %}
         <button hx-delete="/jobs/{{ job.job_id }}" hx-confirm="Delete this job? This cannot be undone." hx-target="body"
             hx-swap="outerHTML" onclick="setTimeout(()=>window.location.href='/jobs', 500)"
             class="btn btn-error btn-outline btn-sm gap-2">
@@ -37,6 +49,7 @@
             </svg>
             Delete Job
         </button>
+        {% endif %}
     </div>
 
     <div class="grid grid-cols-1 gap-6 {% if job.schedule %}lg:grid-cols-3{% else %}lg:grid-cols-2{% endif %}">

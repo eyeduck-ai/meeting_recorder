@@ -6,10 +6,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.runtime import get_app_schedule_service
+from api.runtime import get_app_job_action_service, get_app_schedule_service
 from database.models import Schedule
 from database.session import get_db
-from services.errors import NotFoundError, ValidationError
+from services.errors import NotFoundError, ServiceError, ValidationError
 from services.runtime_config import RuntimeConfigError
 from services.schedule_service import ScheduleCreateData
 
@@ -271,3 +271,22 @@ async def trigger_schedule(schedule_id: int, http_request: Request, db: Session 
             "queue_position": result.queue_position,
         },
     )
+
+
+@router.post("/{schedule_id}/cancel-queued")
+async def cancel_queued_schedule(schedule_id: int, http_request: Request, db: Session = Depends(get_db)):
+    """Cancel a queued schedule run without disabling the schedule."""
+    try:
+        get_app_job_action_service(http_request).cancel_queued_schedule(db, schedule_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "message": "Queued schedule run canceled",
+        "id": schedule_id,
+        "status": "canceled",
+    }

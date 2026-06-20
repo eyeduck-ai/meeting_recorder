@@ -13,6 +13,16 @@ from utils.timezone import utc_now
 logger = logging.getLogger(__name__)
 
 
+def _pactl_short_names(output: str) -> set[str]:
+    """Return exact device names from `pactl list ... short` output."""
+    names = set()
+    for line in output.splitlines():
+        columns = line.split("\t")
+        if len(columns) >= 2 and columns[1]:
+            names.add(columns[1])
+    return names
+
+
 def _check_pulseaudio_available(audio_source: str) -> bool:
     """Check if PulseAudio is available and the audio source exists."""
     try:
@@ -30,7 +40,7 @@ def _check_pulseaudio_available(audio_source: str) -> bool:
             capture_output=True,
             timeout=5,
         )
-        return audio_source in result.stdout.decode()
+        return audio_source in _pactl_short_names(result.stdout.decode())
     except Exception as e:
         logger.debug(f"PulseAudio check failed: {e}")
         return False
@@ -203,6 +213,8 @@ class FFmpegPipeline:
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/user/0")
         env["PULSE_SERVER"] = f"unix:{xdg_runtime}/pulse/native"
         env["XDG_RUNTIME_DIR"] = xdg_runtime
+        if self.audio_source.endswith(".monitor"):
+            env["PULSE_SINK"] = self.audio_source[: -len(".monitor")]
 
         # Default: discard stdout, capture stderr to file for debugging
         # CRITICAL: Do NOT use subprocess.PIPE without reading - buffer fills up and blocks FFmpeg!

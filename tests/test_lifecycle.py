@@ -45,6 +45,11 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
         def __init__(self, *, worker):
             self.worker = worker
             self.queue_schedule = lambda *_args, **_kwargs: None
+            self.shutdown_called = False
+
+        async def shutdown(self):
+            self.shutdown_called = True
+            calls.append("runner_shutdown")
 
     class FakeScheduler:
         is_running = False
@@ -99,7 +104,7 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
         assert scheduler_module.get_scheduler() is app.state.scheduler
 
     assert scheduler_instances[0].stopped is True
-    assert calls[-1] == "close_youtube"
+    assert calls[-2:] == ["runner_shutdown", "close_youtube"]
     assert not hasattr(app.state, "worker")
     assert not hasattr(app.state, "job_runner")
     assert not hasattr(app.state, "scheduler")
@@ -148,3 +153,41 @@ async def test_start_recording_route_uses_app_state_job_runner(tmp_path):
         session.close()
 
     assert response.job_id == "route-state-job"
+
+
+def test_cleanup_orphaned_jobs_restores_stale_uploading(monkeypatch, tmp_path):
+    """Startup cleanup should not leave interrupted uploads stuck in uploading."""
+    import api.main as main_module
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'cleanup.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    try:
+        session.add(
+            RecordingJob(
+                job_id="upload-stale",
+                provider="jitsi",
+                meeting_code="room",
+                display_name="Recorder Bot",
+                duration_sec=3600,
+                status=JobStatus.UPLOADING.value,
+                output_path=str(tmp_path / "recording.mkv"),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    monkeypatch.setattr(main_module, "get_session_local", lambda: SessionLocal)
+
+    main_module.cleanup_orphaned_jobs()
+
+    session = SessionLocal()
+    try:
+        job = session.query(RecordingJob).filter(RecordingJob.job_id == "upload-stale").one()
+        assert job.status == JobStatus.SUCCEEDED.value
+        assert job.output_path == str(tmp_path / "recording.mkv")
+        assert job.error_message == "YouTube upload interrupted by server restart"
+    finally:
+        session.close()

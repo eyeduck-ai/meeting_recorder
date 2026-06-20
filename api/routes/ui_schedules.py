@@ -12,7 +12,7 @@ from api.routes import ui_common
 from database.models import Meeting, Schedule, ScheduleType
 from database.session import get_db
 from services.app_settings import get_all_settings
-from services.errors import NotFoundError, ValidationError
+from services.errors import NotFoundError, ServiceError, ValidationError
 from services.runtime_config import RuntimeConfigError
 from services.schedule_service import ScheduleCreateData
 from utils.cron_helper import cron_to_chinese
@@ -20,6 +20,7 @@ from utils.timezone import ensure_utc, utc_now
 
 router = APIRouter(tags=["ui"])
 get_app_schedule_service = api_runtime.get_app_schedule_service
+get_app_job_action_service = api_runtime.get_app_job_action_service
 
 
 @router.get("/schedules", response_class=HTMLResponse)
@@ -233,6 +234,20 @@ async def schedules_trigger(request: Request, schedule_id: int, db: Session = De
         )
 
     return RedirectResponse(url="/jobs", status_code=303)
+
+
+@router.post("/schedules/{schedule_id}/cancel-queued", response_class=HTMLResponse)
+async def schedules_cancel_queued(request: Request, schedule_id: int, db: Session = Depends(get_db)):
+    """Cancel a queued schedule run without disabling the schedule."""
+    try:
+        get_app_job_action_service(request).cancel_queued_schedule(db, schedule_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RedirectResponse(url="/jobs?status=active", status_code=303)
 
 
 @router.delete("/schedules/expired", response_class=HTMLResponse)

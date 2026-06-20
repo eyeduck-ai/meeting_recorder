@@ -11,7 +11,7 @@ import pytest
 import recording.ffmpeg_pipeline as ffmpeg_module
 import recording.session as session_module
 import recording.worker as worker_module
-from database.models import JobStatus
+from database.models import ErrorCode, JobStatus
 from providers.base import JoinResult
 from recording.activity import TrimDecision
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
@@ -351,8 +351,9 @@ class TestRecordingWorker:
         sessions = []
 
         class FakeSession:
-            def __init__(self, job):
+            def __init__(self, job, runtime_resources=None):
                 self.job = job
+                self.runtime_resources = runtime_resources
                 self.stage = None
                 self.cleaned = False
                 sessions.append(self)
@@ -447,6 +448,58 @@ class TestRecordingWorker:
         assert result.failure_stage is None
         assert worker.is_busy is False
 
+    @pytest.mark.asyncio
+    async def test_record_fails_before_runtime_when_disk_space_is_low(self, tmp_path):
+        from recording.capacity_guard import RecordingCapacityGuard
+
+        capacity_guard = RecordingCapacityGuard(
+            settings_provider=lambda: SimpleNamespace(min_free_disk_gb_before_recording=10.0),
+            disk_usage=lambda _path: SimpleNamespace(free=1024**3, total=20 * 1024**3, used=19 * 1024**3),
+        )
+        worker = RecordingWorker(capacity_guard=capacity_guard)
+
+        job = RecordingJob(
+            job_id="job-low-disk",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job-low-disk",
+        )
+
+        result = await worker.record(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.error_code == ErrorCode.DISK_FULL.value
+        assert result.failure_stage == "prepare_runtime"
+        assert worker.is_busy is False
+
+    @pytest.mark.asyncio
+    async def test_recording_session_constructor_type_error_is_not_fallback_swallowed(self, monkeypatch, tmp_path):
+        class BrokenSession:
+            def __init__(self, job, runtime_resources=None):
+                raise TypeError("constructor bug")
+
+        worker = RecordingWorker()
+        monkeypatch.setattr("recording.worker.RecordingSession", BrokenSession)
+
+        job = RecordingJob(
+            job_id="job-type-error",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "recordings" / "job-type-error",
+        )
+
+        result = await worker.record(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.error_code == ErrorCode.INTERNAL_ERROR.value
+        assert result.error_message == "constructor bug"
+        assert result.failure_stage == "prepare_runtime"
+        assert worker.is_busy is False
+
 
 class TestFFmpegPipeline:
     """Tests for FFmpeg command construction."""
@@ -518,6 +571,20 @@ class TestFFmpegPipeline:
         cmd = pipeline._build_command()
 
         assert cmd[cmd.index("-g") + 1] == "30"
+
+    def test_pulseaudio_check_requires_exact_source_name(self, monkeypatch):
+        """A monitor source should not match another source with the same prefix."""
+
+        def fake_run(cmd, **_kwargs):
+            if cmd == ["pactl", "info"]:
+                return Mock(returncode=0)
+            if cmd == ["pactl", "list", "sources", "short"]:
+                return Mock(returncode=0, stdout=b"0\tmr_sink_job12.monitor\tmodule-null-sink.c")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(ffmpeg_module.subprocess, "run", fake_run)
+
+        assert ffmpeg_module._check_pulseaudio_available("mr_sink_job1.monitor") is False
 
 
 class TestRecordingSession:
@@ -1178,7 +1245,7 @@ class TestVirtualEnvironment:
         env = VirtualEnvironment(config=VirtualEnvironmentConfig(pulse_sink_name="virtual_speaker"))
         commands = []
 
-        def fake_run(cmd, **kwargs):
+        def fake_run(cmd, **_kwargs):
             commands.append(cmd)
             if cmd == ["pactl", "info"]:
                 return Mock(returncode=0, stdout="Server Name: PulseAudio")
@@ -1198,3 +1265,49 @@ class TestVirtualEnvironment:
         start_keepalive.assert_awaited_once_with()
         assert ["pactl", "load-module", "module-null-sink"] not in [cmd[:3] for cmd in commands if len(cmd) >= 3]
         assert ["pactl", "set-default-sink", "virtual_speaker"] not in commands
+
+    @pytest.mark.asyncio
+    async def test_setup_pulse_audio_requires_exact_sink_match(self, monkeypatch):
+        """A sink should not be treated as ready only because another sink shares its prefix."""
+        env = VirtualEnvironment(config=VirtualEnvironmentConfig(pulse_sink_name="mr_sink_job1"))
+        commands = []
+
+        def fake_run(cmd, **_kwargs):
+            commands.append(cmd)
+            if cmd == ["pactl", "info"]:
+                return Mock(returncode=0, stdout="Server Name: PulseAudio")
+            if cmd == ["pactl", "list", "sinks", "short"]:
+                return Mock(returncode=0, stdout="0\tmr_sink_job12\tmodule-null-sink.c")
+            if cmd[:3] == ["pactl", "load-module", "module-null-sink"]:
+                return Mock(returncode=0, stdout="77\n", stderr="")
+            if cmd == ["pactl", "list", "sources", "short"]:
+                return Mock(returncode=0, stdout="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr("recording.virtual_env.subprocess.run", fake_run)
+        monkeypatch.setattr(env, "_start_audio_keepalive", AsyncMock())
+
+        await env._setup_pulse_audio()
+
+        assert any(cmd[:3] == ["pactl", "load-module", "module-null-sink"] for cmd in commands)
+
+    @pytest.mark.asyncio
+    async def test_stop_cleans_resources_even_when_not_marked_started(self, monkeypatch):
+        """Startup cancellation after Xvfb begins should still allow cleanup."""
+        env = VirtualEnvironment(config=VirtualEnvironmentConfig(display_num=99))
+        env._xvfb_process = Mock()
+        env._xvfb_process.poll.return_value = None
+        env._audio_module_id = "77"
+        terminate_owned = AsyncMock()
+        cleanup_artifacts = Mock()
+        unloaded = Mock()
+
+        monkeypatch.setattr(env, "_terminate_owned_process", terminate_owned)
+        monkeypatch.setattr(env, "_cleanup_display_artifacts", cleanup_artifacts)
+        monkeypatch.setattr(env, "_unload_owned_audio_sink", unloaded)
+
+        await env.stop()
+
+        terminate_owned.assert_awaited_once()
+        unloaded.assert_called_once_with()
+        cleanup_artifacts.assert_called_once_with()

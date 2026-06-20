@@ -150,7 +150,7 @@ class RecordingMonitor:
         if not self._extension_started:
             self._extension_started = True
             logger.info(
-                "Dynamic extension started after scheduled duration " "(idle_timeout=%ss, max_extension=%ss)",
+                "Dynamic extension started after scheduled duration (idle_timeout=%ss, max_extension=%ss)",
                 getattr(self.job, "dynamic_extension_idle_sec", 300),
                 max_extension,
             )

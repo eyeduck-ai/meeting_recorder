@@ -9,6 +9,7 @@ from config.settings import get_settings
 from providers import get_provider
 from providers.base import DiagnosticData, JoinResult, MeetingStateSnapshot, redact_url_secrets
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
+from recording.runtime_resources import RuntimeResourceLease
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
 from utils.timezone import utc_now
 
@@ -24,8 +25,9 @@ VALID_RECORDING_CROP_MODES = {"auto", "manual", "off"}
 class RecordingSession:
     """Owns the runtime resources for a single recording attempt."""
 
-    def __init__(self, job):
+    def __init__(self, job, runtime_resources: RuntimeResourceLease | None = None):
         self.job = job
+        self.runtime_resources = runtime_resources
         self.settings = get_settings()
         self.resolution_w = getattr(job, "resolution_w", self.settings.resolution_w)
         self.resolution_h = getattr(job, "resolution_h", self.settings.resolution_h)
@@ -148,6 +150,10 @@ class RecordingSession:
             config=VirtualEnvironmentConfig(
                 width=self.resolution_w,
                 height=self.display_h,
+                display_num=self.runtime_resources.display_num if self.runtime_resources else 99,
+                pulse_sink_name=(
+                    self.runtime_resources.pulse_sink_name if self.runtime_resources else "virtual_speaker"
+                ),
             )
         )
         env_vars = await self.virtual_env.start()

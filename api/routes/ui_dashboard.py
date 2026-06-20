@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from api.routes import ui_common
+from api.runtime import get_app_job_runner, get_app_job_runtime_state_service, get_app_worker
 from database.models import JobStatus, Meeting, RecordingJob, Schedule
 from database.session import get_db
 from utils.timezone import utc_now
@@ -25,21 +26,9 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    running_statuses = [
-        JobStatus.STARTING,
-        JobStatus.JOINING,
-        JobStatus.WAITING_LOBBY,
-        JobStatus.RECORDING,
-        JobStatus.FINALIZING,
-        JobStatus.UPLOADING,
-    ]
-    current_job = (
-        db.query(RecordingJob)
-        .filter(RecordingJob.status.in_([s.value for s in running_statuses]))
-        .order_by(RecordingJob.created_at.desc())
-        .first()
-    )
-    current_job_id = current_job.job_id if current_job else None
+    worker = get_app_worker(request)
+    runner = get_app_job_runner(request)
+    runtime_snapshot = get_app_job_runtime_state_service(request).build_snapshot(db, worker=worker, runner=runner)
 
     total_meetings = db.query(Meeting).count()
     total_schedules = db.query(Schedule).count()
@@ -52,7 +41,13 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         "dashboard.html",
         recent_jobs=recent_jobs,
         upcoming_schedules=upcoming_schedules,
-        current_job_id=current_job_id,
+        active_jobs=runtime_snapshot.active_jobs,
+        queued_items=runtime_snapshot.queued_items,
+        retry_waiting_items=runtime_snapshot.retry_waiting_items,
+        queue_length=runtime_snapshot.queue_length,
+        retry_waiting_count=runtime_snapshot.retry_waiting_count,
+        max_concurrent_recordings=runtime_snapshot.max_concurrent_recordings,
+        available_slots=runtime_snapshot.available_slots,
         stats={
             "total_meetings": total_meetings,
             "total_schedules": total_schedules,

@@ -8,7 +8,7 @@
 
 - 會議平台：Jitsi Meet、Cisco Webex、Zoom
 - 排程模式：單次排程、CRON 週期排程、手動立即觸發
-- 錄製控制：大廳等待、提前加入、依音訊/影像活動動態延長結束時間、手動停止/提前完成
+- 錄製控制：受上限保護的並行錄製、FIFO 排隊、大廳等待、提前加入、依音訊/影像活動動態延長結束時間、手動停止/提前完成
 - 錄製畫面：預設以 Chromium app window 開啟會議，避免錄到瀏覽器工具列；保留裁切 fallback
 - 智慧輸出：可依音訊/影像活動裁掉會議開始前與結束後的靜止片段，原始錄影仍會保留
 - 整合能力：Telegram Bot 通知與管理、YouTube Device Flow 授權與上傳
@@ -41,10 +41,18 @@ mkdir -p data recordings diagnostics logs
 - `AUTH_PASSWORD`: Web UI / API 密碼；留空代表不啟用密碼保護
 - `CORS_ALLOWED_ORIGINS`: 需要跨來源 browser client 呼叫 API 時才設定，使用逗號分隔明確 origins，不支援 `*`
 - `DATABASE_URL`: 預設為 `sqlite:///./data/app.db`
+- `MAX_CONCURRENT_RECORDINGS`: 同時錄製上限，預設 `2`
+- `RECORDING_DISPLAY_START` / `RECORDING_DISPLAY_POOL_SIZE`: 每路錄製使用的 Xvfb display pool，預設從 `:100` 起共 `16` 個
+- `MIN_FREE_DISK_GB_BEFORE_RECORDING`: 啟動錄製前最低剩餘磁碟空間，預設 `10`
+- `MAX_PARALLEL_TRANSCODES`: YouTube 上傳前 remux/transcode 並行上限，預設 `1`
 - `TELEGRAM_BOT_TOKEN`: 要使用 Telegram Bot 時設定
 - `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`: 要使用 YouTube 上傳時設定
 
 其餘錄製與通知相關設定可先使用預設值。Web UI 的設定頁可調整錄製解析度、lobby 等待時間、瀏覽器啟動模式、上方裁切 fallback，以及 Detection & Activity 中的智慧裁剪與動態延長預設值。解析度與 lobby 等待時間會套用到手動錄製與之後新建立的排程，既有排程會保留自己的錄製設定；瀏覽器模式與上方裁切是全域錄製設定，會套用到之後執行的錄製工作。智慧裁剪與動態延長可用全域預設，也可在單一排程的 Advanced Options 覆寫。
+
+`MAX_CONCURRENT_RECORDINGS` 必須大於等於 `1`，且不可大於 `RECORDING_DISPLAY_POOL_SIZE`；設定錯誤時服務會在啟動時 fail fast。錄製 slot 滿時，立即錄製與手動觸發排程會依進入順序排隊；Web UI 的 Dashboard / Jobs 會顯示 queue position，queued immediate job 與 queued schedule run 都可取消，queued job 不支援 Finish。錄製中的 job 才能 Stop/Finish；等待 retry 的 job 會顯示 retry 倒數並可取消，但不佔錄製 slot，也不分配 FIFO queue position。YouTube remux/upload 中的 job 只顯示 Processing，不支援 Stop、Finish 或 Delete。Jobs 頁的 Delete completed 只刪除 `succeeded`、`failed`、`canceled` 等終態 job，會保留 queued、active 與 uploading job。
+
+多路錄製會對每個 active job 做保守磁碟預留，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿；若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊。若服務在 YouTube upload 中重啟，job 會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在 `uploading`。
 
 ### 4. 啟動服務
 
@@ -82,6 +90,8 @@ python -m scripts.dev_compose up --build -d
 3. 重新啟動服務。
 4. 使用者先對 Bot 發送 `/start`。
 5. 進入 Web UI 的 `/settings` 或 Telegram 管理流程核准使用者。
+
+常用指令包含 `/list`、`/record`、`/edit`、`/meetings` 與 `/stop`。多場錄製同時進行時，`/list` 會顯示 active job id、FIFO queue count 與 retry waiting count；`/stop` 會停止最新 active recording，`/stop <job_id>` 可停止指定 active job，或取消指定 queued / retry waiting job。
 
 ### YouTube 上傳
 
@@ -137,9 +147,12 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ### 需要多少資源？
 
-- RAM：建議 4 GB 以上
-- CPU：建議 2 vCPU 以上
-- 磁碟：視錄製長度而定，1080p 錄影大約數百 MB 到數 GB
+- 單路 1080p：建議 2-4 vCPU、4 GB RAM 以上
+- 2 路 1080p：建議 6-8 vCPU、8-12 GB RAM、100 GB 以上可用磁碟
+- 4 路 1080p：建議 12-16 vCPU、16-24 GB RAM、250 GB 以上可用磁碟
+- 磁碟：每路 1080p 約 0.5-6 GB/小時；上傳前 remux/transcode 可能短時間需要接近 2 倍影片大小的暫存空間
+
+預設 SQLite 適合低並行部署；若長期提高到 4 路以上或同時有大量 API/UI 操作，建議改用 Postgres 類外部資料庫。
 
 ### 錄製失敗時先看哪裡？
 

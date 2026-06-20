@@ -37,6 +37,84 @@
     </div>
 
 
+    <div id="active-recordings-panel" class="bg-[#16181c] border border-[#2f3336] rounded-xl p-4 md:p-6">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+            <div>
+                <h2 class="text-lg font-bold text-white">Active Recordings</h2>
+                <div class="text-sm text-gray-500 mt-1" id="active-recordings-summary">
+                    {{ active_jobs | length }} active · {{ queue_length }} queued · {{ retry_waiting_count }} retrying
+                    · {{ available_slots }}/{{ max_concurrent_recordings }} slots free
+                </div>
+            </div>
+            <a href="/jobs?status=active"
+                class="btn btn-sm btn-outline border-[#2f3336] text-white rounded-full">View Active</a>
+        </div>
+
+        <div id="active-recordings-list" class="divide-y divide-[#2f3336]">
+            {% if active_jobs or queued_items or retry_waiting_items %}
+            {% for job in active_jobs %}
+            <div class="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                data-active-job-id="{{ job.job_id }}">
+                <a href="/jobs/{{ job.job_id }}" class="min-w-0">
+                    <div class="font-bold text-white truncate">{{ job.meeting_code }}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">#{{ job.job_id[:8] }} · {{ job.status }}</div>
+                </a>
+                <div class="flex items-center gap-2">
+                    <span class="badge badge-info badge-outline gap-1">
+                        <span class="loading loading-spinner loading-xs"></span>{{ job.status }}
+                    </span>
+                    <form method="POST" action="/jobs/{{ job.job_id }}/finish">
+                        <button type="submit" class="btn btn-xs btn-outline btn-warning rounded-full">Finish</button>
+                    </form>
+                    <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Stop</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+            {% for item in queued_items %}
+            <div class="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                data-queued-kind="{{ item.kind }}">
+                <a href="{% if item.job_id %}/jobs/{{ item.job_id }}{% else %}/schedules{% endif %}" class="min-w-0">
+                    <div class="font-bold text-white truncate">{{ item.meeting_code or item.display_name or 'Queued recording' }}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">#{{ item.queue_position }} · queued · {{
+                        item.kind }}</div>
+                </a>
+                <div class="flex items-center gap-2">
+                    <span class="badge badge-neutral badge-outline">Queued #{{ item.queue_position }}</span>
+                    {% if item.kind == 'immediate' and item.job_id %}
+                    <form method="POST" action="/jobs/{{ item.job_id }}/stop">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                    </form>
+                    {% elif item.kind == 'schedule' and item.schedule_id %}
+                    <form method="POST" action="/schedules/{{ item.schedule_id }}/cancel-queued">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+            {% for item in retry_waiting_items %}
+            <div class="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                data-retry-waiting-job-id="{{ item.job_id }}">
+                <a href="/jobs/{{ item.job_id }}" class="min-w-0">
+                    <div class="font-bold text-white truncate">{{ item.meeting_code or item.display_name or 'Retrying recording' }}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">#{{ item.job_id[:8] }} · retry waiting</div>
+                </a>
+                <div class="flex items-center gap-2">
+                    <span class="badge badge-warning badge-outline">Retrying in {{ item.retry_after_sec }}s</span>
+                    <form method="POST" action="/jobs/{{ item.job_id }}/stop">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="py-8 text-sm text-gray-500" id="active-recordings-empty">No active recordings.</div>
+            {% endif %}
+        </div>
+    </div>
+
     <div id="upload-progress-panel"
         class="hidden bg-[#16181c] border border-info/30 rounded-xl p-4 md:p-6 relative overflow-hidden">
         <div class="absolute top-0 left-0 w-1 h-full bg-info"></div>
@@ -92,6 +170,10 @@
                             <span class="text-xs text-red-500 font-bold">Failed</span>
                             {% elif status_val == 'canceled' %}
                             <span class="text-xs text-yellow-500 font-bold">Canceled</span>
+                            {% elif status_val == 'uploading' %}
+                            <span class="text-xs text-blue-400 flex items-center gap-1 font-bold">
+                                <span class="loading loading-spinner loading-xs"></span> Processing
+                            </span>
                             {% else %}
                             <span class="text-xs text-blue-400 flex items-center gap-1 font-bold">
                                 <span class="loading loading-spinner loading-xs"></span> Running
@@ -134,6 +216,11 @@
                                     <span class="text-red-500 text-sm font-bold flex items-center gap-1">Failed</span>
                                     {% elif status_val == 'canceled' %}
                                     <span class="text-yellow-500 text-sm font-bold">Canceled</span>
+                                    {% elif status_val == 'uploading' %}
+                                    <span class="text-blue-400 text-sm font-bold flex items-center gap-2">
+                                        <span class="loading loading-spinner loading-xs"></span>
+                                        Processing
+                                    </span>
                                     {% else %}
                                     <span class="text-blue-400 text-sm font-bold flex items-center gap-2">
                                         <span class="loading loading-spinner loading-xs"></span>
@@ -257,9 +344,117 @@
         return `${h}:${m}:${s}`;
     }
 
+    function escapeHtml(value) {
+        return String(value || '').replace(/[&<>"']/g, (char) => ({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }[char]));
+    }
+
+    function activeJobRow(job) {
+        const jobId = escapeHtml(job.job_id);
+        const status = escapeHtml(job.status);
+        const meeting = escapeHtml(job.meeting_code || job.display_name || 'Recording');
+        return `
+            <div class="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3" data-active-job-id="${jobId}">
+                <a href="/jobs/${jobId}" class="min-w-0">
+                    <div class="font-bold text-white truncate">${meeting}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">#${jobId.slice(0, 8)} · ${status}</div>
+                </a>
+                <div class="flex items-center gap-2">
+                    <span class="badge badge-info badge-outline gap-1">
+                        <span class="loading loading-spinner loading-xs"></span>${status}
+                    </span>
+                    <form method="POST" action="/jobs/${jobId}/finish">
+                        <button type="submit" class="btn btn-xs btn-outline btn-warning rounded-full">Finish</button>
+                    </form>
+                    <form method="POST" action="/jobs/${jobId}/stop">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Stop</button>
+                    </form>
+                </div>
+            </div>`;
+    }
+
+    function queuedItemRow(item) {
+        const kind = escapeHtml(item.kind || 'queued');
+        const position = Number(item.queue_position || 0);
+        const meeting = escapeHtml(item.meeting_code || item.display_name || 'Queued recording');
+        const jobId = item.job_id ? escapeHtml(item.job_id) : '';
+        const scheduleId = item.schedule_id ? escapeHtml(item.schedule_id) : '';
+        const href = jobId ? `/jobs/${jobId}` : '/schedules';
+        const action = kind === 'immediate' && jobId
+            ? `/jobs/${jobId}/stop`
+            : (kind === 'schedule' && scheduleId ? `/schedules/${scheduleId}/cancel-queued` : '');
+        const actionForm = action ? `
+            <form method="POST" action="${action}">
+                <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+            </form>` : '';
+        return `
+            <div class="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3" data-queued-kind="${kind}">
+                <a href="${href}" class="min-w-0">
+                    <div class="font-bold text-white truncate">${meeting}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">#${position} · queued · ${kind}</div>
+                </a>
+                <div class="flex items-center gap-2">
+                    <span class="badge badge-neutral badge-outline">Queued #${position}</span>
+                    ${actionForm}
+                </div>
+            </div>`;
+    }
+
+    function retryWaitingItemRow(item) {
+        const jobId = escapeHtml(item.job_id || '');
+        const retryAfter = Number(item.retry_after_sec || 0);
+        const meeting = escapeHtml(item.meeting_code || item.display_name || 'Retrying recording');
+        if (!jobId) return '';
+        return `
+            <div class="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3" data-retry-waiting-job-id="${jobId}">
+                <a href="/jobs/${jobId}" class="min-w-0">
+                    <div class="font-bold text-white truncate">${meeting}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">#${jobId.slice(0, 8)} · retry waiting</div>
+                </a>
+                <div class="flex items-center gap-2">
+                    <span class="badge badge-warning badge-outline">Retrying in ${retryAfter}s</span>
+                    <form method="POST" action="/jobs/${jobId}/stop">
+                        <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                    </form>
+                </div>
+            </div>`;
+    }
+
+    async function checkActiveRecordings() {
+        try {
+            const response = await fetch('/api/v1/jobs/active', { priority: 'low' });
+            const data = await response.json();
+            const list = document.getElementById('active-recordings-list');
+            const summary = document.getElementById('active-recordings-summary');
+            const activeCount = data.active_count || 0;
+            const queueLength = data.queue_length || 0;
+            const queuedItems = data.queued_items || [];
+            const retryWaitingItems = data.retry_waiting_items || [];
+            const retryWaitingCount = data.retry_waiting_count || 0;
+            const available = data.available_slots || 0;
+            const maxConcurrent = data.max_concurrent_recordings || 1;
+
+            summary.textContent = `${activeCount} active · ${queueLength} queued · ${retryWaitingCount} retrying · ${available}/${maxConcurrent} slots free`;
+            if (!activeCount && !queuedItems.length && !retryWaitingItems.length) {
+                list.innerHTML = '<div class="py-8 text-sm text-gray-500" id="active-recordings-empty">No active recordings.</div>';
+                return;
+            }
+            list.innerHTML = [
+                ...data.active_jobs.map(activeJobRow),
+                ...queuedItems.map(queuedItemRow),
+                ...retryWaitingItems.map(retryWaitingItemRow)
+            ].join('');
+        } catch (error) { console.error(error); }
+    }
+
     async function checkUploadProgress() {
         try {
-            const response = await fetch('/api/v1/jobs/progress/active');
+            const response = await fetch('/api/v1/jobs/progress/active', { priority: 'low' });
             const data = await response.json();
             const panel = document.getElementById('upload-progress-panel');
 
@@ -301,7 +496,9 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        checkActiveRecordings();
         checkUploadProgress();
+        setInterval(checkActiveRecordings, 5000);
         setInterval(checkUploadProgress, 3000);
     });
 </script>

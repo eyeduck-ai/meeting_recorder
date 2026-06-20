@@ -14,7 +14,7 @@ from database.models import RecordingJob as RecordingJobModel
 from database.session import JobRepository
 from recording.ffmpeg_pipeline import RecordingInfo
 from recording.worker import RecordingJob, RecordingResult
-from scheduling.recording_executor import RecordingExecutor
+from scheduling.recording_executor import RecordingExecutor, RecordingRetryRequest
 from services.storage_maintenance import CanonicalRecording
 from utils.timezone import utc_now
 
@@ -82,14 +82,8 @@ def _create_db_job(session_local, job: RecordingJob) -> None:
 
 
 @pytest.mark.asyncio
-async def test_retryable_failure_retries_same_job_row(executor_session_local, monkeypatch, tmp_path):
-    """Retryable errors should reuse the same job id and update one DB row."""
-
-    async def fast_sleep(_seconds):
-        return None
-
-    monkeypatch.setattr(executor_module.asyncio, "sleep", fast_sleep)
-
+async def test_retryable_failure_returns_delayed_retry_request(executor_session_local, tmp_path):
+    """Retryable errors should persist the attempt and ask the runner to requeue later."""
     job = RecordingJob(
         job_id="retry123",
         provider="jitsi",
@@ -114,7 +108,7 @@ async def test_retryable_failure_retries_same_job_row(executor_session_local, mo
     )
     executor = RecordingExecutor(worker_provider=lambda: fake_worker)
 
-    upload_request = await executor.run_with_retry(
+    retry_request = await executor.run_with_retry(
         job=job,
         schedule_id=None,
         meeting_end_time=utc_now() + timedelta(minutes=5),
@@ -123,16 +117,44 @@ async def test_retryable_failure_retries_same_job_row(executor_session_local, mo
         meeting_name=None,
     )
 
-    assert upload_request is None
-    assert fake_worker.calls == [("retry123", 1), ("retry123", 2)]
+    assert isinstance(retry_request, RecordingRetryRequest)
+    assert retry_request.job.job_id == "retry123"
+    assert retry_request.job.attempt_no == 2
+    assert retry_request.delay_sec == 15
+    assert retry_request.next_retry_delay_sec == 30
+    assert fake_worker.calls == [("retry123", 1)]
 
     session = executor_session_local()
     try:
         rows = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "retry123").all()
         assert len(rows) == 1
-        assert rows[0].status == JobStatus.SUCCEEDED.value
-        assert rows[0].attempt_no == 2
-        assert rows[0].retry_count == 1
+        assert rows[0].status == JobStatus.QUEUED.value
+        assert rows[0].attempt_no == 1
+        assert rows[0].retry_count == 0
+        assert rows[0].completed_at is None
+        assert "Retry scheduled" in rows[0].error_message
+    finally:
+        session.close()
+
+    final_outcome = await executor.run_with_retry(
+        job=retry_request.job,
+        schedule_id=retry_request.schedule_id,
+        meeting_end_time=retry_request.meeting_end_time,
+        youtube_enabled=retry_request.youtube_enabled,
+        youtube_privacy=retry_request.youtube_privacy,
+        meeting_name=retry_request.meeting_name,
+        retry_delay_sec=retry_request.next_retry_delay_sec,
+    )
+
+    assert final_outcome is None
+    assert fake_worker.calls == [("retry123", 1), ("retry123", 2)]
+
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "retry123").one()
+        assert db_job.status == JobStatus.SUCCEEDED.value
+        assert db_job.attempt_no == 2
+        assert db_job.retry_count == 1
     finally:
         session.close()
 

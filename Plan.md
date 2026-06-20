@@ -51,6 +51,12 @@
 
 ## P3：運作效率
 
+- 已將錄製執行模型改成受控並行：`JobRunner` 依 `MAX_CONCURRENT_RECORDINGS` 啟動多個 recording task，超過容量的 schedule/immediate job 進 queue，並以 per-job Xvfb display 與 PipeWire/Pulse sink lease 隔離錄影與音訊。
+- 已將 schedule/immediate queue 收斂為 `ScheduleRunQueue` 的 unified FIFO，補 queued immediate/schedule cancellation、queue position API/UI 與 runtime cleanup/audio exact-match hardening。
+- 已將 job lifecycle 操作收斂到 `JobActionService`，讓 REST/Web UI 共用 queued cancel、active stop/finish、terminal-only delete 與 queued schedule cancellation 的狀態機，並由該模組提供 active/terminal status 常數；YouTube upload issue 會回到 `succeeded`，但成功 upload 後的 Telegram 通知失敗只記 warning，不改寫 YouTube metadata 或 job 結果。
+- 已補強多路錄製 robustness：retry wait 改為 delayed requeue 不佔錄製 slot，active jobs 以 process-local disk reservation 防止容量 overcommit，stale `uploading` 會於 restart/shutdown 回到 `succeeded`，Telegram `/stop <job_id>` 可精準取消指定 active job。
+- 已補強 retry/queue robustness：schedule retry cancel 會釋放 duplicate state，delayed retry waiting 透過 API/UI/Telegram 可見且可取消但不計入 FIFO queue position，Telegram active job 選擇改為 worker registry 與 DB status 交集，shutdown 會 best-effort 收斂 active recording task。
+- 已將 active / FIFO queued / retry waiting runtime view 收斂到 `JobRuntimeStateService`，讓 `/jobs/active`、Web UI dashboard/jobs 與 Telegram `/list` / 無參數 `/stop` 共用同一份 snapshot，降低狀態 view drift。
 - 已讓 `RecordingManager` 的 list、cleanup、disk usage 共用單次 filesystem scan 與 stat metadata，避免同一 request 反覆 `rglob()` / `stat()`。
 - 已將 scheduler `next_run_at` 同步改成單一 DB session 批次更新，並跳過 unchanged `next_run_at`。
 - 已在 FastAPI shutdown 關閉既有 YouTube uploader HTTP client，並將 YouTube upload chunk read 包到 thread，避免大檔讀取阻塞 event loop。

@@ -4,11 +4,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 import telegram_bot.handlers as handlers_module
+from database.migrations import run_schema_migrations
+from database.models import Base, JobStatus, RecordingJob, TelegramUser
 from scheduling.job_runner import QueueScheduleResult
 from telegram_bot.conversation_common import _parse_duration_minutes, _validate_duration_minutes
-from telegram_bot.handlers import _is_schedule_visible, schedule_action_callback
+from telegram_bot.handlers import _is_schedule_visible, list_handler, schedule_action_callback, stop_handler
 from telegram_bot.notifications import _build_status_message
 from utils.timezone import utc_now
 
@@ -26,6 +30,72 @@ def _make_schedule(
         start_time=start_time,
         duration_sec=duration_sec,
     )
+
+
+@pytest.fixture
+def telegram_session_local(tmp_path, monkeypatch):
+    db_path = tmp_path / "telegram.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    run_schema_migrations(engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(handlers_module, "get_db_session", lambda: SessionLocal())
+    session = SessionLocal()
+    try:
+        session.add(TelegramUser(chat_id=123, username="tester", first_name="Test", approved=True))
+        session.commit()
+    finally:
+        session.close()
+    return SessionLocal
+
+
+class FakeTelegramMessage:
+    def __init__(self):
+        self.replies: list[str] = []
+
+    async def reply_text(self, text, **_kwargs):
+        self.replies.append(text)
+
+
+def _telegram_update(message: FakeTelegramMessage):
+    return SimpleNamespace(
+        message=message,
+        callback_query=None,
+        effective_chat=SimpleNamespace(id=123),
+        effective_user=SimpleNamespace(username="tester", first_name="Test", last_name="User"),
+    )
+
+
+class FakeStopWorker:
+    def __init__(self):
+        self.canceled: list[str] = []
+        self.active_jobs = [SimpleNamespace(job_id="job-old"), SimpleNamespace(job_id="job-new")]
+
+    def is_job_active(self, job_id):
+        return job_id in {"job-old", "job-new"}
+
+    def request_cancel(self, job_id=None):
+        self.canceled.append(job_id)
+        return True
+
+
+def _add_recording_job(session_local, job_id: str, status: str, *, started_offset_sec: int):
+    session = session_local()
+    try:
+        session.add(
+            RecordingJob(
+                job_id=job_id,
+                provider="jitsi",
+                meeting_code=f"room-{job_id}",
+                display_name="Recorder Bot",
+                duration_sec=3600,
+                status=status,
+                started_at=utc_now() + timedelta(seconds=started_offset_sec),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
 
 
 def test_parse_duration_minutes_supports_multiple_formats():
@@ -200,3 +270,109 @@ async def test_schedule_action_trigger_messages(monkeypatch, queue_result, expec
     await schedule_action_callback(update, SimpleNamespace())
 
     assert expected_text in query.edited_text
+
+
+@pytest.mark.asyncio
+async def test_stop_handler_without_job_id_cancels_latest_active_job(monkeypatch, telegram_session_local):
+    _add_recording_job(telegram_session_local, "job-old", JobStatus.RECORDING.value, started_offset_sec=0)
+    _add_recording_job(telegram_session_local, "job-new", JobStatus.RECORDING.value, started_offset_sec=60)
+    worker = FakeStopWorker()
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: SimpleNamespace())
+    message = FakeTelegramMessage()
+
+    await stop_handler(_telegram_update(message), SimpleNamespace(args=[]))
+
+    assert worker.canceled == ["job-new"]
+    assert "job-new" in message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_stop_handler_with_job_id_cancels_specified_active_job(monkeypatch, telegram_session_local):
+    _add_recording_job(telegram_session_local, "job-old", JobStatus.RECORDING.value, started_offset_sec=0)
+    _add_recording_job(telegram_session_local, "job-new", JobStatus.RECORDING.value, started_offset_sec=60)
+    worker = FakeStopWorker()
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: SimpleNamespace())
+    message = FakeTelegramMessage()
+
+    await stop_handler(_telegram_update(message), SimpleNamespace(args=["job-old"]))
+
+    assert worker.canceled == ["job-old"]
+    assert "job-old" in message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_stop_handler_without_job_id_ignores_stale_db_active_job(monkeypatch, telegram_session_local):
+    _add_recording_job(telegram_session_local, "job-stale", JobStatus.RECORDING.value, started_offset_sec=120)
+    _add_recording_job(telegram_session_local, "job-new", JobStatus.RECORDING.value, started_offset_sec=60)
+    worker = FakeStopWorker()
+    worker.active_jobs = [SimpleNamespace(job_id="job-new")]
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: SimpleNamespace())
+    message = FakeTelegramMessage()
+
+    await stop_handler(_telegram_update(message), SimpleNamespace(args=[]))
+
+    assert worker.canceled == ["job-new"]
+    assert "job-new" in message.replies[-1]
+    assert "job-stale" not in message.replies[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("job_id", "source", "expected_error_message"),
+    [
+        ("job-queued", "fifo", "Canceled while queued"),
+        ("job-retry", "retry_waiting", "Canceled while waiting to retry"),
+    ],
+)
+async def test_stop_handler_with_job_id_cancels_queued_or_retry_job(
+    monkeypatch,
+    telegram_session_local,
+    job_id,
+    source,
+    expected_error_message,
+):
+    _add_recording_job(telegram_session_local, job_id, JobStatus.QUEUED.value, started_offset_sec=0)
+    worker = SimpleNamespace(active_jobs=[], is_job_active=lambda _job_id: False)
+
+    class FakeRunner:
+        def __init__(self):
+            self.canceled = []
+
+        def cancel_queued_job_for_action(self, requested_job_id: str):
+            self.canceled.append(requested_job_id)
+            return SimpleNamespace(removed=requested_job_id == job_id, source=source, schedule_id=None)
+
+    runner = FakeRunner()
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: runner)
+    message = FakeTelegramMessage()
+
+    await stop_handler(_telegram_update(message), SimpleNamespace(args=[job_id]))
+
+    assert runner.canceled == [job_id]
+    assert "已取消 job" in message.replies[-1]
+    assert "已發送停止指令" not in message.replies[-1]
+    session = telegram_session_local()
+    try:
+        db_job = session.query(RecordingJob).filter(RecordingJob.job_id == job_id).one()
+        assert db_job.status == JobStatus.CANCELED.value
+        assert db_job.error_message == expected_error_message
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_list_handler_reports_queue_and_retry_waiting_counts(monkeypatch, telegram_session_local):
+    worker = SimpleNamespace(is_busy=False, active_jobs=[])
+    runner = SimpleNamespace(queue_length=2, retry_waiting_count=1)
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: runner)
+    message = FakeTelegramMessage()
+
+    await list_handler(_telegram_update(message), SimpleNamespace())
+
+    assert "佇列中: 2 筆" in message.replies[-1]
+    assert "等待重試: 1 筆" in message.replies[-1]

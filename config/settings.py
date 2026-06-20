@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +42,10 @@ class Settings(BaseSettings):
     smart_trim_end_post_roll_sec: float = 5.0
     lobby_wait_sec: int = 900
     max_recording_sec: int = 14400  # 4 hours default max
+    max_concurrent_recordings: int = 2
+    recording_display_start: int = 100
+    recording_display_pool_size: int = 16
+    min_free_disk_gb_before_recording: float = 10.0
 
     # Jitsi settings
     jitsi_base_url: str = "https://meet.jit.si/"
@@ -75,6 +80,7 @@ class Settings(BaseSettings):
     ffmpeg_transcode_crf: int = 30
     ffmpeg_transcode_audio_bitrate: str = "96k"
     ffmpeg_transcode_video_bitrate: str | None = "1500k"
+    max_parallel_transcodes: int = 1
 
     # Paths
     recordings_dir: Path = Path("./recordings")
@@ -102,6 +108,20 @@ class Settings(BaseSettings):
     youtube_default_privacy: Literal["public", "private", "unlisted"] = "unlisted"
     youtube_upload_chunk_size: int = 10 * 1024 * 1024  # 10MB
     youtube_max_retries: int = 5
+
+    @model_validator(mode="after")
+    def validate_recording_capacity(self) -> "Settings":
+        """Validate concurrency settings that must agree with each other."""
+        if self.max_concurrent_recordings < 1:
+            raise ValueError("MAX_CONCURRENT_RECORDINGS must be >= 1")
+        if self.recording_display_pool_size < 1:
+            raise ValueError("RECORDING_DISPLAY_POOL_SIZE must be >= 1")
+        if self.max_concurrent_recordings > self.recording_display_pool_size:
+            raise ValueError(
+                "MAX_CONCURRENT_RECORDINGS must be <= RECORDING_DISPLAY_POOL_SIZE "
+                f"({self.max_concurrent_recordings} > {self.recording_display_pool_size})"
+            )
+        return self
 
     @property
     def resolution(self) -> tuple[int, int]:

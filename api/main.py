@@ -43,9 +43,18 @@ def cleanup_orphaned_jobs() -> None:
             logging.warning(f"Cleaning up orphaned job {job.job_id} (was {job.status})")
             job.status = JobStatus.FAILED.value
             job.error_message = "Job interrupted by server restart"
-        if orphaned_jobs:
+        stale_uploads = db.query(RecordingJob).filter(RecordingJob.status == JobStatus.UPLOADING.value).all()
+        for job in stale_uploads:
+            logging.warning(f"Restoring interrupted upload job {job.job_id}")
+            job.status = JobStatus.SUCCEEDED.value
+            job.error_message = "YouTube upload interrupted by server restart"
+        if orphaned_jobs or stale_uploads:
             db.commit()
-            logging.info(f"Cleaned up {len(orphaned_jobs)} orphaned job(s)")
+            logging.info(
+                "Cleaned up %s orphaned job(s), restored %s interrupted upload job(s)",
+                len(orphaned_jobs),
+                len(stale_uploads),
+            )
     except Exception as e:
         logging.error(f"Failed to clean up orphaned jobs: {e}")
         db.rollback()
@@ -68,6 +77,7 @@ async def lifespan(app: FastAPI):
     logging.info(f"Jitsi base URL: {settings_config.jitsi_base_url}")
 
     scheduler = None
+    job_runner = None
     telegram_started = False
     try:
         init_db()
@@ -109,6 +119,9 @@ async def lifespan(app: FastAPI):
         if scheduler is not None:
             scheduler.stop()
             logging.info("Scheduler stopped")
+
+        if job_runner is not None:
+            await job_runner.shutdown()
 
         await close_youtube_uploader()
 

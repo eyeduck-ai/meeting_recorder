@@ -8,6 +8,16 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
+def _pactl_short_names(output: str) -> set[str]:
+    """Return exact device names from `pactl list ... short` output."""
+    names = set()
+    for line in output.splitlines():
+        columns = line.split("\t")
+        if len(columns) >= 2 and columns[1]:
+            names.add(columns[1])
+    return names
+
+
 @dataclass
 class VirtualEnvironmentConfig:
     """Configuration for virtual display and audio."""
@@ -30,6 +40,7 @@ class VirtualEnvironment:
     config: VirtualEnvironmentConfig = field(default_factory=VirtualEnvironmentConfig)
     _xvfb_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _audio_keepalive_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
+    _audio_module_id: str | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
     _xvfb_owned: bool = field(default=False, init=False)
 
@@ -61,6 +72,7 @@ class VirtualEnvironment:
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/user/0")
         env["PULSE_SERVER"] = f"unix:{xdg_runtime}/pulse/native"
         env["XDG_RUNTIME_DIR"] = xdg_runtime
+        env["PULSE_SINK"] = self.config.pulse_sink_name
         return env
 
     async def start(self) -> dict[str, str]:
@@ -79,16 +91,28 @@ class VirtualEnvironment:
             f"on display {self.display}"
         )
 
-        await self._start_xvfb()
-        await self._setup_pulse_audio()
-
-        self._started = True
-        logger.info("Virtual environment started successfully")
-        return self.env_vars
+        try:
+            await self._start_xvfb()
+            await self._setup_pulse_audio()
+            self._started = True
+            logger.info("Virtual environment started successfully")
+            return self.env_vars
+        except BaseException:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         """Stop virtual display and clean up."""
-        if not self._started:
+        has_resources = any(
+            [
+                self._started,
+                self._audio_keepalive_process is not None,
+                self._audio_module_id is not None,
+                self._xvfb_process is not None,
+                self._xvfb_owned,
+            ]
+        )
+        if not has_resources:
             return
 
         logger.info("Stopping virtual environment")
@@ -106,6 +130,8 @@ class VirtualEnvironment:
                 logger.debug(f"Error stopping audio keepalive: {e}")
             finally:
                 self._audio_keepalive_process = None
+
+        self._unload_owned_audio_sink()
 
         if self._xvfb_process:
             try:
@@ -376,9 +402,17 @@ class VirtualEnvironment:
                 timeout=5,
             )
 
-            if self.config.pulse_sink_name not in sink_result.stdout:
-                logger.warning(f"Virtual audio sink not ready: {self.config.pulse_sink_name}")
-                return
+            if self.config.pulse_sink_name not in _pactl_short_names(sink_result.stdout):
+                await self._create_pulse_sink()
+                sink_result = subprocess.run(
+                    ["pactl", "list", "sinks", "short"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if self.config.pulse_sink_name not in _pactl_short_names(sink_result.stdout):
+                    logger.warning(f"Virtual audio sink not ready: {self.config.pulse_sink_name}")
+                    return
 
             source_result = subprocess.run(
                 ["pactl", "list", "sources", "short"],
@@ -386,7 +420,7 @@ class VirtualEnvironment:
                 text=True,
                 timeout=5,
             )
-            if self.pulse_monitor not in source_result.stdout:
+            if self.pulse_monitor not in _pactl_short_names(source_result.stdout):
                 logger.warning(f"Virtual audio monitor source not ready: {self.pulse_monitor}")
                 return
 
@@ -402,6 +436,52 @@ class VirtualEnvironment:
             logger.warning("Audio command timed out")
         except Exception as e:
             logger.warning(f"Error setting up audio: {e}")
+
+    async def _create_pulse_sink(self) -> None:
+        """Create a per-recording virtual sink when it is not pre-provisioned."""
+        cmd = [
+            "pactl",
+            "load-module",
+            "module-null-sink",
+            f"sink_name={self.config.pulse_sink_name}",
+            f"sink_properties=device.description={self.config.pulse_sink_name}",
+            "rate=48000",
+            "channels=2",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Failed to create virtual audio sink %s: %s",
+                self.config.pulse_sink_name,
+                result.stderr.strip(),
+            )
+            return
+
+        module_id = result.stdout.strip()
+        self._audio_module_id = module_id or None
+        logger.info("Created virtual audio sink %s (module %s)", self.config.pulse_sink_name, module_id or "?")
+
+    def _unload_owned_audio_sink(self) -> None:
+        """Unload a sink module created by this runtime, if any."""
+        if not self._audio_module_id:
+            return
+        try:
+            subprocess.run(
+                ["pactl", "unload-module", self._audio_module_id],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            logger.info("Unloaded virtual audio sink module %s", self._audio_module_id)
+        except Exception as e:
+            logger.debug(f"Failed to unload audio module {self._audio_module_id}: {e}")
+        finally:
+            self._audio_module_id = None
 
     async def _start_audio_keepalive(self) -> None:
         """Start a background process to keep the audio sink active.

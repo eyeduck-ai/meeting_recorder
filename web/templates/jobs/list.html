@@ -29,14 +29,34 @@
                 Failed
             </a>
         </div>
-        {% if jobs %}
-        <button hx-delete="/jobs" hx-confirm="Delete ALL jobs? This cannot be undone."
+        {% if has_terminal_jobs %}
+        <button hx-delete="/jobs" hx-confirm="Delete completed jobs? This cannot be undone."
             hx-swap="none" hx-on::after-request="window.location.href='/jobs'"
             class="btn btn-sm btn-outline btn-error rounded-full shrink-0">
-            Delete all
+            Delete completed
         </button>
         {% endif %}
     </div>
+
+    {% if queued_schedule_items %}
+    <div class="bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
+        <div class="px-4 py-3 border-b border-[#2f3336] text-sm font-bold text-white">Queued Schedule Runs</div>
+        <div class="divide-y divide-[#2f3336]">
+            {% for item in queued_schedule_items %}
+            <div class="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div class="min-w-0">
+                    <div class="font-bold text-white truncate">{{ item.meeting_code or item.display_name or 'Queued recording' }}</div>
+                    <div class="text-xs text-gray-500 font-mono mt-0.5">Queued #{{ item.queue_position }} · schedule #{{
+                        item.schedule_id }}</div>
+                </div>
+                <form method="POST" action="/schedules/{{ item.schedule_id }}/cancel-queued">
+                    <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                </form>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Jobs List -->
     <div class="bg-[#16181c] rounded-xl border border-[#2f3336] overflow-hidden">
@@ -63,6 +83,16 @@
                         <span class="badge badge-sm badge-error badge-outline">Failed</span>
                         {% elif status_val == 'canceled' %}
                         <span class="badge badge-sm badge-warning badge-outline">Canceled</span>
+                        {% elif job.job_id in queued_job_ids %}
+                        <span class="badge badge-sm badge-neutral badge-outline">Queued #{{
+                            queued_positions_by_job_id[job.job_id] }}</span>
+                        {% elif job.job_id in retry_waiting_job_ids %}
+                        <span class="badge badge-sm badge-warning badge-outline">Retrying in {{
+                            retry_after_by_job_id[job.job_id] }}s</span>
+                        {% elif status_val == 'uploading' %}
+                        <span class="badge badge-sm badge-info badge-outline gap-1">
+                            <span class="loading loading-spinner loading-xs"></span> Processing
+                        </span>
                         {% else %}
                         <span class="badge badge-sm badge-info badge-outline gap-1">
                             <span class="loading loading-spinner loading-xs"></span> {{ status_val }}
@@ -70,7 +100,7 @@
                         {% endif %}
                     </div>
 
-                    {% if job.job_id == current_job_id %}
+                    {% if job.job_id in active_job_ids %}
                     <div class="flex items-center gap-2" onclick="event.stopPropagation()">
                         <form method="POST" action="/jobs/{{ job.job_id }}/finish">
                             <button type="submit" class="btn btn-xs btn-outline btn-warning rounded-full">Finish</button>
@@ -79,7 +109,23 @@
                             <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Stop</button>
                         </form>
                     </div>
-                    {% else %}
+                    {% elif job.job_id in queued_job_ids %}
+                    <div class="flex items-center gap-2" onclick="event.stopPropagation()">
+                        <span class="badge badge-sm badge-neutral badge-outline">#{{ queued_positions_by_job_id[job.job_id]
+                            }}</span>
+                        <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+                            <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                        </form>
+                    </div>
+                    {% elif job.job_id in retry_waiting_job_ids %}
+                    <div class="flex items-center gap-2" onclick="event.stopPropagation()">
+                        <span class="badge badge-sm badge-warning badge-outline">{{ retry_after_by_job_id[job.job_id]
+                            }}s</span>
+                        <form method="POST" action="/jobs/{{ job.job_id }}/stop">
+                            <button type="submit" class="btn btn-xs btn-outline btn-error rounded-full">Cancel</button>
+                        </form>
+                    </div>
+                    {% elif status_val in terminal_job_statuses %}
                     <button hx-delete="/jobs/{{ job.job_id }}" hx-target="closest div.p-4" hx-swap="outerHTML"
                         hx-confirm="Delete?" onclick="event.stopPropagation()"
                         class="btn btn-xs btn-ghost text-gray-500 hover:text-error">
@@ -89,6 +135,9 @@
                                 d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
                         </svg>
                     </button>
+                    {% else %}
+                    <a href="/jobs/{{ job.job_id }}" onclick="event.stopPropagation()"
+                        class="btn btn-xs btn-ghost text-gray-500">View</a>
                     {% endif %}
                 </div>
             </div>
@@ -131,6 +180,17 @@
                             <span class="text-red-500 text-sm flex items-center gap-1">Failed</span>
                             {% elif status_val == 'canceled' %}
                             <span class="text-yellow-500 text-sm">Canceled</span>
+                            {% elif job.job_id in queued_job_ids %}
+                            <span class="text-gray-400 text-sm">Queued #{{ queued_positions_by_job_id[job.job_id]
+                                }}</span>
+                            {% elif job.job_id in retry_waiting_job_ids %}
+                            <span class="text-yellow-400 text-sm">Retrying in {{ retry_after_by_job_id[job.job_id]
+                                }}s</span>
+                            {% elif status_val == 'uploading' %}
+                            <span class="text-blue-400 text-sm flex items-center gap-2">
+                                <span class="loading loading-spinner loading-xs"></span>
+                                Processing
+                            </span>
                             {% else %}
                             <span class="text-blue-400 text-sm flex items-center gap-2">
                                 <span class="loading loading-spinner loading-xs"></span>
@@ -139,7 +199,7 @@
                             {% endif %}
                         </td>
                         <td class="text-right pr-6" onclick="event.stopPropagation()">
-                            {% if job.job_id == current_job_id %}
+                            {% if job.job_id in active_job_ids %}
                             <form method="POST" action="/jobs/{{ job.job_id }}/finish" class="inline">
                                 <button type="submit"
                                     class="text-yellow-500 hover:text-yellow-400 text-sm font-bold">Finish</button>
@@ -148,10 +208,22 @@
                                 <button type="submit"
                                     class="text-red-500 hover:text-red-400 text-sm font-bold">Stop</button>
                             </form>
-                            {% else %}
+                            {% elif job.job_id in queued_job_ids %}
+                            <form method="POST" action="/jobs/{{ job.job_id }}/stop" class="inline">
+                                <button type="submit"
+                                    class="text-red-500 hover:text-red-400 text-sm font-bold">Cancel</button>
+                            </form>
+                            {% elif job.job_id in retry_waiting_job_ids %}
+                            <form method="POST" action="/jobs/{{ job.job_id }}/stop" class="inline">
+                                <button type="submit"
+                                    class="text-red-500 hover:text-red-400 text-sm font-bold">Cancel</button>
+                            </form>
+                            {% elif status_val in terminal_job_statuses %}
                             <button hx-delete="/jobs/{{ job.job_id }}" hx-target="closest tr" hx-swap="outerHTML"
                                 hx-confirm="Delete this job?"
                                 class="text-error hover:text-red-400 btn btn-ghost btn-xs">Delete</button>
+                            {% else %}
+                            <a href="/jobs/{{ job.job_id }}" class="text-gray-500 hover:text-white text-sm">View</a>
                             {% endif %}
                         </td>
                     </tr>

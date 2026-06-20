@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from database.models import AppSettings, Base, JobStatus, Meeting, RecordingJob, Schedule
 from scheduling.job_runner import QueueScheduleResult
-from services.errors import ConflictError, ValidationError
+from services.errors import ValidationError
 from services.job_service import ImmediateRecordingData, JobService
 from services.meeting_service import MeetingCreateData, MeetingService
 from services.schedule_service import ScheduleCreateData, ScheduleService
@@ -223,17 +223,32 @@ async def test_job_service_start_immediate_returns_persisted_job(db_session):
 
 
 @pytest.mark.asyncio
-async def test_job_service_busy_raises_conflict(db_session):
+async def test_job_service_busy_runner_still_queues_immediate_recording(db_session):
     class FakeRunner:
         is_busy = True
 
-    with pytest.raises(ConflictError):
-        await JobService(job_runner=FakeRunner()).start_immediate_recording(
-            db_session,
-            ImmediateRecordingData(
-                provider="jitsi",
-                meeting_code="room",
-                display_name="Recorder Bot",
-                duration_sec=3600,
-            ),
-        )
+        async def run_immediate(self, **_kwargs):
+            db_session.add(
+                RecordingJob(
+                    job_id="queued-immediate-1",
+                    provider="jitsi",
+                    meeting_code="room",
+                    display_name="Recorder Bot",
+                    duration_sec=3600,
+                    status=JobStatus.QUEUED.value,
+                )
+            )
+            db_session.commit()
+            return "queued-immediate-1"
+
+    job = await JobService(job_runner=FakeRunner()).start_immediate_recording(
+        db_session,
+        ImmediateRecordingData(
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Recorder Bot",
+            duration_sec=3600,
+        ),
+    )
+
+    assert job.job_id == "queued-immediate-1"

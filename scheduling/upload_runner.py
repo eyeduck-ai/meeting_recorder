@@ -33,6 +33,7 @@ class YouTubeUploadRunner:
     """Prepare recordings and upload them to YouTube one at a time."""
 
     def __init__(self) -> None:
+        self._transcode_sem = asyncio.Semaphore(max(1, int(getattr(get_settings(), "max_parallel_transcodes", 1))))
         self._upload_lock = asyncio.Lock()
 
     async def run_upload_task(self, upload_request: UploadRequest) -> None:
@@ -49,14 +50,19 @@ class YouTubeUploadRunner:
             def transcode_progress(current_ms: int | None, total_ms: int | None) -> None:
                 update_progress(upload_job_id, "compressing", current_ms, total_ms, "ms")
 
-            canonical = await prepare_upload_recording_file(
-                video_path,
-                remux_log_path=remux_log,
-                transcode_log_path=transcode_log,
-                progress_callback=transcode_progress,
-            )
+            async with self._transcode_sem:
+                canonical = await prepare_upload_recording_file(
+                    video_path,
+                    remux_log_path=remux_log,
+                    transcode_log_path=transcode_log,
+                    progress_callback=transcode_progress,
+                )
             if not canonical or not canonical.output_path.exists():
                 logger.error(f"MP4 preparation failed, skipping YouTube upload for job {upload_request.job_id}")
+                self._mark_upload_completed_without_video(
+                    upload_request.job_id,
+                    "YouTube upload skipped: MP4 preparation failed",
+                )
                 return
             self._persist_local_recording_path(upload_request.job_id, canonical)
             upload_path = canonical.upload_path or canonical.output_path
@@ -81,6 +87,10 @@ class YouTubeUploadRunner:
                     discard_file(canonical.temporary_upload_path)
         except Exception as e:
             logger.error(f"YouTube upload task failed for job {upload_request.job_id}: {e}")
+            self._mark_upload_completed_without_video(
+                upload_request.job_id,
+                f"YouTube upload failed: {e}",
+            )
         finally:
             clear_progress(upload_job_id)
 
@@ -97,12 +107,12 @@ class YouTubeUploadRunner:
         uploader = get_youtube_uploader()
         if not uploader.is_configured:
             logger.warning("YouTube upload skipped - not configured")
-            self._restore_succeeded_status(job_id)
+            self._mark_upload_completed_without_video(job_id, "YouTube upload skipped: not configured")
             clear_progress(job_id)
             return False
         if not uploader.is_authorized:
             logger.warning("YouTube upload skipped - not authorized")
-            self._restore_succeeded_status(job_id)
+            self._mark_upload_completed_without_video(job_id, "YouTube upload skipped: not authorized")
             clear_progress(job_id)
             return False
 
@@ -148,17 +158,25 @@ class YouTubeUploadRunner:
                         JobStatus.SUCCEEDED.value,
                         youtube_video_id=result.video_id,
                         youtube_uploaded_at=utc_now(),
+                        error_message=None,
                     )
                     logger.info(f"YouTube upload successful: {result.video_url}")
                     session.commit()
 
                     db_job = repo.get_by_job_id(job_id)
                     if db_job and result.video_url:
-                        await notify_youtube_upload_completed(db_job, result.video_url)
+                        try:
+                            await notify_youtube_upload_completed(db_job, result.video_url)
+                        except Exception as e:
+                            logger.warning("Failed to send YouTube upload notification for job %s: %s", job_id, e)
                     return True
                 else:
                     logger.error(f"YouTube upload failed: {result.error_message}")
-                    repo.update_status(job_id, JobStatus.SUCCEEDED.value)
+                    repo.update_status(
+                        job_id,
+                        JobStatus.SUCCEEDED.value,
+                        error_message=f"YouTube upload failed: {result.error_message or 'unknown error'}",
+                    )
                     session.commit()
                     clear_progress(job_id)
                     return False
@@ -166,7 +184,7 @@ class YouTubeUploadRunner:
                 session.close()
         except Exception as e:
             logger.error(f"YouTube upload error: {e}")
-            self._restore_succeeded_status(job_id)
+            self._mark_upload_completed_without_video(job_id, f"YouTube upload failed: {e}")
             clear_progress(job_id)
             return False
 
@@ -186,14 +204,21 @@ class YouTubeUploadRunner:
         finally:
             session.close()
 
-    def _restore_succeeded_status(self, job_id: str) -> None:
-        """Restore recording success when upload cannot complete."""
+    def _mark_upload_completed_without_video(self, job_id: str, message: str) -> None:
+        """Return a recording-successful job from upload processing to a terminal state."""
         SessionLocal = get_session_local()
         session = SessionLocal()
         try:
             repo = JobRepository(session)
-            repo.update_status(job_id, JobStatus.SUCCEEDED.value)
+            repo.update_status(
+                job_id,
+                JobStatus.SUCCEEDED.value,
+                error_message=message,
+            )
             session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Failed to restore job %s after upload issue", job_id)
         finally:
             session.close()
 

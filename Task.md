@@ -45,3 +45,10 @@
 - [x] P3：清除 legacy provider end detector 死碼與測試，補上 fixed baseline duration update 驗證與 activity settings UI 文案整理。
 - [x] P3：重整 Detection Logs 為 activity/extension diagnostics，增加 server-side filters，並以 1 秒 GOP + trim duration diagnostics 改善 smart trim 實際輸出邊界。
 - [x] P3：補強 Detection Logs 查詢 index/summary/filter-aware export、trim subprocess bounded output，以及 immediate/schedule retry window 一致性。
+- [x] P3：新增受控並行錄製，包含 worker pool、per-job display/audio lease、active jobs API/UI、disk guard 與 transcode 並行上限。
+- [x] P3：修正並行錄製 queue 架構，改成 unified FIFO、queued cancellation、runtime cleanup hardening 與 audio exact-match。
+- [x] P3：收斂 job action 狀態機，統一 REST/Web UI 的 queued cancel、active stop/finish、terminal-only delete 與 upload failure 終態處理。
+- [x] P3：強化 job action follow-up，統一 active/terminal status 常數來源，並避免成功 upload 後的通知失敗改寫 job 結果。
+- [x] P3：補強多路錄製 robustness，包含 retry delayed requeue、disk reservation、upload shutdown/restart cleanup 與 Telegram 精準 stop。
+- [x] P3：補強 retry/queue robustness，包含 schedule retry cancel 釋放 duplicate state、retry waiting API/UI/Telegram 可見可取消、Telegram registry-first stop 與 active recording shutdown 收斂。
+- [x] P3：收斂 job runtime state view，讓 API/UI/Telegram 共用 active、FIFO queued、retry waiting snapshot 與 structured queued cancel result。

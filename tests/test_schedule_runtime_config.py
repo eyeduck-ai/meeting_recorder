@@ -9,7 +9,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import api.routes.schedules as schedules_module
-from api.routes.schedules import ScheduleCreate, ScheduleUpdate, create_schedule, trigger_schedule, update_schedule
+from api.routes.schedules import (
+    ScheduleCreate,
+    ScheduleUpdate,
+    cancel_queued_schedule,
+    create_schedule,
+    trigger_schedule,
+    update_schedule,
+)
+from api.routes.ui_schedules import schedules_cancel_queued as ui_cancel_queued_schedule
 from database.models import AppSettings, Base, Meeting, Schedule
 from scheduling.job_runner import QueueScheduleResult
 from utils.timezone import utc_now
@@ -316,3 +324,83 @@ async def test_trigger_schedule_api_rejects_duplicate(db_session, meeting_id):
         )
 
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_schedule_api_cancels_only_queued_run(db_session, meeting_id):
+    class FakeRunner:
+        def __init__(self):
+            self.canceled = []
+
+        def cancel_queued_schedule(self, schedule_id):
+            self.canceled.append(schedule_id)
+            return True
+
+    schedule = Schedule(
+        meeting_id=meeting_id,
+        schedule_type="once",
+        start_time=utc_now() + timedelta(hours=1),
+        duration_sec=3600,
+    )
+    db_session.add(schedule)
+    db_session.commit()
+    runner = FakeRunner()
+
+    response = await cancel_queued_schedule(
+        schedule.id,
+        http_request=_request(scheduler=FakeScheduler(), job_runner=runner),
+        db=db_session,
+    )
+
+    assert response["status"] == "canceled"
+    assert runner.canceled == [schedule.id]
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_schedule_api_rejects_non_queued_schedule(db_session, meeting_id):
+    class FakeRunner:
+        def cancel_queued_schedule(self, _schedule_id):
+            return False
+
+    schedule = Schedule(
+        meeting_id=meeting_id,
+        schedule_type="once",
+        start_time=utc_now() + timedelta(hours=1),
+        duration_sec=3600,
+    )
+    db_session.add(schedule)
+    db_session.commit()
+
+    with pytest.raises(schedules_module.HTTPException) as exc:
+        await cancel_queued_schedule(
+            schedule.id,
+            http_request=_request(scheduler=FakeScheduler(), job_runner=FakeRunner()),
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_schedule_ui_rejects_non_queued_schedule(db_session, meeting_id):
+    class FakeRunner:
+        def cancel_queued_schedule(self, _schedule_id):
+            return False
+
+    schedule = Schedule(
+        meeting_id=meeting_id,
+        schedule_type="once",
+        start_time=utc_now() + timedelta(hours=1),
+        duration_sec=3600,
+    )
+    db_session.add(schedule)
+    db_session.commit()
+
+    with pytest.raises(schedules_module.HTTPException) as exc:
+        await ui_cancel_queued_schedule(
+            _request(scheduler=FakeScheduler(), job_runner=FakeRunner()),
+            schedule.id,
+            db_session,
+        )
+
+    assert exc.value.status_code == 400

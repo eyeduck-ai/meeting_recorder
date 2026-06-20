@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -43,12 +43,31 @@ ACTIVE_NOTIFICATION_STATUSES = {
 }
 
 
+@dataclass(frozen=True)
+class RecordingRetryRequest:
+    """A retryable recording attempt that should be requeued after a delay."""
+
+    job: RecordingJob
+    schedule_id: int | None
+    meeting_end_time: datetime
+    youtube_enabled: bool
+    youtube_privacy: str
+    meeting_name: str | None
+    delay_sec: int
+    next_retry_delay_sec: int
+    error_message: str
+
+
+RecordingExecutionOutcome = UploadRequest | RecordingRetryRequest | None
+
+
 class RecordingExecutor:
     """Run a recording job with retry, status persistence, and notifications."""
 
     def __init__(self, *, worker_provider: Callable[[], object]):
         self._worker_provider = worker_provider
         self._notification_lock = asyncio.Lock()
+        self._attempt_by_job_id: dict[str, int] = {}
 
     async def run_with_retry(
         self,
@@ -59,39 +78,19 @@ class RecordingExecutor:
         youtube_enabled: bool,
         youtube_privacy: str,
         meeting_name: str | None,
-    ) -> UploadRequest | None:
-        """Run recording with exponential backoff retry for network errors."""
+        retry_delay_sec: int = INITIAL_RETRY_DELAY_SEC,
+    ) -> RecordingExecutionOutcome:
+        """Run one recording attempt and return upload or delayed retry work."""
         SessionLocal = get_session_local()
         worker = self._worker_provider()
-        retry_delay = INITIAL_RETRY_DELAY_SEC
-        attempt = 0
         upload_request: UploadRequest | None = None
+        attempt = max(1, int(getattr(job, "attempt_no", 1) or 1))
 
-        def on_status_change(job_id: str, status: JobStatus) -> None:
-            s = SessionLocal()
-            try:
-                repo = JobRepository(s)
-                update_fields = {
-                    "attempt_no": job.attempt_no,
-                    "retry_count": max(0, job.attempt_no - 1),
-                }
-                if status == JobStatus.STARTING:
-                    update_fields["started_at"] = utc_now()
-                elif status == JobStatus.RECORDING:
-                    update_fields["recording_started_at"] = utc_now()
-                repo.update_status(job_id, status.value, **update_fields)
-                s.commit()
+        worker.set_status_callback(self._on_status_change)
 
-                if status in ACTIVE_NOTIFICATION_STATUSES:
-                    asyncio.create_task(self._notify_stage_update(job_id, status))
-            finally:
-                s.close()
-
-        worker.set_status_callback(on_status_change)
-
-        while True:
-            attempt += 1
+        try:
             job.attempt_no = attempt
+            self._attempt_by_job_id[job.job_id] = attempt
             self._mark_retry_attempt(job)
             result = await worker.record(job)
             if result.status == JobStatus.SUCCEEDED and result.recording_info:
@@ -120,16 +119,35 @@ class RecordingExecutor:
 
                 if db_job and should_retry:
                     time_remaining = (meeting_end_time - utc_now()).total_seconds()
-                    if time_remaining > retry_delay:
+                    if time_remaining > retry_delay_sec:
                         logger.warning(
                             f"Retryable network error for job {job.job_id}: {error_msg}. "
-                            f"Retrying in {retry_delay}s (attempt {attempt})"
+                            f"Requeueing in {retry_delay_sec}s (attempt {attempt})"
                         )
-                        await notify_recording_retry(db_job, attempt, retry_delay, error_msg)
-                        await asyncio.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY_SEC)
+                        await notify_recording_retry(db_job, attempt, retry_delay_sec, error_msg)
                         job.duration_sec = int(time_remaining)
-                        continue
+                        job.attempt_no = attempt + 1
+                        repo.update_status(
+                            job.job_id,
+                            JobStatus.QUEUED.value,
+                            attempt_no=attempt,
+                            retry_count=max(0, attempt - 1),
+                            error_message=f"Retry scheduled after recording failure: {error_msg}",
+                            completed_at=None,
+                            end_reason=None,
+                        )
+                        session.commit()
+                        return RecordingRetryRequest(
+                            job=job,
+                            schedule_id=schedule_id,
+                            meeting_end_time=meeting_end_time,
+                            youtube_enabled=youtube_enabled,
+                            youtube_privacy=youtube_privacy,
+                            meeting_name=meeting_name,
+                            delay_sec=retry_delay_sec,
+                            next_retry_delay_sec=min(retry_delay_sec * 2, MAX_RETRY_DELAY_SEC),
+                            error_message=error_msg,
+                        )
 
                 if db_job:
                     if result.status == JobStatus.SUCCEEDED:
@@ -163,9 +181,32 @@ class RecordingExecutor:
                     raw_video_path=raw_output_path,
                     cleanup_video_path_after_success=cleanup_path,
                 )
-            break
+        finally:
+            self._attempt_by_job_id.pop(job.job_id, None)
 
         return upload_request
+
+    def _on_status_change(self, job_id: str, status: JobStatus) -> None:
+        SessionLocal = get_session_local()
+        s = SessionLocal()
+        try:
+            attempt = self._attempt_by_job_id.get(job_id, 1)
+            repo = JobRepository(s)
+            update_fields = {
+                "attempt_no": attempt,
+                "retry_count": max(0, attempt - 1),
+            }
+            if status == JobStatus.STARTING:
+                update_fields["started_at"] = utc_now()
+            elif status == JobStatus.RECORDING:
+                update_fields["recording_started_at"] = utc_now()
+            repo.update_status(job_id, status.value, **update_fields)
+            s.commit()
+
+            if status in ACTIVE_NOTIFICATION_STATUSES:
+                asyncio.create_task(self._notify_stage_update(job_id, status))
+        finally:
+            s.close()
 
     def _is_retryable_error(self, error_message: str) -> bool:
         error_str = str(error_message)

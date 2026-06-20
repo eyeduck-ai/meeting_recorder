@@ -41,7 +41,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 | `database/` | SQLAlchemy models、DB session |
 | `providers/` | 會議 provider 實作 |
 | `recording/` | 錄製 worker、虛擬環境、FFmpeg、偵測器 |
-| `scheduling/` | APScheduler 與單工 job runner |
+| `scheduling/` | APScheduler 與受控並行 job runner |
 | `services/` | app settings、通知、錄影管理 |
 | `telegram_bot/` | Telegram bot 流程與 conversation handlers |
 | `uploading/` | YouTube 上傳與進度 |
@@ -57,15 +57,26 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 
 ## 重要架構事實
 
-### 單工錄製
+### 受控並行錄製
 
 - `recording.worker.get_worker()` 是 singleton
-- `scheduling.job_runner.JobRunner` 以單一 lock 控制執行
-- `scheduling.schedule_queue.ScheduleRunQueue` 負責 schedule queue、pending、duplicate 與 queue position 狀態；不要把這些容器狀態重新塞回 `JobRunner`
-- `scheduling.recording_executor.RecordingExecutor` 負責 recording retry、attempt DB 更新、status callback 與 stage notification；不要把 retry/status flow 重新塞回 `JobRunner`
+- `scheduling.job_runner.JobRunner` 以 `MAX_CONCURRENT_RECORDINGS` 控制同時錄製數；不要恢復成單一長時間 global lock
+- `scheduling.schedule_queue.ScheduleRunQueue` 負責 unified FIFO run queue，統一管理 schedule/immediate queued item、pending、active schedule set、duplicate、queued cancellation 與 queue position 狀態；不要把第二條 direct queue 或 queue 容器狀態重新塞回 `JobRunner`
+- `scheduling.recording_executor.RecordingExecutor` 負責單次 recording attempt DB 更新、status callback 與 stage notification；retry wait 必須由 `JobRunner` delayed requeue 管理，不可在 active recording task 內 sleep 佔用 slot
+- delayed retry waiting 不屬於 FIFO queue position，`queue_length` 不應包含它；但它必須透過 `retry_waiting_items[]` / Web UI / Telegram 可觀測，並可用 job stop 語意取消
 - `scheduling.upload_runner.YouTubeUploadRunner` 負責錄影完成後的 remux/transcode progress 與 YouTube upload；不要把 upload 細節重新塞回 `JobRunner`
-- 現況一次只支援一個錄製工作
-- 若新 schedule 進來時已有工作進行中，會進 queue 等待
+- `scheduling.job_runner.JobRunner` 負責 delayed retry、active recording 與 tracked upload task shutdown；新增 upload path 時不要回到 fire-and-forget 且無 interrupted cleanup 的 task
+- `recording.capacity_guard.RecordingCapacityGuard` 負責 process-local disk reservation；不要只用單 job free-space check 判斷多路長錄製容量
+- `recording.runtime_resources.RuntimeResourceAllocator` 負責每個 active job 的 Xvfb display 與 PipeWire/Pulse sink lease；不要在 provider 或 runner 內硬編 `:99` 或共用 `virtual_speaker` 作為並行錄製資源
+- `RecordingWorker` 維護 active job registry；cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象
+- `services.job_actions.JobActionService` 是 job stop/finish/delete/cancel queued 的單一狀態決策層；`ACTIVE_RECORDING_STATUSES` 與 `TERMINAL_JOB_STATUSES` 也由同一模組提供，REST route、Web UI route 與 template 不要各自維護不同的 job status 操作表
+- `services.job_runtime_state.JobRuntimeStateService` 是 API / Web UI / Telegram active、FIFO queued、retry waiting view 的單一組裝層；不要在 route、template 或 Telegram handler 重新拼 active job ids、queue maps 或 retry countdown maps
+- queued immediate job 可由 job stop endpoint 取消；queued schedule run 要用 schedule cancel-queued 語意，不要把 queued schedule 當成已有 job row 的 recording job
+- delete job 只允許 `succeeded`、`failed`、`canceled` 終態；`uploading` 代表錄影已成功但正在處理/上傳，不可 stop/finish/delete，upload issue 應回到 `succeeded` 並記錄在既有 job 欄位
+- Telegram `/list` 與無參數 `/stop` 必須以 worker active registry 與 DB active status 交集為準，避免 stale DB active row 誤導；Telegram `/stop` 必須走 `JobActionService`，多路錄製下無參數只停止最新 active recording，指定 `/stop <job_id>` 時只作用於該 job
+- 現況預設支援 2 個同時錄製工作，可由 `.env` 的 `MAX_CONCURRENT_RECORDINGS` 調整
+- `MAX_CONCURRENT_RECORDINGS` 必須小於等於 `RECORDING_DISPLAY_POOL_SIZE`，設定錯誤會在 settings validation 階段 fail fast
+- 若新 schedule 或 immediate job 進來時錄製 slot 已滿，會進 queue 等待
 
 ### Web UI 模組邊界
 
@@ -102,7 +113,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 
 目前真實狀態是：
 
-- `.env` / `config.settings`：資料庫、認證、Telegram、YouTube、FFmpeg 進階參數、路徑
+- `.env` / `config.settings`：資料庫、認證、Telegram、YouTube、並行錄製上限、display pool、最低磁碟空間、FFmpeg 進階參數、路徑
 - `services.app_settings` + `app_settings` table：部分 UI 可調整設定，包括錄製解析度、lobby 等待、`recording_browser_mode`、`recording_crop_mode`、`recording_crop_top_px`、smart trim 與 dynamic extension/activity thresholds
 - `notification_config`：JSON 形式存於 `app_settings`
 
@@ -146,6 +157,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 
 - 錄製核心依賴 Linux
 - Windows / macOS 應透過 Docker 使用
+- `/health` 的 recording runtime 檢查只要求音訊 server 可用；per-job sink 會在錄製啟動時建立，不要再把共用 `virtual_speaker` 當成並行錄製 ready 的必要條件
 - 不要在文件裡把非 Linux 原始碼執行描述成正式支援路徑
 
 ## 修改時的同步責任
@@ -187,7 +199,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 git status --short
 Get-ChildItem -Recurse -File
 Select-String -Path api/routes/*.py -Pattern '@router'
-uv run pytest tests/ -v
+uv run --all-extras pytest tests/ -v
 ```
 
 若要找字串，優先用 `rg`；若環境不可用，再退回 PowerShell 的 `Select-String`。

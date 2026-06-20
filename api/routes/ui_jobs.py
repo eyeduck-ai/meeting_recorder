@@ -7,11 +7,38 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from sqlalchemy.orm import Session
 
 from api.routes import ui_common, ui_job_diagnostics
-from api.runtime import get_app_worker
+from api.runtime import (
+    get_app_job_action_service,
+    get_app_job_runner,
+    get_app_job_runtime_state_service,
+    get_app_worker,
+)
 from database.models import JobStatus, RecordingJob
 from database.session import get_db
+from services.errors import NotFoundError, ServiceError, ValidationError
+from services.job_actions import ACTIVE_RECORDING_STATUSES, TERMINAL_JOB_STATUSES
 
 router = APIRouter(tags=["ui"])
+
+ACTIVE_FILTER_STATUSES = {
+    JobStatus.QUEUED.value,
+    *ACTIVE_RECORDING_STATUSES,
+    JobStatus.UPLOADING.value,
+}
+
+
+def _job_status_value(job: RecordingJob) -> str:
+    return job.status.value if hasattr(job.status, "value") else job.status
+
+
+def _raise_http_error(exc: Exception) -> None:
+    if isinstance(exc, NotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, ValidationError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, ServiceError):
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    raise exc
 
 
 def _mark_trimmed_artifact_state(job: RecordingJob) -> None:
@@ -27,22 +54,11 @@ async def jobs_list(
     db: Session = Depends(get_db),
 ):
     """Jobs list page."""
-    # Define status groups for simplified filtering
-    active_statuses = [
-        JobStatus.QUEUED,
-        JobStatus.STARTING,
-        JobStatus.JOINING,
-        JobStatus.WAITING_LOBBY,
-        JobStatus.RECORDING,
-        JobStatus.FINALIZING,
-        JobStatus.UPLOADING,
-    ]
-
     query = db.query(RecordingJob).order_by(RecordingJob.created_at.desc())
 
     # Apply simplified filter
     if status == "active":
-        query = query.filter(RecordingJob.status.in_([s.value for s in active_statuses]))
+        query = query.filter(RecordingJob.status.in_(ACTIVE_FILTER_STATUSES))
     elif status == "succeeded":
         query = query.filter(RecordingJob.status == JobStatus.SUCCEEDED.value)
     elif status == "failed":
@@ -50,20 +66,27 @@ async def jobs_list(
 
     jobs = query.limit(50).all()
 
-    # Find currently running job from database
-    current_job = (
-        db.query(RecordingJob)
-        .filter(RecordingJob.status.in_([s.value for s in active_statuses]))
-        .order_by(RecordingJob.created_at.desc())
-        .first()
+    worker = get_app_worker(request)
+    runner = get_app_job_runner(request)
+    runtime_snapshot = get_app_job_runtime_state_service(request).build_snapshot(db, worker=worker, runner=runner)
+    has_terminal_jobs = (
+        db.query(RecordingJob.id).filter(RecordingJob.status.in_(TERMINAL_JOB_STATUSES)).first() is not None
     )
-    current_job_id = current_job.job_id if current_job else None
 
     return ui_common.render_template(
         request,
         "jobs/list.html",
         jobs=jobs,
-        current_job_id=current_job_id,
+        active_job_ids=runtime_snapshot.active_job_ids,
+        queued_job_ids=runtime_snapshot.queued_job_ids,
+        queued_positions_by_job_id=runtime_snapshot.queued_positions_by_job_id,
+        retry_waiting_job_ids=runtime_snapshot.retry_waiting_job_ids,
+        retry_after_by_job_id=runtime_snapshot.retry_after_by_job_id,
+        queued_schedule_items=runtime_snapshot.queued_schedule_items,
+        queued_items=runtime_snapshot.queued_items,
+        retry_waiting_items=runtime_snapshot.retry_waiting_items,
+        terminal_job_statuses=TERMINAL_JOB_STATUSES,
+        has_terminal_jobs=has_terminal_jobs,
         selected_status=status,
     )
 
@@ -81,6 +104,9 @@ async def jobs_detail(request: Request, job_id: str, db: Session = Depends(get_d
     if status_value in {JobStatus.FAILED.value, JobStatus.CANCELED.value}:
         failure_context = ui_job_diagnostics._load_failure_context(job)
         job_logs = ui_job_diagnostics._load_job_logs(job)
+    worker = get_app_worker(request)
+    runner = get_app_job_runner(request)
+    runtime_snapshot = get_app_job_runtime_state_service(request).build_snapshot(db, worker=worker, runner=runner)
 
     return ui_common.render_template(
         request,
@@ -88,77 +114,51 @@ async def jobs_detail(request: Request, job_id: str, db: Session = Depends(get_d
         job=job,
         failure_context=failure_context,
         job_logs=job_logs,
+        can_control_job=job_id in runtime_snapshot.active_job_ids and status_value in ACTIVE_RECORDING_STATUSES,
+        is_queued_job=job_id in runtime_snapshot.queued_job_ids,
+        is_retry_waiting_job=job_id in runtime_snapshot.retry_after_by_job_id,
+        retry_after_sec=runtime_snapshot.retry_after_by_job_id.get(job_id),
+        can_delete_job=_job_status_value(job) in TERMINAL_JOB_STATUSES,
     )
 
 
 @router.post("/jobs/{job_id}/stop", response_class=HTMLResponse)
 async def jobs_stop(request: Request, job_id: str, db: Session = Depends(get_db)):
     """Stop a running job."""
-    # Find the job and check if it's running
-    job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
-    if job:
-        running_statuses = [
-            JobStatus.STARTING.value,
-            JobStatus.JOINING.value,
-            JobStatus.WAITING_LOBBY.value,
-            JobStatus.RECORDING.value,
-            JobStatus.FINALIZING.value,
-            JobStatus.UPLOADING.value,
-        ]
-        if job.status in running_statuses:
-            worker = get_app_worker(request)
-            if worker.is_busy and worker._current_job and worker._current_job.job_id == job_id:
-                # Worker is running this job - request cancellation
-                worker.request_cancel()
-            else:
-                # Orphaned job - worker is not running it, update DB directly
-                job.status = JobStatus.CANCELED.value
-                job.error_message = "Stopped by user (job was orphaned)"
-                db.commit()
+    try:
+        get_app_job_action_service(request).stop_job(db, job_id)
+    except Exception as exc:
+        _raise_http_error(exc)
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
 
 
 @router.post("/jobs/{job_id}/finish", response_class=HTMLResponse)
 async def jobs_finish(request: Request, job_id: str, db: Session = Depends(get_db)):
     """Finish a running job early (success path)."""
-    job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
-    if job:
-        running_statuses = [
-            JobStatus.STARTING.value,
-            JobStatus.JOINING.value,
-            JobStatus.WAITING_LOBBY.value,
-            JobStatus.RECORDING.value,
-            JobStatus.FINALIZING.value,
-            JobStatus.UPLOADING.value,
-        ]
-        if job.status in running_statuses:
-            worker = get_app_worker(request)
-            if worker.is_busy and worker._current_job and worker._current_job.job_id == job_id:
-                # Worker is running this job - request finish
-                worker.request_finish()
-            else:
-                # Orphaned job - worker is not running it, update DB directly
-                job.status = JobStatus.CANCELED.value
-                job.error_message = "Finished by user (job was orphaned)"
-                db.commit()
+    try:
+        get_app_job_action_service(request).finish_job(db, job_id)
+    except Exception as exc:
+        _raise_http_error(exc)
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
 
 
 @router.delete("/jobs", response_class=HTMLResponse)
-async def jobs_delete_all(db: Session = Depends(get_db)):
-    """Delete all jobs."""
-    db.query(RecordingJob).delete()
-    db.commit()
+async def jobs_delete_all(request: Request, db: Session = Depends(get_db)):
+    """Delete terminal jobs."""
+    try:
+        get_app_job_action_service(request).delete_terminal_jobs(db)
+    except Exception as exc:
+        _raise_http_error(exc)
     return HTMLResponse("")
 
 
 @router.delete("/jobs/{job_id}", response_class=HTMLResponse)
-async def jobs_delete(job_id: str, db: Session = Depends(get_db)):
+async def jobs_delete(request: Request, job_id: str, db: Session = Depends(get_db)):
     """Delete job."""
-    job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
-    if job:
-        db.delete(job)
-        db.commit()
+    try:
+        get_app_job_action_service(request).delete_job(db, job_id)
+    except Exception as exc:
+        _raise_http_error(exc)
     return HTMLResponse("")
 
 

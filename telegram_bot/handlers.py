@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from config.settings import get_settings
 from database.models import (
+    JobStatus,
     Meeting,
     RecordingJob,
     Schedule,
@@ -227,7 +228,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/record - 新增排程\n"
         "/edit - 編輯/刪除排程\n"
         "/meetings - 查看/新增會議\n"
-        "/stop - 停止錄製\n"
+        "/stop [job_id] - 停止錄製\n"
         "/help - 顯示說明\n\n"
         "進階設定請使用 Web UI",
         reply_markup=get_main_menu_keyboard(),
@@ -238,42 +239,62 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /list command - list next 5 upcoming schedules with recording status."""
     from recording.worker import get_worker
+    from scheduling.job_runner import get_job_runner
+    from services.job_runtime_state import JobRuntimeStateService
 
     db = get_db_session()
     try:
-        # Check if recording is in progress
         worker = get_worker()
+        runner = get_job_runner()
+        runtime_snapshot = JobRuntimeStateService().build_snapshot(
+            db,
+            worker=worker,
+            runner=runner,
+            active_jobs_limit=5,
+        )
         recording_status = ""
+        queue_status = ""
 
-        if worker.is_busy:
-            # Find current recording job
-            current_job = (
-                db.query(RecordingJob)
-                .filter(RecordingJob.status.in_(["starting", "joining", "waiting_lobby", "recording", "finalizing"]))
-                .order_by(RecordingJob.created_at.desc())
-                .first()
-            )
-            if current_job:
+        if runtime_snapshot.active_jobs:
+            status_lines = []
+            settings = get_settings()
+            for current_job in runtime_snapshot.active_jobs:
                 status_value = (
                     current_job.status.value if hasattr(current_job.status, "value") else str(current_job.status)
                 )
                 status_text = _JOB_STATUS_MAP.get(status_value, status_value)
-                settings = get_settings()
                 local_started = to_local(current_job.started_at, settings.timezone) if current_job.started_at else None
                 started = local_started.strftime("%H:%M") if local_started else "-"
-                recording_status = (
-                    f"🎬 {status_text}\n   會議: {current_job.meeting_code}\n   開始: {started}\n\n{'─' * 20}\n\n"
+                status_lines.append(
+                    f"• {status_text}\n"
+                    f"  ID: {current_job.job_id}\n"
+                    f"  會議: {current_job.meeting_code}\n"
+                    f"  開始: {started}"
                 )
+            recording_status = f"🎬 錄製中 ({len(runtime_snapshot.active_jobs)})\n" + "\n".join(status_lines)
+            recording_status += f"\n\n{'─' * 20}\n\n"
+
+        queue_length = runtime_snapshot.queue_length
+        retry_waiting_count = runtime_snapshot.retry_waiting_count
+        if queue_length or retry_waiting_count:
+            queue_lines = []
+            if queue_length:
+                queue_lines.append(f"⏳ 佇列中: {queue_length} 筆")
+            if retry_waiting_count:
+                queue_lines.append(f"🔁 等待重試: {retry_waiting_count} 筆")
+            queue_status = "\n".join(queue_lines) + f"\n\n{'─' * 20}\n\n"
 
         schedules = _get_visible_schedules(db, limit=5)
 
-        if not schedules and not recording_status:
+        if not schedules and not recording_status and not queue_status:
             await update.message.reply_text("無即將執行的排程", reply_markup=get_main_menu_keyboard())
             return
 
         lines = []
         if recording_status:
             lines.append(recording_status)
+        if queue_status:
+            lines.append(queue_status)
 
         if schedules:
             lines.append(_format_schedule_list(schedules))
@@ -287,23 +308,67 @@ async def list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /stop command - stop current recording."""
     from recording.worker import get_worker
+    from scheduling.job_runner import get_job_runner
+    from services.errors import NotFoundError, ServiceError, ValidationError
+    from services.job_actions import JobActionService
+    from services.job_runtime_state import JobRuntimeStateService
 
     worker = get_worker()
-
-    if not worker.is_busy:
-        await update.message.reply_text("目前無錄製中", reply_markup=get_main_menu_keyboard())
-        return
+    runner = get_job_runner()
+    db = get_db_session()
 
     try:
-        if worker.request_cancel():
-            await update.message.reply_text(
-                "✅ 已發送停止指令\n錄製將於稍後停止", reply_markup=get_main_menu_keyboard()
+        runtime_snapshot = JobRuntimeStateService().build_snapshot(db, worker=worker, runner=runner)
+        requested_job_id = context.args[0].strip() if getattr(context, "args", None) else None
+        job = None
+        if requested_job_id:
+            matches = (
+                db.query(RecordingJob)
+                .filter(RecordingJob.job_id.startswith(requested_job_id))
+                .order_by(RecordingJob.created_at.desc())
+                .limit(2)
+                .all()
             )
+            if len(matches) > 1:
+                await update.message.reply_text(
+                    "找到多個符合的 job，請輸入完整 job id", reply_markup=get_main_menu_keyboard()
+                )
+                return
+            job = matches[0] if matches else None
         else:
-            await update.message.reply_text("無法停止錄製", reply_markup=get_main_menu_keyboard())
+            job = runtime_snapshot.latest_active_job
+
+        if not job:
+            await update.message.reply_text("目前無符合的錄製中 job", reply_markup=get_main_menu_keyboard())
+            return
+
+        try:
+            result = JobActionService(worker=worker, job_runner=runner).stop_job(db, job.job_id)
+            if "canceled" in result.message.lower():
+                text = f"✅ 已取消 job\nJob: {job.job_id}"
+            else:
+                text = f"✅ 已發送停止指令\nJob: {job.job_id}\n錄製將於稍後停止"
+            await update.message.reply_text(text, reply_markup=get_main_menu_keyboard())
+        except NotFoundError:
+            await update.message.reply_text("找不到指定 job", reply_markup=get_main_menu_keyboard())
+        except ValidationError as e:
+            status_value = job.status.value if hasattr(job.status, "value") else job.status
+            if status_value == JobStatus.UPLOADING.value:
+                text = "指定 job 正在處理或上傳中，無法停止"
+            elif status_value in {JobStatus.SUCCEEDED.value, JobStatus.FAILED.value, JobStatus.CANCELED.value}:
+                text = f"指定 job 已結束，狀態為 {status_value}"
+            elif status_value == JobStatus.QUEUED.value:
+                text = f"指定 job 已排隊，但目前無法取消: {e}"
+            else:
+                text = f"無法停止錄製: {e}"
+            await update.message.reply_text(text, reply_markup=get_main_menu_keyboard())
+        except ServiceError as e:
+            await update.message.reply_text(f"停止失敗: {e}", reply_markup=get_main_menu_keyboard())
     except Exception as e:
         logger.error(f"Failed to stop recording: {e}")
         await update.message.reply_text(f"停止失敗: {e}", reply_markup=get_main_menu_keyboard())
+    finally:
+        db.close()
 
 
 @require_approved

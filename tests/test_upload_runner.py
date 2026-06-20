@@ -86,15 +86,17 @@ def _create_upload_job(
     SessionLocal,
     video_path,
     *,
+    job_id: str = "job123",
     status=JobStatus.SUCCEEDED.value,
     raw_output_path=None,
     trimmed_output_path=None,
+    error_message: str | None = None,
 ):
     session = SessionLocal()
     try:
         session.add(
             RecordingJob(
-                job_id="job123",
+                job_id=job_id,
                 provider="jitsi",
                 meeting_code="room",
                 display_name="Recorder",
@@ -103,6 +105,8 @@ def _create_upload_job(
                 output_path=str(video_path),
                 raw_output_path=str(raw_output_path) if raw_output_path else None,
                 trimmed_output_path=str(trimmed_output_path) if trimmed_output_path else None,
+                youtube_enabled=True,
+                error_message=error_message,
             )
         )
         session.commit()
@@ -110,10 +114,10 @@ def _create_upload_job(
         session.close()
 
 
-def _get_upload_job(SessionLocal):
+def _get_upload_job(SessionLocal, job_id: str = "job123"):
     session = SessionLocal()
     try:
-        return session.query(RecordingJob).filter(RecordingJob.job_id == "job123").first()
+        return session.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     finally:
         session.close()
 
@@ -340,3 +344,198 @@ async def test_run_upload_task_deletes_canonical_trimmed_mp4_when_upload_transco
 
     job = _get_upload_job(SessionLocal)
     assert job.output_path == str(raw_path)
+
+
+@pytest.mark.asyncio
+async def test_upload_to_youtube_restores_success_when_not_configured(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    video_path = tmp_path / "recording.mp4"
+    video_path.write_bytes(b"mp4")
+    _create_upload_job(SessionLocal, video_path, job_id="job-no-config")
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+
+    class FakeUploader:
+        is_configured = False
+        is_authorized = False
+
+    monkeypatch.setattr(upload_runner_module, "get_youtube_uploader", lambda: FakeUploader())
+
+    runner = YouTubeUploadRunner()
+    await runner.upload_to_youtube(
+        job_id="job-no-config",
+        video_path=video_path,
+        title="Meeting",
+    )
+
+    db_job = _get_upload_job(SessionLocal, "job-no-config")
+    assert db_job.status == JobStatus.SUCCEEDED.value
+    assert db_job.error_message == "YouTube upload skipped: not configured"
+
+
+@pytest.mark.asyncio
+async def test_upload_to_youtube_restores_success_when_upload_fails(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    video_path = tmp_path / "recording.mp4"
+    video_path.write_bytes(b"mp4")
+    _create_upload_job(SessionLocal, video_path, job_id="job-upload-fail")
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+
+    class FakeUploader:
+        is_configured = True
+        is_authorized = True
+
+        async def upload_video(self, **_kwargs):
+            return UploadResult(status=UploadStatus.FAILED, error_message="quota exceeded")
+
+    monkeypatch.setattr(upload_runner_module, "get_youtube_uploader", lambda: FakeUploader())
+
+    runner = YouTubeUploadRunner()
+    await runner.upload_to_youtube(
+        job_id="job-upload-fail",
+        video_path=video_path,
+        title="Meeting",
+    )
+
+    db_job = _get_upload_job(SessionLocal, "job-upload-fail")
+    assert db_job.status == JobStatus.SUCCEEDED.value
+    assert db_job.error_message == "YouTube upload failed: quota exceeded"
+
+
+@pytest.mark.asyncio
+async def test_upload_to_youtube_records_error_message_on_exception(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    video_path = tmp_path / "recording.mp4"
+    video_path.write_bytes(b"mp4")
+    _create_upload_job(SessionLocal, video_path, job_id="job-upload-error")
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+
+    class FakeUploader:
+        is_configured = True
+        is_authorized = True
+
+        async def upload_video(self, **_kwargs):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(upload_runner_module, "get_youtube_uploader", lambda: FakeUploader())
+
+    runner = YouTubeUploadRunner()
+    await runner.upload_to_youtube(
+        job_id="job-upload-error",
+        video_path=video_path,
+        title="Meeting",
+    )
+
+    db_job = _get_upload_job(SessionLocal, "job-upload-error")
+    assert db_job.status == JobStatus.SUCCEEDED.value
+    assert db_job.error_message == "YouTube upload failed: network down"
+
+
+@pytest.mark.asyncio
+async def test_upload_to_youtube_success_writes_metadata_and_clears_upload_error(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    video_path = tmp_path / "recording.mp4"
+    video_path.write_bytes(b"mp4")
+    _create_upload_job(
+        SessionLocal,
+        video_path=video_path,
+        job_id="job-upload-success",
+        error_message="YouTube upload failed: old error",
+    )
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock())
+
+    class FakeUploader:
+        is_configured = True
+        is_authorized = True
+
+        async def upload_video(self, **_kwargs):
+            return UploadResult(
+                status=UploadStatus.SUCCEEDED,
+                video_id="video123",
+                video_url="https://youtu.be/video123",
+            )
+
+    monkeypatch.setattr(upload_runner_module, "get_youtube_uploader", lambda: FakeUploader())
+
+    runner = YouTubeUploadRunner()
+    await runner.upload_to_youtube(
+        job_id="job-upload-success",
+        video_path=video_path,
+        title="Meeting",
+    )
+
+    db_job = _get_upload_job(SessionLocal, "job-upload-success")
+    assert db_job.status == JobStatus.SUCCEEDED.value
+    assert db_job.youtube_video_id == "video123"
+    assert db_job.youtube_uploaded_at is not None
+    assert db_job.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_upload_to_youtube_notification_failure_does_not_mark_upload_failed(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    video_path = tmp_path / "recording.mp4"
+    video_path.write_bytes(b"mp4")
+    _create_upload_job(SessionLocal, video_path, job_id="job-notify-fail")
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+    monkeypatch.setattr(
+        upload_runner_module,
+        "notify_youtube_upload_completed",
+        AsyncMock(side_effect=RuntimeError("telegram down")),
+    )
+
+    class FakeUploader:
+        is_configured = True
+        is_authorized = True
+
+        async def upload_video(self, **_kwargs):
+            return UploadResult(
+                status=UploadStatus.SUCCEEDED,
+                video_id="video456",
+                video_url="https://youtu.be/video456",
+            )
+
+    monkeypatch.setattr(upload_runner_module, "get_youtube_uploader", lambda: FakeUploader())
+
+    runner = YouTubeUploadRunner()
+    await runner.upload_to_youtube(
+        job_id="job-notify-fail",
+        video_path=video_path,
+        title="Meeting",
+    )
+
+    db_job = _get_upload_job(SessionLocal, "job-notify-fail")
+    assert db_job.status == JobStatus.SUCCEEDED.value
+    assert db_job.youtube_video_id == "video456"
+    assert db_job.youtube_uploaded_at is not None
+    assert db_job.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_run_upload_task_restores_success_when_mp4_preparation_fails(tmp_path, monkeypatch):
+    SessionLocal = _build_upload_session(tmp_path, monkeypatch)
+    video_path = tmp_path / "recording.mkv"
+    video_path.write_bytes(b"mkv")
+    _create_upload_job(SessionLocal, video_path, job_id="job-remux-fail")
+
+    settings = SimpleNamespace(diagnostics_dir=tmp_path / "diagnostics")
+    monkeypatch.setattr(upload_runner_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(upload_runner_module, "prepare_upload_recording_file", AsyncMock(return_value=None))
+    clear_progress = Mock()
+    monkeypatch.setattr(upload_runner_module, "clear_progress", clear_progress)
+    monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
+
+    runner = YouTubeUploadRunner()
+    await runner.run_upload_task(
+        UploadRequest(
+            job_id="job-remux-fail",
+            video_path=video_path,
+            title="Meeting",
+            privacy="unlisted",
+        )
+    )
+
+    db_job = _get_upload_job(SessionLocal, "job-remux-fail")
+    assert db_job.status == JobStatus.SUCCEEDED.value
+    assert db_job.error_message == "YouTube upload skipped: MP4 preparation failed"
+    clear_progress.assert_called_once_with("job-remux-fail")
