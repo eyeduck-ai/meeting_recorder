@@ -104,7 +104,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 
 - `.env` / `config.settings`：資料庫、認證、Telegram、YouTube、FFmpeg 進階參數、路徑
 - `services.app_settings` + `app_settings` table：部分 UI 可調整設定，包括錄製解析度、lobby 等待、`recording_browser_mode`、`recording_crop_mode`、`recording_crop_top_px`、smart trim 與 dynamic extension/activity thresholds
-- `detection_config`、`notification_config`：JSON 形式存於 `app_settings`
+- `notification_config`：JSON 形式存於 `app_settings`
 
 ### 錄製畫面與裁切
 
@@ -128,8 +128,11 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `RecordingMonitor` 到達 `duration_sec` 後才進入 dynamic extension phase；音訊或影像任一 active 就繼續錄，兩者都 inactive 達 `dynamic_extension_idle_sec` 或達 `dynamic_extension_max_sec` 才停止。
 - 原始錄影檔必須保留；`raw_output_path` 指向原始檔，`output_path` 是 Web UI/API preferred local output，`trimmed_output_path` 是裁剪檔 metadata。
 - 完成檔案的 smart trim analysis 應使用 batch media probes；不要回到每個 sample 各自啟動 FFmpeg 子程序的做法。
+- smart trim 實際裁剪維持 stream-copy；錄影 GOP 應保持約 1 秒 keyframe interval，並在 trim diagnostics 記錄 expected/actual output duration。
+- `trim_recording()` 不應共用會完整 `communicate()` stdout/stderr 的 generic probe runner；trim stderr 應串流寫入 log 或 bounded excerpt，避免長錄影後處理放大記憶體。
+- Detection Logs 是 activity/extension diagnostics；查詢、summary、CSV export 應套用同一組 filter，SQLite 應保留 `triggered_at`、`job_id + triggered_at`、`detector_type + detected + triggered_at` indexes。
 - 自動 YouTube 上傳使用 preferred output；若裁剪檔上傳成功，會刪除本地裁剪檔與其 MP4 artifact，並將 DB `output_path` 回退到 raw output。
-- 媒體活動偵測與 provider-level end detection 是不同層；不要把 screen top crop、provider overlay、provider end state 與 smart trim 混成同一責任。
+- Legacy provider-level end detection 已移除；不要重新加入 WebRTC/Text/Video/URL/ScreenFreeze/AudioSilence detector 作為錄影停止條件，也不要把 screen top crop、provider overlay、provider end state 與 smart trim 混成同一責任。
 
 ### Provider 支援現況
 

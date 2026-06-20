@@ -1,103 +1,70 @@
 """API routes for detection settings and logs."""
 
-import json
-
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from database.models import AppSettings, DetectionLog
+from database.models import DetectionLog
 from database.session import get_db
-from utils.timezone import utc_now
 
 router = APIRouter(prefix="/api/detection", tags=["detection"])
 
 
-class DetectionConfigRequest(BaseModel):
-    """Request model for detection configuration."""
-
-    text_indicator_enabled: bool = True
-    video_element_enabled: bool = True
-    webrtc_connection_enabled: bool = True
-    screen_freeze_enabled: bool = False
-    audio_silence_enabled: bool = False
-    url_change_enabled: bool = True
-    screen_freeze_threshold: float = 0.98
-    screen_freeze_timeout_sec: int = 60
-    audio_silence_timeout_sec: int = 120
-    audio_silence_threshold: float = 0.05
-    min_detectors_agree: int = 1
+def _apply_log_filters(query, *, job_id: int | None, detector_type: str | None, detected: bool | None):
+    """Apply shared detection log filters to a SQLAlchemy query."""
+    if job_id is not None:
+        query = query.filter(DetectionLog.job_id == job_id)
+    if detector_type:
+        query = query.filter(DetectionLog.detector_type == detector_type)
+    if detected is not None:
+        query = query.filter(DetectionLog.detected.is_(detected))
+    return query
 
 
-@router.get("/config")
-async def get_detection_config(db: Session = Depends(get_db)):
-    """Get current detection configuration."""
-    # Load from app_settings table
-    settings_record = db.query(AppSettings).filter(AppSettings.key == "detection_config").first()
-
-    if settings_record:
-        config = json.loads(settings_record.value)
-    else:
-        # Return defaults
-        config = {
-            "text_indicator_enabled": True,
-            "video_element_enabled": True,
-            "webrtc_connection_enabled": True,
-            "screen_freeze_enabled": False,
-            "audio_silence_enabled": False,
-            "url_change_enabled": True,
-            "screen_freeze_threshold": 0.98,
-            "screen_freeze_timeout_sec": 60,
-            "audio_silence_timeout_sec": 120,
-            "audio_silence_threshold": 0.05,
-            "min_detectors_agree": 1,
-        }
-
-    return JSONResponse(content=config)
-
-
-@router.post("/config")
-async def save_detection_config(config: DetectionConfigRequest, db: Session = Depends(get_db)):
-    """Save detection configuration."""
-    config_json = json.dumps(config.model_dump())
-
-    # Upsert into app_settings
-    settings_record = db.query(AppSettings).filter(AppSettings.key == "detection_config").first()
-
-    if settings_record:
-        settings_record.value = config_json
-        settings_record.updated_at = utc_now()
-    else:
-        settings_record = AppSettings(key="detection_config", value=config_json)
-        db.add(settings_record)
-
-    db.commit()
-
-    return JSONResponse(content={"status": "ok", "message": "Configuration saved"})
+def _summary_count(condition):
+    return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
 
 
 @router.get("/logs")
 async def get_detection_logs(
     db: Session = Depends(get_db),
     job_id: int | None = Query(None),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0),
+    detector_type: str | None = Query(None),
+    detected: bool | None = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
-    """Get detection logs with optional filtering."""
-    query = db.query(DetectionLog).order_by(DetectionLog.triggered_at.desc())
-
-    if job_id:
-        query = query.filter(DetectionLog.job_id == job_id)
-
-    total = query.count()
-    logs = query.offset(offset).limit(limit).all()
+    """Get activity/detection logs with optional filtering."""
+    base_query = _apply_log_filters(
+        db.query(DetectionLog),
+        job_id=job_id,
+        detector_type=detector_type,
+        detected=detected,
+    )
+    total = base_query.count()
+    summary_row = _apply_log_filters(
+        db.query(
+            _summary_count(DetectionLog.detected.is_(True)).label("triggered"),
+            _summary_count(DetectionLog.was_accurate.is_(True)).label("accurate"),
+            _summary_count(DetectionLog.was_accurate.is_(False)).label("inaccurate"),
+        ),
+        job_id=job_id,
+        detector_type=detector_type,
+        detected=detected,
+    ).one()
+    logs = base_query.order_by(DetectionLog.triggered_at.desc()).offset(offset).limit(limit).all()
 
     return JSONResponse(
         content={
             "total": total,
             "limit": limit,
             "offset": offset,
+            "summary": {
+                "triggered": int(summary_row.triggered or 0),
+                "accurate": int(summary_row.accurate or 0),
+                "inaccurate": int(summary_row.inaccurate or 0),
+            },
             "logs": [log.to_dict() for log in logs],
         }
     )
@@ -107,15 +74,21 @@ async def get_detection_logs(
 async def export_detection_logs(
     db: Session = Depends(get_db),
     job_id: int | None = Query(None),
+    detector_type: str | None = Query(None),
+    detected: bool | None = Query(None),
     format: str = Query("json", pattern="^(json|csv)$"),
 ):
-    """Export detection logs as JSON or CSV."""
-    query = db.query(DetectionLog).order_by(DetectionLog.triggered_at.desc())
-
-    if job_id:
-        query = query.filter(DetectionLog.job_id == job_id)
-
-    logs = query.all()
+    """Export activity/detection logs as JSON or CSV."""
+    logs = (
+        _apply_log_filters(
+            db.query(DetectionLog),
+            job_id=job_id,
+            detector_type=detector_type,
+            detected=detected,
+        )
+        .order_by(DetectionLog.triggered_at.desc())
+        .all()
+    )
     data = [log.to_dict() for log in logs]
 
     if format == "csv":

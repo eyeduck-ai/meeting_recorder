@@ -1,4 +1,4 @@
-"""Recording monitor loop for duration, stop requests, and meeting-end detection."""
+"""Recording monitor loop for duration, dynamic extension, stop requests, and stalls."""
 
 import asyncio
 import logging
@@ -16,7 +16,6 @@ class RecordingMonitor:
         *,
         session: Any,
         job: Any,
-        detection_orchestrator: Any | None,
         media_activity_probe: Any | None,
         is_cancel_requested: Callable[[], bool],
         is_finish_requested: Callable[[], bool],
@@ -28,7 +27,6 @@ class RecordingMonitor:
     ):
         self.session = session
         self.job = job
-        self.detection_orchestrator = detection_orchestrator
         self.media_activity_probe = media_activity_probe
         self.is_cancel_requested = is_cancel_requested
         self.is_finish_requested = is_finish_requested
@@ -56,17 +54,11 @@ class RecordingMonitor:
             await self._close_media_activity_probe()
 
     async def _run(self) -> tuple[str, int | None]:
-        """Run the monitor loop until completion, auto-detection, cancel, or failure."""
+        """Run the monitor loop until completion, cancel, or failure."""
         recording_start = self._now()
         last_size = 0
         last_growth_time = recording_start
-
-        effective_min_duration = (
-            self.job.min_duration_sec if self.job.min_duration_sec is not None else self.job.duration_sec
-        )
-        if effective_min_duration > self.job.duration_sec:
-            effective_min_duration = self.job.duration_sec
-        logger.info(f"Recording with min_duration={effective_min_duration}s, max_duration={self.job.duration_sec}s")
+        logger.info("Recording with duration=%ss", self.job.duration_sec)
 
         while True:
             now = self._now()
@@ -108,21 +100,6 @@ class RecordingMonitor:
                     self.dynamic_extension_stop_reason = "fixed_duration_reached"
                 logger.info(f"Duration reached ({self.job.duration_sec}s)")
                 return "completed", self.session.process_returncode()
-
-            if elapsed >= effective_min_duration:
-                if self.detection_orchestrator:
-                    should_end, results = await self.detection_orchestrator.check_all(self.session.page)
-                    if should_end:
-                        triggered = [r for r in results if r.detected]
-                        reasons = ", ".join(r.reason for r in triggered[:2])
-                        logger.info(f"Meeting ended detected after min_duration: {reasons}")
-                        return "auto_detected", self.session.process_returncode()
-                elif await self.session.detect_meeting_end("monitor_recording"):
-                    logger.info("Meeting ended")
-                    return "auto_detected", self.session.process_returncode()
-            elif int(elapsed) % 60 == 0 and int(elapsed) > 0:
-                remaining_protection = effective_min_duration - elapsed
-                logger.debug(f"Min duration protection: {remaining_protection:.0f}s remaining")
 
             if int(elapsed) % 60 == 0 and int(elapsed) > 0:
                 remaining = self.job.duration_sec - elapsed

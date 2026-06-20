@@ -409,10 +409,6 @@ class SchedulerService:
             )
 
             if recent_job:
-                # If auto-detected as ended, skip catch-up
-                if recent_job.end_reason == "auto_detected":
-                    logger.info(f"Schedule {schedule_id} auto-detected as ended; skip catch-up")
-                    return True
                 # If succeeded, skip catch-up
                 if recent_job.status == "succeeded":
                     logger.info(f"Schedule {schedule_id} already succeeded; skip catch-up")

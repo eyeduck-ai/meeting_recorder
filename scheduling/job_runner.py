@@ -18,6 +18,13 @@ from utils.timezone import ensure_utc, utc_now
 logger = logging.getLogger(__name__)
 
 
+def calculate_retry_window_end(base_end_time: datetime, runtime_config) -> datetime:
+    """Return the bounded retry window end for a recording run."""
+    if runtime_config.dynamic_extension_enabled and runtime_config.dynamic_extension_max_sec > 0:
+        return base_end_time + timedelta(seconds=runtime_config.dynamic_extension_max_sec)
+    return base_end_time
+
+
 class JobRunner:
     """Job runner with single concurrency enforcement."""
 
@@ -154,9 +161,8 @@ class JobRunner:
                 dynamic_extension_idle_sec=schedule.dynamic_extension_idle_sec,
                 dynamic_extension_max_sec=schedule.dynamic_extension_max_sec,
             )
-            meeting_end_time = deadline_at or (utc_now() + timedelta(seconds=schedule.duration_sec))
-            if runtime_config.dynamic_extension_enabled and runtime_config.dynamic_extension_max_sec > 0:
-                meeting_end_time += timedelta(seconds=runtime_config.dynamic_extension_max_sec)
+            base_end_time = deadline_at or (utc_now() + timedelta(seconds=schedule.duration_sec))
+            meeting_end_time = calculate_retry_window_end(base_end_time, runtime_config)
 
             job = RecordingJob.create(
                 provider=meeting.provider,
@@ -166,10 +172,6 @@ class JobRunner:
                 base_url=meeting.site_base_url,
                 password=meeting.meeting_password_plaintext,
                 runtime_config=runtime_config,
-                duration_mode=schedule.duration_mode,
-                dry_run=schedule.dry_run,
-                min_duration_sec=schedule.min_duration_sec,
-                stillness_timeout_sec=schedule.stillness_timeout_sec,
                 deadline_at=deadline_at,
             )
             self._persist_job_created(
@@ -252,10 +254,13 @@ class JobRunner:
         finally:
             session.close()
 
+        base_end_time = utc_now() + timedelta(seconds=duration_sec)
+        retry_window_end = calculate_retry_window_end(base_end_time, runtime_config)
+
         asyncio.create_task(
             self._run_direct_job(
                 job=job,
-                meeting_end_time=utc_now() + timedelta(seconds=duration_sec),
+                meeting_end_time=retry_window_end,
                 youtube_enabled=False,
                 youtube_privacy="unlisted",
                 meeting_name=None,
@@ -318,12 +323,6 @@ class JobRunner:
 
     def _get_fixed_deadline_at(self, schedule: Schedule, *, manual_trigger: bool = False) -> datetime | None:
         """Calculate the fixed deadline for a schedule."""
-        duration_mode = (
-            schedule.duration_mode.value if hasattr(schedule.duration_mode, "value") else schedule.duration_mode
-        )
-        if duration_mode != "fixed":
-            return None
-
         if manual_trigger:
             return utc_now() + timedelta(seconds=schedule.duration_sec)
 

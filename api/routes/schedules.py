@@ -44,7 +44,7 @@ class ScheduleUpdate(BaseModel):
 
     schedule_type: Literal["once", "cron"] | None = None
     start_time: datetime | None = None
-    duration_sec: int | None = None
+    duration_sec: int | None = Field(default=None, ge=60, le=14400)
     cron_expression: str | None = None
     lobby_wait_sec: int | None = Field(default=None, ge=0, le=1800)
     layout_preset: str | None = None

@@ -6,7 +6,7 @@
     <div class="flex items-center justify-between">
         <div>
             <h1 class="text-3xl font-bold">Detection Logs</h1>
-            <p class="text-base-content/60">View and analyze meeting end detection events</p>
+            <p class="text-base-content/60">Review media activity and dynamic extension diagnostics</p>
         </div>
         <div class="flex gap-2">
             <a href="/settings" onclick="sessionStorage.setItem('settings_tab', 'detection')" class="btn btn-outline btn-sm">
@@ -18,7 +18,8 @@
                 </svg>
                 Settings
             </a>
-            <a href="/api/detection/logs/export?format=csv" class="btn btn-outline btn-sm">
+            <a href="/api/detection/logs/export?format=csv" class="btn btn-outline btn-sm" id="export-csv-link"
+                onclick="updateExportLink()">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
                     stroke="currentColor" class="w-4 h-4">
                     <path stroke-linecap="round" stroke-linejoin="round"
@@ -50,15 +51,10 @@
                 </div>
                 <div class="form-control">
                     <label class="label py-1">
-                        <span class="label-text text-sm">Detector Type</span>
+                        <span class="label-text text-sm">Activity Type</span>
                     </label>
                     <select id="filter-detector" class="select select-bordered select-sm">
                         <option value="">All</option>
-                        <option value="text_indicator">Text Indicator</option>
-                        <option value="video_element">Video Element</option>
-                        <option value="webrtc_connection">WebRTC Connection</option>
-                        <option value="url_change">URL Change</option>
-                        <option value="screen_freeze">Screen Freeze</option>
                         <option value="dynamic_extension">Dynamic Extension</option>
                         <option value="media_activity">Media Activity</option>
                     </select>
@@ -73,7 +69,7 @@
                         <option value="false">Not Triggered</option>
                     </select>
                 </div>
-                <button onclick="loadLogs()"
+                <button onclick="applyLogFilters()"
                     class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm">Filter</button>
             </div>
         </div>
@@ -108,7 +104,7 @@
                         <tr>
                             <th>Time</th>
                             <th>Job ID</th>
-                            <th>Detector</th>
+                            <th>Activity</th>
                             <th>Status</th>
                             <th>Confidence</th>
                             <th>Reason</th>
@@ -143,40 +139,51 @@
     const pageSize = 20;
     let totalLogs = 0;
 
-    async function loadLogs() {
-        const jobId = document.getElementById('filter-job-id').value;
-        const detector = document.getElementById('filter-detector').value;
-        const detected = document.getElementById('filter-detected').value;
+    function currentLogFilters() {
+        return {
+            jobId: document.getElementById('filter-job-id').value,
+            detector: document.getElementById('filter-detector').value,
+            detected: document.getElementById('filter-detected').value
+        };
+    }
 
-        let url = `/api/detection/logs?limit=${pageSize}&offset=${(currentPage - 1) * pageSize}`;
-        if (jobId) url += `&job_id=${jobId}`;
+    function appendLogFilters(params) {
+        const { jobId, detector, detected } = currentLogFilters();
+        if (jobId) params.set('job_id', jobId);
+        if (detector) params.set('detector_type', detector);
+        if (detected !== '') params.set('detected', detected);
+        return params;
+    }
+
+    function applyLogFilters() {
+        currentPage = 1;
+        loadLogs();
+    }
+
+    async function loadLogs() {
+        const params = appendLogFilters(new URLSearchParams({
+            limit: pageSize,
+            offset: (currentPage - 1) * pageSize
+        }));
+        const url = `/api/detection/logs?${params.toString()}`;
 
         try {
             const response = await fetch(url);
             const data = await response.json();
 
             totalLogs = data.total;
-            renderLogs(data.logs, detector, detected);
+            renderLogs(data.logs);
             updatePagination();
-            updateStats(data.logs);
+            updateStats(data.summary || {});
+            updateExportLink();
         } catch (error) {
             console.error('Failed to load logs:', error);
         }
     }
 
-    function renderLogs(logs, filterDetector, filterDetected) {
+    function renderLogs(logs) {
         const tbody = document.getElementById('logs-tbody');
-
-        // Client-side filtering for detector and detected status
-        let filtered = logs;
-        if (filterDetector) {
-            filtered = filtered.filter(log => log.detector_type === filterDetector);
-        }
-        if (filterDetected !== '') {
-            filtered = filtered.filter(log => log.detected === (filterDetected === 'true'));
-        }
-
-        if (filtered.length === 0) {
+        if (logs.length === 0) {
             tbody.innerHTML = `
                 <tr>
                     <td colspan="8" class="text-center py-8 text-base-content/50">
@@ -187,7 +194,7 @@
             return;
         }
 
-        tbody.innerHTML = filtered.map(log => `
+        tbody.innerHTML = logs.map(log => `
             <tr>
                 <td class="text-xs whitespace-nowrap">${formatTime(log.triggered_at)}</td>
                 <td>
@@ -234,15 +241,10 @@
 
     function formatDetectorType(type) {
         const names = {
-            'text_indicator': 'Text',
-            'video_element': 'Video',
-            'webrtc_connection': 'WebRTC',
-            'url_change': 'URL',
-            'screen_freeze': 'Freeze',
             'dynamic_extension': 'Extension',
             'media_activity': 'Activity'
         };
-        return names[type] || type;
+        return names[type] || `Legacy: ${type}`;
     }
 
     function renderAccuracyBadge(wasAccurate) {
@@ -284,11 +286,16 @@
         loadLogs();
     }
 
-    function updateStats(logs) {
+    function updateStats(summary) {
         document.getElementById('stat-total').textContent = totalLogs;
-        document.getElementById('stat-triggered').textContent = logs.filter(l => l.detected).length;
-        document.getElementById('stat-accurate').textContent = logs.filter(l => l.was_accurate === true).length;
-        document.getElementById('stat-inaccurate').textContent = logs.filter(l => l.was_accurate === false).length;
+        document.getElementById('stat-triggered').textContent = summary.triggered || 0;
+        document.getElementById('stat-accurate').textContent = summary.accurate || 0;
+        document.getElementById('stat-inaccurate').textContent = summary.inaccurate || 0;
+    }
+
+    function updateExportLink() {
+        const params = appendLogFilters(new URLSearchParams({ format: 'csv' }));
+        document.getElementById('export-csv-link').href = `/api/detection/logs/export?${params.toString()}`;
     }
 
     async function clearLogs() {

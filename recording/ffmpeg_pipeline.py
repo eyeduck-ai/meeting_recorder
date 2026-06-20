@@ -152,7 +152,7 @@ class FFmpegPipeline:
             "-crf",
             str(settings.ffmpeg_crf),
             "-g",
-            "60",
+            str(max(1, self.framerate)),
             "-pix_fmt",
             "yuv420p",
             "-vsync",

@@ -128,7 +128,6 @@
                                 <th>Configured Duration</th>
                                 <td>
                                     {{ (job.schedule.duration_sec / 60) | int }} mins
-                                    {% if job.schedule.duration_mode == 'auto' %} (Auto){% endif %}
                                 </td>
                             </tr>
                         </tbody>

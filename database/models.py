@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.base import Base
@@ -30,10 +30,10 @@ class ScheduleType(StrEnum):
 
 
 class DurationMode(StrEnum):
-    """Duration mode for recordings."""
+    """Legacy duration mode values retained for persisted schedule compatibility."""
 
     FIXED = "fixed"  # Use fixed duration_sec
-    AUTO = "auto"  # Auto-detect meeting end
+    AUTO = "auto"  # Legacy provider auto-detect; migrated to fixed smart-boundary behavior
 
 
 class JobStatus(StrEnum):
@@ -150,7 +150,7 @@ class Schedule(Base):
     schedule_type: Mapped[str] = mapped_column(String(32), default=ScheduleType.ONCE.value)
     start_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_sec: Mapped[int] = mapped_column(Integer, default=4200)
-    duration_mode: Mapped[str] = mapped_column(String(32), default=DurationMode.FIXED.value)  # fixed or auto
+    duration_mode: Mapped[str] = mapped_column(String(32), default=DurationMode.FIXED.value)  # legacy; always fixed
     cron_expression: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Recording settings
@@ -174,15 +174,13 @@ class Schedule(Base):
     min_duration_sec: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )  # Min recording time (None = use duration_sec)
-    stillness_timeout_sec: Mapped[int] = mapped_column(
-        Integer, default=180
-    )  # Stillness detection timeout after duration
+    stillness_timeout_sec: Mapped[int] = mapped_column(Integer, default=180)  # legacy provider auto-detect setting
 
     # Detection settings
     auto_detect_mode: Mapped[str | None] = mapped_column(
         String(16), nullable=True
-    )  # 'immediate' | 'after_min' | None (None = fixed mode)
-    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)  # Log only, don't stop
+    )  # legacy provider auto-detect setting
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)  # legacy provider auto-detect setting
 
     # Smart recording boundary overrides (None = inherit global default)
     smart_trim_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -453,6 +451,11 @@ class DetectionLog(Base):
     """Log of detection events for analysis and tuning."""
 
     __tablename__ = "detection_logs"
+    __table_args__ = (
+        Index("ix_detection_logs_triggered_at", "triggered_at"),
+        Index("ix_detection_logs_job_triggered_at", "job_id", "triggered_at"),
+        Index("ix_detection_logs_type_detected_triggered_at", "detector_type", "detected", "triggered_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     job_id: Mapped[int] = mapped_column(Integer, ForeignKey("recording_jobs.id"), nullable=False)

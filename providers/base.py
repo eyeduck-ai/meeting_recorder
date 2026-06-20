@@ -399,17 +399,6 @@ class BaseProvider(ABC):
         """Attempt to set the meeting layout."""
         pass
 
-    async def detect_meeting_end(
-        self,
-        page: Page,
-        probe_callback: Callable[[MeetingStateSnapshot], None] | None = None,
-    ) -> bool:
-        """Check if the meeting has ended or we've been kicked."""
-        snapshot = await self.probe_state(page)
-        if probe_callback:
-            probe_callback(snapshot)
-        return snapshot.state in {MeetingState.ENDED, MeetingState.ERROR}
-
     async def collect_diagnostics(
         self,
         page: Page,

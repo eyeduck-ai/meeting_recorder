@@ -233,7 +233,7 @@ class TestPublicPaths:
         assert is_public_path("/static/app.css") is True
 
         assert is_public_path("/api/v1/jobs/current") is False
-        assert is_public_path("/api/detection/config") is False
+        assert is_public_path("/api/detection/logs") is False
         assert is_public_path("/api/recordings/list") is False
         assert is_public_path("/api/private") is False
         assert is_public_path("/staticfiles/app.css") is False
@@ -262,8 +262,8 @@ class TestAuthMiddleware:
         async def current_job():
             return {"ok": True}
 
-        @app.get("/api/detection/config")
-        async def detection_config():
+        @app.get("/api/detection/logs")
+        async def detection_logs():
             return {"ok": True}
 
         @app.get("/api/recordings/list")
@@ -292,7 +292,7 @@ class TestAuthMiddleware:
         client = self._client()
 
         with patch("api.auth.get_settings", return_value=mock_settings):
-            for path in ("/api/v1/jobs/current", "/api/detection/config", "/api/recordings/list"):
+            for path in ("/api/v1/jobs/current", "/api/detection/logs", "/api/recordings/list"):
                 response = client.get(path)
                 assert response.status_code == 401
                 assert response.json() == {"detail": "Authentication required"}
@@ -301,7 +301,7 @@ class TestAuthMiddleware:
         client = self._client()
 
         with patch("api.auth.get_settings", return_value=mock_settings):
-            for path in ("/api/v1/jobs/current", "/api/detection/config", "/api/recordings/list"):
+            for path in ("/api/v1/jobs/current", "/api/detection/logs", "/api/recordings/list"):
                 response = client.get(path, headers={"X-API-Key": mock_settings.auth_password})
                 assert response.status_code == 200
                 assert response.json() == {"ok": True}

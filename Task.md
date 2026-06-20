@@ -41,3 +41,7 @@
 - [x] P3：新增 smart trim 與 dynamic extension，包含媒體活動分析、schedule 覆寫、preferred/raw/trimmed output metadata、YouTube 上傳後裁剪檔清理與 Detection & Activity UI。
 - [x] P3：修 smart trim / dynamic extension 後續風險，包含 schedule 覆寫即時驗證、完成檔 batch activity analysis、Detection UI 儲存錯誤處理與裁剪檔上傳後刪除狀態標示。
 - [x] P3：最佳化 dynamic start/end media activity recognition，包含 live audio 長駐 meter、streaming completed-file probes、audio/video 並行檢查與 coarse-to-fine boundary refinement。
+- [x] P3：移除 legacy provider-level auto-detect-end，將既有 schedule 遷移為 fixed baseline 並統一繼承 smart trim / dynamic extension 全域預設。
+- [x] P3：清除 legacy provider end detector 死碼與測試，補上 fixed baseline duration update 驗證與 activity settings UI 文案整理。
+- [x] P3：重整 Detection Logs 為 activity/extension diagnostics，增加 server-side filters，並以 1 秒 GOP + trim duration diagnostics 改善 smart trim 實際輸出邊界。
+- [x] P3：補強 Detection Logs 查詢 index/summary/filter-aware export、trim subprocess bounded output，以及 immediate/schedule retry window 一致性。

@@ -17,11 +17,7 @@
         {% endif %}
     </td>
     <td class="whitespace-nowrap">
-        {% if schedule.duration_mode == 'auto' %}
-        <span class="badge badge-primary badge-sm rounded">AUTO</span>
-        {% else %}
         {{ (schedule.duration_sec / 60) | int }} min
-        {% endif %}
     </td>
     <td class="text-sm whitespace-nowrap">
         {% if schedule.next_run_at %}

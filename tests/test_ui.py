@@ -83,16 +83,59 @@ def test_storage_templates_use_maintenance_and_local_removed_state():
     assert "Local removed" in recordings_template
 
 
-def test_settings_template_checks_detection_save_failures():
-    """Detection settings save should not report success unless both writes succeed."""
+def test_settings_template_saves_activity_settings_without_provider_detectors():
+    """Detection & Activity settings should no longer expose provider end detector config."""
     template = (Path(__file__).resolve().parents[1] / "web" / "templates" / "settings.html").read_text(encoding="utf-8")
 
     assert "btn.disabled = true" in template
-    assert "const detectionRes = await fetch('/api/detection/config'" in template
-    assert "if (!detectionRes.ok)" in template
-    assert "Provider detection settings failed to save" in template
+    assert "saveActivityConfig()" in template
+    assert "activitySettingsPayload()" in template
+    assert "Detection & Activity Saved" in template
+    assert "saveDetectionConfig" not in template
+    assert "Detection Saved" not in template
+    assert "Provider End Detectors" not in template
+    assert "/api/detection/config" not in template
     assert "finally" in template
     assert "btn.disabled = false" in template
+
+
+def test_detection_logs_template_uses_activity_diagnostics_filters():
+    """Detection Logs should present current activity diagnostics, not legacy provider detectors."""
+    template = (Path(__file__).resolve().parents[1] / "web" / "templates" / "detection_logs.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "media activity and dynamic extension diagnostics" in template
+    assert "appendLogFilters" in template
+    assert "params.set('detector_type', detector)" in template
+    assert "params.set('detected', detected)" in template
+    assert "updateExportLink()" in template
+    assert "export-csv-link" in template
+    assert 'onclick="updateExportLink()"' in template
+    assert "data.summary" in template
+    assert "renderLogs(data.logs)" in template
+    assert "Dynamic Extension" in template
+    assert "Media Activity" in template
+    assert "meeting end detection events" not in template
+    assert "Text Indicator" not in template
+    assert "Video Element" not in template
+    assert "WebRTC Connection" not in template
+    assert "URL Change" not in template
+    assert "Screen Freeze" not in template
+
+
+def test_schedule_templates_do_not_render_legacy_auto_detect_controls():
+    """Schedule UI should use smart boundaries instead of legacy provider auto-detect end."""
+    repo_root = Path(__file__).resolve().parents[1]
+    form_template = (repo_root / "web" / "templates" / "schedules" / "form.html").read_text(encoding="utf-8")
+    row_template = (repo_root / "web" / "templates" / "schedules" / "_row.html").read_text(encoding="utf-8")
+
+    assert "auto_detect_end" not in form_template
+    assert "auto_detect_mode" not in form_template
+    assert "stillness_timeout_sec" not in form_template
+    assert "Dry Run (Test Mode)" not in form_template
+    assert "duration_mode == 'auto'" not in row_template
+    assert "AUTO" not in row_template
 
 
 def test_trimmed_artifact_removed_flag_tracks_missing_trimmed_file(tmp_path):

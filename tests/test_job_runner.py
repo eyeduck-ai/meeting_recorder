@@ -23,7 +23,7 @@ from database.models import (
     RecordingJob as RecordingJobModel,
 )
 from recording.worker import RecordingJob, RecordingResult
-from scheduling.job_runner import JobRunner, QueueScheduleResult
+from scheduling.job_runner import JobRunner, QueueScheduleResult, calculate_retry_window_end
 from services.runtime_config import RuntimeRecordingConfig
 from utils.timezone import utc_now
 
@@ -48,6 +48,20 @@ class FakeWorker:
         if result.status == JobStatus.SUCCEEDED and self._status_callback:
             self._status_callback(job.job_id, JobStatus.RECORDING)
         return result
+
+
+def test_calculate_retry_window_end_uses_bounded_dynamic_extension():
+    base_end_time = utc_now()
+    runtime_config = SimpleNamespace(dynamic_extension_enabled=True, dynamic_extension_max_sec=600)
+
+    assert calculate_retry_window_end(base_end_time, runtime_config) == base_end_time + timedelta(seconds=600)
+
+
+def test_calculate_retry_window_end_does_not_extend_unbounded_retry_window():
+    base_end_time = utc_now()
+    runtime_config = SimpleNamespace(dynamic_extension_enabled=True, dynamic_extension_max_sec=0)
+
+    assert calculate_retry_window_end(base_end_time, runtime_config) == base_end_time
 
 
 @pytest.fixture
@@ -127,12 +141,14 @@ class TestJobRunner:
 
         monkeypatch.setattr(job_runner_module.asyncio, "create_task", fake_create_task)
 
+        before = utc_now()
         job_id = await runner.run_immediate(
             provider="jitsi",
             meeting_code="room-123",
             display_name="Recorder Bot",
             duration_sec=120,
         )
+        after = utc_now()
 
         assert job_id is not None
         assert len(scheduled) == 1
@@ -145,6 +161,8 @@ class TestJobRunner:
         assert scheduled_coro.cr_frame.f_locals["job"].recording_browser_mode == "app"
         assert scheduled_coro.cr_frame.f_locals["job"].recording_crop_mode == "manual"
         assert scheduled_coro.cr_frame.f_locals["job"].recording_crop_top_px == 66
+        deadline = scheduled_coro.cr_frame.f_locals["meeting_end_time"]
+        assert before + timedelta(seconds=3720) <= deadline <= after + timedelta(seconds=3720)
         scheduled_coro.close()
 
         session = session_local()
@@ -342,6 +360,46 @@ class TestJobRunner:
         assert kwargs["job"].duration_sec == 180
         deadline = kwargs["meeting_end_time"]
         assert before + timedelta(seconds=3780) <= deadline <= after + timedelta(seconds=3780)
+
+    @pytest.mark.asyncio
+    async def test_legacy_auto_schedule_still_gets_fixed_deadline(self, session_local, monkeypatch):
+        """Legacy auto-detect schedules should use duration_sec as the smart-boundary baseline."""
+        runner = JobRunner()
+        retry_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(runner, "_run_recording_with_retry", retry_mock)
+
+        session = session_local()
+        try:
+            meeting = Meeting(
+                name="Legacy Auto Schedule",
+                provider="jitsi",
+                meeting_code="legacy-auto-room",
+                default_display_name="Recorder Bot",
+            )
+            schedule = Schedule(
+                meeting=meeting,
+                schedule_type="once",
+                start_time=utc_now() + timedelta(days=1),
+                duration_sec=120,
+                duration_mode="auto",
+                enabled=True,
+            )
+            session.add(meeting)
+            session.add(schedule)
+            session.commit()
+            schedule_id = schedule.id
+        finally:
+            session.close()
+
+        before = utc_now()
+        await runner._execute_schedule(schedule_id, manual_trigger=True)
+        after = utc_now()
+
+        retry_mock.assert_awaited_once()
+        kwargs = retry_mock.await_args.kwargs
+        assert kwargs["job"].duration_sec == 120
+        deadline = kwargs["meeting_end_time"]
+        assert before + timedelta(seconds=3720) <= deadline <= after + timedelta(seconds=3720)
 
     @pytest.mark.asyncio
     async def test_retry_keeps_same_job_id_and_single_db_row(self, session_local, monkeypatch):

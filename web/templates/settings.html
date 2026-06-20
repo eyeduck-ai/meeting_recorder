@@ -300,7 +300,7 @@
         <div id="section-detection" class="settings-section hidden p-4 md:p-8 max-w-3xl">
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-bold">Detection & Activity</h3>
-                <button onclick="saveDetectionConfig()"
+                <button onclick="saveActivityConfig()"
                     class="btn bg-[#1d9bf0] hover:bg-[#1a8cd8] text-white border-none btn-sm rounded-full px-6"
                     id="btn-save-detection">Save</button>
             </div>
@@ -374,63 +374,6 @@
                             <label for="smart_trim_end_post_roll_sec" class="block text-sm font-bold mb-2">End Post-roll (sec)</label>
                             <input type="number" id="smart_trim_end_post_roll_sec" min="0" max="300" step="0.5"
                                 class="input input-bordered w-full bg-black border-[#2f3336]">
-                        </div>
-                    </div>
-                </fieldset>
-
-                <fieldset class="space-y-4">
-                    <legend class="font-bold text-sm text-gray-400 uppercase tracking-wider">Provider End Detectors</legend>
-                    <div class="bg-[#16181c] rounded-lg border border-[#2f3336] divide-y divide-[#2f3336]">
-                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
-                            <span>
-                                <span class="block font-bold">WebRTC Connection</span>
-                                <span class="block text-xs text-gray-500">Browser connection state</span>
-                            </span>
-                            <input type="checkbox" id="det_webrtc" class="toggle toggle-info">
-                        </label>
-                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
-                            <span>
-                                <span class="block font-bold">Text Indicators</span>
-                                <span class="block text-xs text-gray-500">Provider messages such as meeting ended</span>
-                            </span>
-                            <input type="checkbox" id="det_text" class="toggle toggle-info">
-                        </label>
-                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
-                            <span>
-                                <span class="block font-bold">Video Element</span>
-                                <span class="block text-xs text-gray-500">Video element disappearance</span>
-                            </span>
-                            <input type="checkbox" id="det_video" class="toggle toggle-info">
-                        </label>
-                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
-                            <span>
-                                <span class="block font-bold">URL Change</span>
-                                <span class="block text-xs text-gray-500">Navigation away from the meeting page</span>
-                            </span>
-                            <input type="checkbox" id="det_url" class="toggle toggle-info">
-                        </label>
-                        <label class="flex items-center justify-between gap-4 p-4 cursor-pointer">
-                            <span>
-                                <span class="block font-bold">Screen Freeze</span>
-                                <span class="block text-xs text-gray-500">Provider-level frozen screen detector</span>
-                            </span>
-                            <input type="checkbox" id="det_freeze" class="toggle toggle-info">
-                        </label>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label for="freeze_timeout" class="block text-sm font-bold mb-2">Freeze Timeout (sec)</label>
-                            <input type="number" id="freeze_timeout" min="1" inputmode="numeric"
-                                class="input input-bordered w-full bg-black border-[#2f3336]">
-                        </div>
-                        <div>
-                            <label for="min_detectors" class="block text-sm font-bold mb-2">Min Detectors</label>
-                            <select id="min_detectors" class="select select-bordered w-full bg-black border-[#2f3336]">
-                                <option value="1">1 (Fastest)</option>
-                                <option value="2">2 (Balanced)</option>
-                                <option value="3">3 (Strict)</option>
-                            </select>
                         </div>
                     </div>
                 </fieldset>
@@ -674,32 +617,11 @@
         document.getElementById('dynamic_extension_max_sec').disabled = disabled;
     }
 
-    // Existing load functions
-    async function loadDetectionConfig() {
-        const res = await fetch('/api/detection/config');
-        const c = await res.json();
-        document.getElementById('det_webrtc').checked = c.webrtc_connection_enabled;
-        document.getElementById('det_text').checked = c.text_indicator_enabled;
-        document.getElementById('det_video').checked = c.video_element_enabled;
-        document.getElementById('det_url').checked = c.url_change_enabled;
-        document.getElementById('det_freeze').checked = c.screen_freeze_enabled;
-        document.getElementById('freeze_timeout').value = c.screen_freeze_timeout_sec;
-        document.getElementById('min_detectors').value = c.min_detectors_agree;
-    }
-    async function saveDetectionConfig() {
+    async function saveActivityConfig() {
         const btn = document.getElementById('btn-save-detection');
         const originalText = btn.textContent;
         btn.disabled = true;
         btn.textContent = 'Saving...';
-        const c = {
-            webrtc_connection_enabled: document.getElementById('det_webrtc').checked,
-            text_indicator_enabled: document.getElementById('det_text').checked,
-            video_element_enabled: document.getElementById('det_video').checked,
-            url_change_enabled: document.getElementById('det_url').checked,
-            screen_freeze_enabled: document.getElementById('det_freeze').checked,
-            screen_freeze_timeout_sec: parseInt(document.getElementById('freeze_timeout').value),
-            min_detectors_agree: parseInt(document.getElementById('min_detectors').value)
-        };
         try {
             const activityRes = await fetch('/api/v1/settings', {
                 method: 'PUT',
@@ -709,15 +631,7 @@
             if (!activityRes.ok) {
                 throw new Error('Activity settings failed to save');
             }
-            const detectionRes = await fetch('/api/detection/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(c)
-            });
-            if (!detectionRes.ok) {
-                throw new Error('Provider detection settings failed to save');
-            }
-            alert('Detection Saved');
+            alert('Detection & Activity Saved');
         } catch (e) {
             alert(e.message || e);
         } finally {
@@ -785,7 +699,6 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         loadTelegramUsers();
-        loadDetectionConfig();
         loadActivityConfig();
         loadNotificationConfig();
         refreshDiskUsage();

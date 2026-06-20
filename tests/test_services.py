@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from database.models import AppSettings, Base, JobStatus, Meeting, RecordingJob, Schedule
 from scheduling.job_runner import QueueScheduleResult
-from services.errors import ConflictError
+from services.errors import ConflictError, ValidationError
 from services.job_service import ImmediateRecordingData, JobService
 from services.meeting_service import MeetingCreateData, MeetingService
 from services.schedule_service import ScheduleCreateData, ScheduleService
@@ -135,6 +135,34 @@ def test_schedule_service_update_delete_and_toggle_sync_scheduler(db_session, me
     service.delete_schedule(db_session, schedule.id)
     assert scheduler.removed == [schedule.id, schedule.id]
     assert db_session.query(Schedule).filter(Schedule.id == schedule.id).first() is None
+
+
+def test_schedule_service_rejects_invalid_create_duration(db_session, meeting):
+    service = ScheduleService(scheduler=FakeScheduler())
+
+    with pytest.raises(ValidationError, match="duration_sec"):
+        service.create_schedule(
+            db_session,
+            ScheduleCreateData(
+                meeting_id=meeting.id,
+                start_time=utc_now() + timedelta(hours=1),
+                duration_sec=59,
+            ),
+        )
+
+
+def test_schedule_service_rejects_invalid_update_duration(db_session, meeting):
+    service = ScheduleService(scheduler=FakeScheduler())
+    schedule = service.create_schedule(
+        db_session,
+        ScheduleCreateData(
+            meeting_id=meeting.id,
+            start_time=utc_now() + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="duration_sec"):
+        service.update_schedule(db_session, schedule.id, {"duration_sec": 14401})
 
 
 def test_schedule_service_trigger_marks_triggered_and_returns_queue_result(db_session, meeting):

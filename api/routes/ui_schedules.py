@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from api import runtime as api_runtime
 from api.routes import ui_common
-from config.settings import get_settings
 from database.models import Meeting, Schedule, ScheduleType
 from database.session import get_db
 from services.app_settings import get_all_settings
@@ -74,17 +73,13 @@ async def schedules_new(
                 meeting_id=source_schedule.meeting_id,
                 schedule_type=source_schedule.schedule_type,
                 duration_sec=source_schedule.duration_sec,
-                duration_mode=source_schedule.duration_mode,
                 lobby_wait_sec=source_schedule.lobby_wait_sec,
                 resolution_w=source_schedule.resolution_w,
                 resolution_h=source_schedule.resolution_h,
-                dry_run=source_schedule.dry_run,
                 youtube_enabled=source_schedule.youtube_enabled,
                 youtube_privacy=source_schedule.youtube_privacy,
                 override_display_name=source_schedule.override_display_name,
                 early_join_sec=source_schedule.early_join_sec,
-                min_duration_sec=source_schedule.min_duration_sec,
-                stillness_timeout_sec=source_schedule.stillness_timeout_sec,
                 smart_trim_enabled=source_schedule.smart_trim_enabled,
                 dynamic_extension_enabled=source_schedule.dynamic_extension_enabled,
                 dynamic_extension_idle_sec=source_schedule.dynamic_extension_idle_sec,
@@ -139,31 +134,13 @@ async def schedules_save(
     youtube_privacy: str = Form("unlisted"),
     override_display_name: str | None = Form(None),
     early_join_sec: int = Form(30),
-    auto_detect_end: bool = Form(False),
-    auto_detect_mode: str = Form("after_min"),
-    min_duration_min: int | None = Form(None),
-    stillness_timeout_sec: int = Form(180),
-    dry_run: bool = Form(False),
     smart_trim_mode: str = Form("inherit"),
     dynamic_extension_mode: str = Form("inherit"),
     dynamic_extension_idle_sec: str | None = Form(None),
     dynamic_extension_max_sec: str | None = Form(None),
 ):
     """Save schedule (create or update)."""
-    settings = get_settings()
-
-    if auto_detect_end:
-        duration_mode = "auto"
-        if auto_detect_mode == "immediate":
-            min_duration_sec = 0
-        else:
-            min_duration_sec = min_duration_min * 60 if min_duration_min else 1800
-        duration_sec = settings.max_recording_sec
-    else:
-        duration_mode = "fixed"
-        auto_detect_mode = None
-        min_duration_sec = None
-        duration_sec = duration_min * 60
+    duration_sec = duration_min * 60
 
     if resolution_preset == "1080p":
         resolution_w, resolution_h = 1920, 1080
@@ -186,18 +163,13 @@ async def schedules_save(
         "meeting_id": meeting_id,
         "schedule_type": ScheduleType(schedule_type).value,
         "duration_sec": duration_sec,
-        "duration_mode": duration_mode,
         "lobby_wait_sec": lobby_wait_sec,
         "resolution_w": resolution_w,
         "resolution_h": resolution_h,
-        "dry_run": dry_run,
         "youtube_enabled": youtube_enabled,
         "youtube_privacy": youtube_privacy,
         "override_display_name": override_display_name or None,
         "early_join_sec": early_join_sec,
-        "min_duration_sec": min_duration_sec,
-        "stillness_timeout_sec": stillness_timeout_sec,
-        "auto_detect_mode": auto_detect_mode,
         "smart_trim_enabled": mode_to_bool(smart_trim_mode),
         "dynamic_extension_enabled": mode_to_bool(dynamic_extension_mode),
         "dynamic_extension_idle_sec": parse_optional_int(dynamic_extension_idle_sec),

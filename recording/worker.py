@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -10,8 +9,6 @@ from pathlib import Path
 from config.settings import get_settings
 from database.models import ErrorCode, JobStatus
 from recording.activity import ActivityConfig, LiveMediaActivityProbe, RecordingActivityAnalyzer, trim_recording
-from recording.detection import DetectionConfig, DetectionOrchestrator
-from recording.detectors import AudioSilenceDetector, create_default_detectors
 from recording.ffmpeg_pipeline import RecordingInfo
 from recording.monitor import RecordingMonitor
 from recording.session import RecordingSession
@@ -79,10 +76,6 @@ class RecordingJob:
     diagnostics_dir: Path | None = None
     ffmpeg_stall_timeout_sec: int = 120
     ffmpeg_stall_grace_sec: int = 30
-    duration_mode: str = "fixed"
-    dry_run: bool = False
-    min_duration_sec: int | None = None
-    stillness_timeout_sec: int = 180
     smart_trim_enabled: bool = True
     dynamic_extension_enabled: bool = True
     dynamic_extension_idle_sec: int = 300
@@ -139,10 +132,6 @@ class RecordingJob:
             ffmpeg_stall_grace_sec=runtime_config.ffmpeg_stall_grace_sec,
             base_url=kwargs.get("base_url"),
             password=kwargs.get("password"),
-            duration_mode=kwargs.get("duration_mode", "fixed"),
-            dry_run=kwargs.get("dry_run", False),
-            min_duration_sec=kwargs.get("min_duration_sec"),
-            stillness_timeout_sec=kwargs.get("stillness_timeout_sec", 180),
             smart_trim_enabled=runtime_config.smart_trim_enabled,
             dynamic_extension_enabled=runtime_config.dynamic_extension_enabled,
             dynamic_extension_idle_sec=runtime_config.dynamic_extension_idle_sec,
@@ -179,38 +168,6 @@ class RecordingWorker:
                 self._status_callback(self._current_job.job_id, status)
             except Exception as e:
                 logger.warning(f"Status callback error: {e}")
-
-    def _load_detection_config(self) -> DetectionConfig:
-        """Load detection configuration from database."""
-        from database.models import AppSettings
-        from database.session import get_session_local
-
-        try:
-            SessionLocal = get_session_local()
-            session = SessionLocal()
-            try:
-                record = session.query(AppSettings).filter(AppSettings.key == "detection_config").first()
-                if record:
-                    data = json.loads(record.value)
-                    return DetectionConfig(
-                        text_indicator_enabled=data.get("text_indicator_enabled", True),
-                        video_element_enabled=data.get("video_element_enabled", True),
-                        webrtc_connection_enabled=data.get("webrtc_connection_enabled", True),
-                        screen_freeze_enabled=data.get("screen_freeze_enabled", False),
-                        audio_silence_enabled=data.get("audio_silence_enabled", False),
-                        url_change_enabled=data.get("url_change_enabled", True),
-                        screen_freeze_threshold=data.get("screen_freeze_threshold", 0.98),
-                        screen_freeze_timeout_sec=data.get("screen_freeze_timeout_sec", 60),
-                        audio_silence_timeout_sec=data.get("audio_silence_timeout_sec", 120),
-                        audio_silence_threshold=data.get("audio_silence_threshold", 0.05),
-                        min_detectors_agree=data.get("min_detectors_agree", 1),
-                    )
-            finally:
-                session.close()
-        except Exception as e:
-            logger.warning(f"Failed to load detection config from database: {e}")
-
-        return DetectionConfig()
 
     def request_cancel(self) -> bool:
         if self._current_job:
@@ -298,7 +255,6 @@ class RecordingWorker:
         """Execute one browser attempt for a recording job."""
 
         session = RecordingSession(job)
-        detection_orchestrator: DetectionOrchestrator | None = None
 
         try:
             session.begin_stage("prepare_runtime")
@@ -359,7 +315,7 @@ class RecordingWorker:
             await session.prepare_capture_surface()
             session.end_stage("prepare_capture_surface")
 
-            if job.duration_mode == "fixed" and job.deadline_at:
+            if job.deadline_at:
                 deadline_at = ensure_utc(job.deadline_at)
                 if deadline_at:
                     remaining = int((deadline_at - utc_now()).total_seconds())
@@ -382,21 +338,6 @@ class RecordingWorker:
             await session.dismiss_provider_overlays("dismiss_overlays_monitor")
             session.end_stage("dismiss_overlays_monitor")
 
-            if job.duration_mode == "auto":
-                detection_config = self._load_detection_config()
-                detection_config.screen_freeze_timeout_sec = job.stillness_timeout_sec
-                detection_orchestrator = DetectionOrchestrator(detection_config)
-                detection_orchestrator.set_dry_run(job.dry_run)
-                for detector in create_default_detectors(detection_config):
-                    if isinstance(detector, AudioSilenceDetector) and session.virtual_env:
-                        detector.set_audio_source(session.virtual_env.pulse_monitor)
-                    detection_orchestrator.register_detector(detector)
-                await detection_orchestrator.setup_all(session.page)
-                logger.info(
-                    "Auto-detection mode enabled "
-                    f"(dry_run={job.dry_run}, stillness_timeout={job.stillness_timeout_sec}s)"
-                )
-
             session.begin_stage("monitor_recording")
             try:
                 await session.probe_provider_state("monitor_recording")
@@ -405,7 +346,6 @@ class RecordingWorker:
             monitor_result = await self._monitor_recording(
                 session=session,
                 job=job,
-                detection_orchestrator=detection_orchestrator,
                 ffmpeg_stall_timeout_sec=job.ffmpeg_stall_timeout_sec,
                 ffmpeg_stall_grace_sec=job.ffmpeg_stall_grace_sec,
             )
@@ -504,7 +444,7 @@ class RecordingWorker:
 
         finally:
             try:
-                await self._save_detection_logs(job, result, detection_orchestrator)
+                await self._save_detection_logs(job, result)
             except Exception as e:
                 logger.warning(f"Failed to save detection logs: {e}")
 
@@ -516,13 +456,11 @@ class RecordingWorker:
         self,
         job: RecordingJob,
         result: RecordingResult,
-        detection_orchestrator: DetectionOrchestrator | None,
     ) -> None:
-        """Persist provider detection and media activity decisions."""
-        provider_logs = detection_orchestrator.detection_log if detection_orchestrator else []
+        """Persist media activity decisions."""
         has_activity_log = result.trim_status is not None
         has_extension_log = result.dynamic_extension_stop_reason is not None
-        if not provider_logs and not has_activity_log and not has_extension_log:
+        if not has_activity_log and not has_extension_log:
             return
 
         from database.models import DetectionLog
@@ -535,18 +473,6 @@ class RecordingWorker:
             db_job = db_session.query(DBJob).filter(DBJob.job_id == job.job_id).first()
             if not db_job:
                 return
-            for log_entry in provider_logs:
-                db_session.add(
-                    DetectionLog(
-                        job_id=db_job.id,
-                        detector_type=log_entry.detector_type.value,
-                        detected=log_entry.detected,
-                        confidence=log_entry.confidence,
-                        reason=log_entry.reason,
-                        attempt_no=job.attempt_no,
-                        triggered_at=log_entry.timestamp,
-                    )
-                )
             if has_extension_log:
                 db_session.add(
                     DetectionLog(
@@ -581,7 +507,6 @@ class RecordingWorker:
         *,
         session: RecordingSession,
         job: RecordingJob,
-        detection_orchestrator: DetectionOrchestrator | None,
         ffmpeg_stall_timeout_sec: int,
         ffmpeg_stall_grace_sec: int,
     ) -> tuple[str, int | None, str | None]:
@@ -590,7 +515,6 @@ class RecordingWorker:
         monitor = RecordingMonitor(
             session=session,
             job=job,
-            detection_orchestrator=detection_orchestrator,
             media_activity_probe=media_activity_probe,
             is_cancel_requested=lambda: self._cancel_requested,
             is_finish_requested=lambda: self._finish_requested,
@@ -633,7 +557,7 @@ class RecordingWorker:
         result.trim_end_sec = decision.trim_end_sec
         result.trim_status = decision.status
         result.trim_reason = decision.reason
-        result.trim_diagnostics = decision.diagnostics
+        result.trim_diagnostics = dict(decision.diagnostics)
 
         if not decision.should_trim or decision.trim_end_sec is None:
             return
@@ -654,8 +578,11 @@ class RecordingWorker:
             result.recording_info = raw_info
             return
 
+        expected_duration_sec = max(0.0, decision.trim_end_sec - decision.trim_start_sec)
+        result.trim_diagnostics["trim_output_expected_duration_sec"] = round(expected_duration_sec, 3)
+        result.trim_diagnostics["trim_output_actual_duration_sec"] = round(trimmed_info.duration_sec, 3)
         trimmed_info.start_time = raw_info.start_time + timedelta(seconds=decision.trim_start_sec)
-        trimmed_info.end_time = raw_info.start_time + timedelta(seconds=decision.trim_end_sec)
+        trimmed_info.end_time = trimmed_info.start_time + timedelta(seconds=trimmed_info.duration_sec)
         result.trimmed_output_path = trimmed_path
         result.output_path = trimmed_path
         result.recording_info = trimmed_info

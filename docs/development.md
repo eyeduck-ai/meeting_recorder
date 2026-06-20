@@ -146,7 +146,6 @@ uv run uvicorn api.main:app --reload
 
 同樣存放在 `app_settings`，但內容為 JSON：
 
-- `detection_config`：會議結束偵測器設定
 - `notification_config`：SMTP / webhook 通知設定
 
 ### Secret Handling
@@ -181,7 +180,7 @@ uv run uvicorn api.main:app --reload
 - app mode 會 bounded wait initial page，且不主動 request DOM fullscreen；normal/fallback mode 才保留 fullscreen best-effort。
 - `RecordingSession.prepare_capture_surface()` 負責進入錄製前的瀏覽器 capture surface 準備、crop 解析與 browser dimension diagnostics；provider 不應承擔 Chromium launch flags 或 FFmpeg crop offset。
 - `scheduling/job_runner.py` 應專注在 queue orchestration、schedule lifecycle 與 upload 委派。Schedule queue、pending、duplicate 與 queue position 狀態已移到 `scheduling/schedule_queue.py`；recording retry、attempt DB 更新、status callback 與 stage notification 已移到 `scheduling/recording_executor.py`；YouTube upload 前的 remux/transcode、upload progress 與 YouTube metadata 已移到 `scheduling/upload_runner.py`。
-- `recording/monitor.py` 是錄製監控 loop owner，集中處理 duration、dynamic extension、finish/cancel request、FFmpeg stall 與 auto-detect end 判斷；`RecordingWorker` 只負責 orchestration 並透過 wrapper 委派。
+- `recording/monitor.py` 是錄製監控 loop owner，集中處理 duration、dynamic extension、finish/cancel request 與 FFmpeg stall；`RecordingWorker` 只負責 orchestration 並透過 wrapper 委派。
 - `recording/activity.py` 是媒體活動判斷 owner，包含 live PulseAudio/FFmpeg 音訊 probe、browser screenshot 差異 probe、完成檔案的 streaming batch activity sampling、boundary refinement 與 trim helper。不要把 provider DOM selector 放進這一層；provider UI 狀態與媒體活動是兩種不同訊號。
 - `services/recording_manager.py` 的 list、cleanup 與 disk usage 應共用單次 filesystem scan 產生的 entry/stat metadata；新增錄影檔功能時不要在同一 request 內重複 `rglob()` 或對同一影片重複 `stat()`。
 - 後續拆大型檔案時，優先選擇能用現有 tests 保護的邊界，並保留必要的相容 import 或同步更新測試 fixture。
@@ -230,9 +229,10 @@ uv run uvicorn api.main:app --reload
 - `output_path` 代表 Web UI / API 優先使用的本地輸出；`raw_output_path` 永遠指向原始錄影；`trimmed_output_path` 保留本次裁剪輸出的路徑，即使自動 YouTube 上傳成功後該檔案已被刪除。
 - 起點裁剪以第一個「音訊或影像有活動」的 sample 為基準，保留 `smart_trim_pre_roll_sec`。完成檔案分析使用 streaming batch FFmpeg probes，避免長錄影每個 sample 各自啟動子程序，也避免一次把整段 PCM/raw frames 留在記憶體；若純影像差異出現在兩個 sample 之間，會回推到前一個 sample 作為活動起點。
 - Smart trim 會先用 `activity_sample_interval_sec` 做全檔 coarse scan，再只針對第一個與最後一個 active sample 附近用 1 秒 sample 做 boundary refinement；`runtime.json` 的 `trim.diagnostics` 會記錄 probe elapsed time、sample count、refinement status 與 unavailable reason。
+- 錄影 FFmpeg GOP 以約 1 秒 keyframe interval 輸出，讓 `trim_recording()` 可以維持 stream-copy 裁剪又降低 keyframe 對齊造成的邊界誤差；trim command 使用 duration-based `-ss` / `-t`，stderr 會串流寫入 log 或 bounded excerpt，不用 `communicate()` 保留完整輸出；trim diagnostics 會記錄 expected 與 ffprobe actual output duration。
 - 結尾裁剪以最後一個活動 sample 加上 `smart_trim_end_post_roll_sec` 為基準。
 - `dynamic_extension_enabled` 啟用後，`RecordingMonitor` 到達 `duration_sec` 後進入 extension phase；只要音訊或影像任一仍 active 就繼續錄，當兩者都 inactive 持續 `dynamic_extension_idle_sec` 或達到 `dynamic_extension_max_sec` 時停止。
-- live extension probe 會在接近指定結束時間前預熱 video baseline；進入 extension phase 後音訊使用單一長駐 FFmpeg PulseAudio meter，monitor check 只讀取最近峰值快照，不再每次啟動短 FFmpeg probe。音訊 meter 不可用時仍可用 video 判斷；音訊與影像都不可用時，monitor 會在一個 baseline interval 後回退停止，並在 job/detection log 記錄 `activity_probe_unavailable`。
+- live extension probe 會在接近指定結束時間前預熱音訊 meter 與 video baseline；進入 extension phase 後音訊使用單一長駐 FFmpeg PulseAudio meter，monitor check 只讀取最近峰值快照，不再每次啟動短 FFmpeg probe。音訊 meter 不可用時仍可用 video 判斷；音訊與影像都不可用時，monitor 會在一個 baseline interval 後回退停止，並在 job/detection log 記錄 `activity_probe_unavailable`。
 - 自動 YouTube 上傳使用 preferred output；若 preferred output 是裁剪檔，上傳成功後 `scheduling/upload_runner.py` 會刪除本地裁剪檔與其 remux/transcode artifact，並把 DB `output_path` 回退到 raw output。
 
 ### 排程行為
@@ -242,25 +242,21 @@ uv run uvicorn api.main:app --reload
 - scheduler 會在啟動時從 DB 載入已啟用排程
 - scheduler 也會同步 `next_run_at`，並在特定情境做 catch-up 判斷；`_sync_all_next_run_times()` 應用單一 DB session 批次同步，且跳過 unchanged `next_run_at`。
 - 手動 trigger schedule 時，fixed duration 從觸發當下起算；APScheduler 自動觸發才使用 schedule 原始時間窗
+- retry window 以 fixed baseline end 加上 bounded `dynamic_extension_max_sec` 計算；`dynamic_extension_max_sec=0` 只代表錄影 monitor 可無上限延長，不會讓 retry window 無限延長。
 - schedule lifecycle 欄位語意如下：
   - `last_triggered_at`：APScheduler、manual trigger 或 catch-up 觸發時間
   - `last_started_at`：`JobRunner` 實際取得 lock 並開始執行該 schedule 的時間
   - `last_completed_at`：該 schedule 對應 job 結束時間，成功、失敗或取消都會更新
   - `last_run_at`：短期相容欄位，現在視為 `last_started_at` 的 legacy alias，不再於 trigger 當下更新
-- catch-up 判斷不再把 trigger 當成已執行；若同一 schedule 正在執行或已在 queue，會跳過 catch-up。若最近一筆對應 job 已成功或以 auto-detected 結束，也會跳過。
+- catch-up 判斷不再把 trigger 當成已執行；若同一 schedule 正在執行或已在 queue，會跳過 catch-up。若最近一筆對應 job 已成功，也會跳過。
 - manual trigger 會透過 `JobRunner.queue_schedule()` 回傳 `triggered`、`queued` 或 duplicate。系統 busy 但可排隊時不回 409；同一 schedule 已在執行或 queue 中時才回 duplicate。
+- SQLite migration 會一次性把 legacy `duration_mode=auto` schedule 改成 fixed；若有正數 `min_duration_sec` 會用它回填 `duration_sec`，`min_duration_sec=0` 或 `NULL` 會保留原 `duration_sec`，避免 immediate auto schedule 變成 0 秒固定錄影。migration 也會將既有 smart/dynamic per-schedule overrides 清成 `NULL` 以繼承全域預設，並以 `app_settings` marker 保護，不會在之後每次啟動重複覆蓋使用者新設定。
 
-### 自動偵測結束
+### Detection Logs
 
-偵測流程在 `recording/` 中實作，主要包含：
+Legacy provider-level `duration_mode=auto` / auto-detect-end 已移除；schedule 現在一律以固定基準時長錄製，結束延長由 `dynamic_extension_enabled` 的媒體活動偵測決定。舊的 `recording/detection.py`、`recording/detectors.py` 與 provider detector tests 已刪除，不再是錄影停止條件或 UI/API 可調功能。
 
-- 文字指示
-- 視訊元素狀態
-- WebRTC 連線
-- URL 變更
-- 螢幕凍結
-
-Provider-level 偵測只在 legacy `duration_mode=auto` schedule 中控制提前結束。媒體活動偵測則用於 smart trim 與 dynamic extension，不應與 provider DOM 偵測混在一起。偵測與活動事件會寫入 `detection_logs`，並可經由 `/api/detection/*` 查詢、匯出、標記準確度與清空。
+Smart trim 與 dynamic extension 的媒體活動事件會寫入 `detection_logs`，並可經由 `/api/detection/logs` 查詢、匯出、標記準確度與清空。`/api/detection/logs` 與 export 支援 `job_id`、`detector_type`、`detected` server-side filters；logs response 會回傳 filtered total 與 summary counts，UI stats 與 CSV export 都以目前 filter 為準。SQLite migration 與 ORM metadata 會建立 `triggered_at`、`job_id + triggered_at`、`detector_type + detected + triggered_at` indexes，避免診斷資料累積後 logs 查詢退化。目前 UI 只顯示 `media_activity` 與 `dynamic_extension` 篩選，歷史未知 detector type 仍會以 legacy/raw label 顯示。
 Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪除後會 best-effort `VACUUM` 回收 DB 檔案空間。
 
 ### Storage maintenance

@@ -232,6 +232,27 @@ async def _run_ffmpeg_probe(*cmd: str, timeout_sec: float = 10.0) -> tuple[int, 
     return process.returncode or 0, stdout, stderr.decode(errors="ignore")
 
 
+async def _probe_media_duration_sec(input_path: Path) -> float | None:
+    returncode, stdout, stderr = await _run_ffmpeg_probe(
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(input_path),
+        timeout_sec=10.0,
+    )
+    if returncode != 0:
+        logger.warning("Could not probe duration for %s: %s", input_path, stderr[:200])
+        return None
+    try:
+        return float(stdout.decode(errors="ignore").strip())
+    except ValueError:
+        return None
+
+
 async def _read_stderr_limited(stream: asyncio.StreamReader | None, *, limit: int = 4096) -> str:
     if stream is None:
         return ""
@@ -248,6 +269,38 @@ async def _read_stderr_limited(stream: asyncio.StreamReader | None, *, limit: in
     return b"".join(chunks).decode(errors="ignore")
 
 
+async def _read_stream_to_log_or_excerpt(
+    stream: asyncio.StreamReader | None,
+    *,
+    log_path: Path | None = None,
+    limit: int = 4096,
+) -> str:
+    """Drain a process stream while optionally writing full content to disk."""
+    if stream is None:
+        return ""
+    chunks: list[bytes] = []
+    total = 0
+    log_file = None
+    try:
+        if log_path:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("wb")
+        while True:
+            chunk = await stream.read(8192)
+            if not chunk:
+                break
+            if log_file:
+                log_file.write(chunk)
+            if total < limit:
+                take = chunk[: limit - total]
+                chunks.append(take)
+                total += len(take)
+    finally:
+        if log_file:
+            log_file.close()
+    return b"".join(chunks).decode(errors="ignore")
+
+
 async def _close_process(process: asyncio.subprocess.Process | None) -> None:
     if process is None or process.returncode is not None:
         return
@@ -259,6 +312,40 @@ async def _close_process(process: asyncio.subprocess.Process | None) -> None:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         await process.wait()
+
+
+async def _run_ffmpeg_trim(
+    *cmd: str,
+    timeout_sec: float,
+    log_path: Path | None = None,
+) -> tuple[int, str]:
+    """Run trim FFmpeg without accumulating full stdout/stderr in memory."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return 127, "ffmpeg not found"
+
+    stdout_task = asyncio.create_task(_read_stream_to_log_or_excerpt(process.stdout, limit=1024))
+    stderr_task = asyncio.create_task(_read_stream_to_log_or_excerpt(process.stderr, log_path=log_path, limit=4096))
+    timed_out = False
+    try:
+        async with asyncio.timeout(timeout_sec):
+            returncode = await process.wait()
+    except TimeoutError:
+        timed_out = True
+        await _close_process(process)
+        returncode = 124
+
+    stdout_excerpt = await stdout_task
+    stderr_excerpt = await stderr_task
+    message = stderr_excerpt or stdout_excerpt
+    if timed_out:
+        message = (message + "\ntrim timed out").strip()
+    return returncode or 0, message
 
 
 class _PersistentAudioMeter:
@@ -401,8 +488,15 @@ class LiveMediaActivityProbe:
         self._audio_meter: _PersistentAudioMeter | None = None
 
     async def prime(self, session: Any) -> None:
-        """Warm the video baseline before dynamic extension begins."""
-        await self._check_video(session)
+        """Warm live media probes before dynamic extension begins."""
+        results = await asyncio.gather(
+            self._check_audio(session),
+            self._check_video(session),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug("Live media probe prime failed: %s", result)
 
     async def close(self) -> None:
         if self._audio_meter:
@@ -719,24 +813,7 @@ class RecordingActivityAnalyzer:
         )
 
     async def _probe_duration_sec(self, input_path: Path) -> float | None:
-        returncode, stdout, stderr = await _run_ffmpeg_probe(
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(input_path),
-            timeout_sec=10.0,
-        )
-        if returncode != 0:
-            logger.warning("Could not probe duration for %s: %s", input_path, stderr[:200])
-            return None
-        try:
-            return float(stdout.decode(errors="ignore").strip())
-        except ValueError:
-            return None
+        return await _probe_media_duration_sec(input_path)
 
     async def _collect_audio_activity(
         self,
@@ -997,13 +1074,16 @@ async def trim_recording(
     if output_path.exists():
         output_path.unlink()
 
+    expected_duration_sec = max(0.0, trim_end_sec - trim_start_sec)
     cmd = (
         "ffmpeg",
+        "-hide_banner",
+        "-nostats",
         "-y",
         "-ss",
         f"{trim_start_sec:.3f}",
-        "-to",
-        f"{trim_end_sec:.3f}",
+        "-t",
+        f"{expected_duration_sec:.3f}",
         "-i",
         str(input_path),
         "-map",
@@ -1015,16 +1095,17 @@ async def trim_recording(
         str(output_path),
     )
     started_at = utc_now()
-    returncode, stdout, stderr = await _run_ffmpeg_probe(
-        *cmd, timeout_sec=max(60.0, (trim_end_sec - trim_start_sec) * 2)
+    returncode, stderr = await _run_ffmpeg_trim(
+        *cmd,
+        timeout_sec=max(60.0, expected_duration_sec * 2),
+        log_path=log_path,
     )
-    if log_path:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(stdout.decode(errors="ignore") + stderr, encoding="utf-8")
     if returncode != 0 or not output_path.exists():
         logger.error("Trim failed for %s: %s", input_path, stderr[:400])
         return None
-    duration_sec = max(0.0, trim_end_sec - trim_start_sec)
+    duration_sec = await _probe_media_duration_sec(output_path)
+    if duration_sec is None:
+        duration_sec = expected_duration_sec
     return RecordingInfo(
         output_path=output_path,
         file_size=output_path.stat().st_size,

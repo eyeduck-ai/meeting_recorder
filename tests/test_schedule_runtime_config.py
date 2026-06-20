@@ -4,6 +4,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -196,6 +197,37 @@ async def test_update_schedule_rejects_invalid_dynamic_extension_override(db_ses
 
     assert exc.value.status_code == 400
     assert "dynamic_extension_max_sec" in exc.value.detail
+
+
+def test_update_schedule_schema_rejects_invalid_duration():
+    with pytest.raises(PydanticValidationError):
+        ScheduleUpdate(duration_sec=59)
+
+    with pytest.raises(PydanticValidationError):
+        ScheduleUpdate(duration_sec=14401)
+
+
+@pytest.mark.asyncio
+async def test_update_schedule_rejects_explicit_null_duration(db_session, meeting_id):
+    schedule = Schedule(
+        meeting_id=meeting_id,
+        schedule_type="once",
+        start_time=utc_now() + timedelta(hours=1),
+        duration_sec=3600,
+    )
+    db_session.add(schedule)
+    db_session.commit()
+
+    with pytest.raises(schedules_module.HTTPException) as exc:
+        await update_schedule(
+            schedule.id,
+            ScheduleUpdate(duration_sec=None),
+            http_request=_request(scheduler=FakeScheduler()),
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 400
+    assert "duration_sec" in exc.value.detail
 
 
 @pytest.mark.asyncio

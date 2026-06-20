@@ -27,11 +27,13 @@ class FakeSession:
         self.page = object()
         self._process_returncode = process_returncode
         self._meeting_ended = meeting_ended
+        self.detect_meeting_end_calls = 0
 
     def process_returncode(self):
         return self._process_returncode
 
     async def detect_meeting_end(self, stage):
+        self.detect_meeting_end_calls += 1
         assert stage == "monitor_recording"
         return self._meeting_ended
 
@@ -39,7 +41,6 @@ class FakeSession:
 def make_job(**kwargs):
     defaults = {
         "duration_sec": 60,
-        "min_duration_sec": None,
         "dynamic_extension_enabled": False,
         "dynamic_extension_idle_sec": 300,
         "dynamic_extension_max_sec": 3600,
@@ -63,7 +64,6 @@ def make_monitor(
     *,
     session=None,
     job=None,
-    detection_orchestrator=None,
     media_activity_probe=None,
     cancel=False,
     finish=False,
@@ -74,7 +74,6 @@ def make_monitor(
     return RecordingMonitor(
         session=session or FakeSession(),
         job=job or make_job(),
-        detection_orchestrator=detection_orchestrator,
         media_activity_probe=media_activity_probe,
         is_cancel_requested=lambda: cancel,
         is_finish_requested=lambda: finish,
@@ -125,23 +124,6 @@ async def test_monitor_raises_when_ffmpeg_output_stalls():
 
     with pytest.raises(RuntimeError, match="FFmpeg output stalled"):
         await monitor.run()
-
-
-@pytest.mark.asyncio
-async def test_monitor_returns_auto_detected_from_detection_orchestrator():
-    detection_result = SimpleNamespace(detected=True, reason="meeting ended")
-    detector = SimpleNamespace(check_all=AsyncMock(return_value=(True, [detection_result])))
-    monitor = make_monitor(
-        job=make_job(duration_sec=120, min_duration_sec=0),
-        detection_orchestrator=detector,
-        clock=sequence_clock(0, 1),
-    )
-
-    end_reason, ffmpeg_exit_code = await monitor.run()
-
-    assert end_reason == "auto_detected"
-    assert ffmpeg_exit_code is None
-    detector.check_all.assert_awaited_once()
 
 
 class FakeActivityProbe:
@@ -314,14 +296,33 @@ async def test_live_activity_probe_checks_audio_and_video_concurrently():
 
 
 @pytest.mark.asyncio
-async def test_monitor_returns_auto_detected_from_session_probe():
-    monitor = make_monitor(
-        session=FakeSession(meeting_ended=True),
-        job=make_job(duration_sec=120, min_duration_sec=0),
-        clock=sequence_clock(0, 1),
-    )
+async def test_live_activity_probe_prime_warms_audio_and_video():
+    probe = LiveMediaActivityProbe(ActivityConfig())
+    calls = []
+
+    async def check_audio(session):
+        calls.append("audio")
+        return None, None
+
+    async def check_video(session):
+        calls.append("video")
+        return None, None
+
+    probe._check_audio = check_audio
+    probe._check_video = check_video
+
+    await probe.prime(FakeSession())
+
+    assert sorted(calls) == ["audio", "video"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_ignores_provider_meeting_end_probe():
+    session = FakeSession(meeting_ended=True)
+    monitor = make_monitor(session=session, job=make_job(duration_sec=5), clock=sequence_clock(0, 1, 6))
 
     end_reason, ffmpeg_exit_code = await monitor.run()
 
-    assert end_reason == "auto_detected"
+    assert end_reason == "completed"
     assert ffmpeg_exit_code is None
+    assert session.detect_meeting_end_calls == 0

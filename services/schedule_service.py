@@ -11,6 +11,9 @@ from services.errors import NotFoundError, ValidationError
 from services.runtime_config import RuntimeConfigError, RuntimeConfigService, get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
 
+MIN_SCHEDULE_DURATION_SEC = 60
+MAX_SCHEDULE_DURATION_SEC = 14400
+
 
 @dataclass(frozen=True)
 class ScheduleCreateData:
@@ -20,7 +23,6 @@ class ScheduleCreateData:
     schedule_type: str = ScheduleType.ONCE.value
     start_time: datetime | None = None
     duration_sec: int = 4200
-    duration_mode: str = "fixed"
     cron_expression: str | None = None
     lobby_wait_sec: int | None = None
     layout_preset: str = "speaker"
@@ -33,10 +35,6 @@ class ScheduleCreateData:
     youtube_enabled: bool = False
     youtube_privacy: str = "unlisted"
     early_join_sec: int = 30
-    min_duration_sec: int | None = None
-    stillness_timeout_sec: int = 180
-    auto_detect_mode: str | None = None
-    dry_run: bool = False
     smart_trim_enabled: bool | None = None
     dynamic_extension_enabled: bool | None = None
     dynamic_extension_idle_sec: int | None = None
@@ -62,6 +60,7 @@ class ScheduleService:
         """Create a schedule and optionally sync it to APScheduler."""
         self._require_meeting(db, data.meeting_id)
         self._validate_cron(data.schedule_type, data.cron_expression)
+        self._validate_duration_sec(data.duration_sec)
 
         runtime_config = self._resolve_runtime_config_for_schedule(
             db,
@@ -79,7 +78,7 @@ class ScheduleService:
             schedule_type=self._schedule_type_value(data.schedule_type),
             start_time=data.start_time,
             duration_sec=data.duration_sec,
-            duration_mode=data.duration_mode,
+            duration_mode="fixed",
             cron_expression=data.cron_expression,
             lobby_wait_sec=runtime_config.lobby_wait_sec,
             layout_preset=data.layout_preset,
@@ -92,10 +91,10 @@ class ScheduleService:
             youtube_enabled=data.youtube_enabled,
             youtube_privacy=data.youtube_privacy,
             early_join_sec=data.early_join_sec,
-            min_duration_sec=data.min_duration_sec,
-            stillness_timeout_sec=data.stillness_timeout_sec,
-            auto_detect_mode=data.auto_detect_mode,
-            dry_run=data.dry_run,
+            min_duration_sec=None,
+            stillness_timeout_sec=180,
+            auto_detect_mode=None,
+            dry_run=False,
             smart_trim_enabled=data.smart_trim_enabled,
             dynamic_extension_enabled=data.dynamic_extension_enabled,
             dynamic_extension_idle_sec=data.dynamic_extension_idle_sec,
@@ -115,12 +114,18 @@ class ScheduleService:
         """Update a schedule and sync APScheduler state."""
         schedule = self._get_schedule(db, schedule_id)
         update_data = dict(updates)
+        update_data["duration_mode"] = "fixed"
+        update_data["auto_detect_mode"] = None
+        update_data["dry_run"] = False
 
         if "meeting_id" in update_data:
             self._require_meeting(db, update_data["meeting_id"])
 
         if "schedule_type" in update_data:
             update_data["schedule_type"] = self._schedule_type_value(update_data["schedule_type"])
+
+        if "duration_sec" in update_data:
+            self._validate_duration_sec(update_data["duration_sec"])
 
         resulting_type = update_data.get("schedule_type", schedule.schedule_type)
         resulting_cron = update_data.get("cron_expression", schedule.cron_expression)
@@ -286,6 +291,14 @@ class ScheduleService:
     def _validate_cron(self, schedule_type: str, cron_expression: str | None) -> None:
         if self._schedule_type_value(schedule_type) == ScheduleType.CRON.value and not cron_expression:
             raise ValidationError("cron_expression is required for cron schedule type")
+
+    def _validate_duration_sec(self, duration_sec: int) -> None:
+        if isinstance(duration_sec, bool) or not isinstance(duration_sec, int):
+            raise ValidationError("duration_sec must be an integer")
+        if duration_sec < MIN_SCHEDULE_DURATION_SEC or duration_sec > MAX_SCHEDULE_DURATION_SEC:
+            raise ValidationError(
+                f"duration_sec must be between {MIN_SCHEDULE_DURATION_SEC} and {MAX_SCHEDULE_DURATION_SEC}"
+            )
 
     def _schedule_type_value(self, schedule_type: str) -> str:
         return schedule_type.value if hasattr(schedule_type, "value") else str(schedule_type)

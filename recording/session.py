@@ -400,15 +400,6 @@ class RecordingSession:
         self.ffmpeg = None
         return recording_info
 
-    async def detect_meeting_end(self, stage: str) -> bool:
-        """Ask the provider whether the meeting has ended."""
-        if not self.page or not self.provider:
-            raise RuntimeError("Runtime not prepared")
-        return await self.provider.detect_meeting_end(
-            self.page,
-            probe_callback=lambda snapshot: self.record_provider_state(snapshot, stage),
-        )
-
     async def probe_provider_state(self, stage: str) -> None:
         """Record one provider state snapshot without using it as an end signal."""
         if not self.page or not self.provider:

@@ -1,6 +1,7 @@
 """Tests for recording module."""
 
 import re
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,8 +10,10 @@ import pytest
 
 import recording.ffmpeg_pipeline as ffmpeg_module
 import recording.session as session_module
+import recording.worker as worker_module
 from database.models import JobStatus
 from providers.base import JoinResult
+from recording.activity import TrimDecision
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
 from recording.session import RecordingSession
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
@@ -286,6 +289,63 @@ class TestRecordingWorker:
         assert worker._can_fallback_to_normal_browser(job, result) is False
 
     @pytest.mark.asyncio
+    async def test_smart_trim_summary_records_expected_and_actual_duration(self, monkeypatch, tmp_path):
+        raw_path = tmp_path / "recording.mkv"
+        raw_path.write_bytes(b"raw")
+        now = utc_now()
+        raw_info = RecordingInfo(
+            output_path=raw_path,
+            file_size=raw_path.stat().st_size,
+            duration_sec=30.0,
+            start_time=now,
+            end_time=now + timedelta(seconds=30),
+        )
+        session = SimpleNamespace(diagnostics_dir=tmp_path)
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+        )
+        result = RecordingResult(job_id="job123", status=JobStatus.FINALIZING, recording_info=raw_info)
+
+        class FakeAnalyzer:
+            def __init__(self, _config):
+                pass
+
+            async def analyze(self, _path):
+                return TrimDecision(
+                    status="trimmed",
+                    reason="media activity boundaries detected",
+                    trim_start_sec=2.0,
+                    trim_end_sec=10.0,
+                    duration_sec=30.0,
+                    diagnostics={"probe": "fake"},
+                )
+
+        async def fake_trim_recording(**kwargs):
+            trimmed_path = kwargs["output_path"]
+            trimmed_path.write_bytes(b"trimmed")
+            return RecordingInfo(
+                output_path=trimmed_path,
+                file_size=trimmed_path.stat().st_size,
+                duration_sec=8.75,
+                start_time=now,
+                end_time=now + timedelta(seconds=8.75),
+            )
+
+        monkeypatch.setattr(worker_module, "RecordingActivityAnalyzer", FakeAnalyzer)
+        monkeypatch.setattr(worker_module, "trim_recording", fake_trim_recording)
+
+        await RecordingWorker()._apply_smart_trim(session, job, result)
+
+        assert result.trim_diagnostics["trim_output_expected_duration_sec"] == 8.0
+        assert result.trim_diagnostics["trim_output_actual_duration_sec"] == 8.75
+        assert result.recording_info.duration_sec == 8.75
+
+    @pytest.mark.asyncio
     async def test_record_retries_app_failure_once_with_normal_auto_crop(self, monkeypatch, tmp_path):
         """The worker should use an explicit second attempt for pre-capture app failures."""
         sessions = []
@@ -441,6 +501,23 @@ class TestFFmpegPipeline:
 
         assert self._video_input(cmd) == ":99.0+0,72"
         assert "1280x720" in cmd
+
+    def test_gop_matches_one_second_keyframe_interval(self, monkeypatch, tmp_path, ffmpeg_settings):
+        """Stream-copy smart trim should have roughly one-second keyframe boundaries."""
+        monkeypatch.setattr(ffmpeg_module, "get_settings", lambda: ffmpeg_settings)
+        monkeypatch.setattr(ffmpeg_module, "_check_pulseaudio_available", lambda _source: False)
+
+        pipeline = FFmpegPipeline(
+            output_path=tmp_path / "recording.mkv",
+            display=":99",
+            width=1280,
+            height=720,
+            framerate=30,
+        )
+
+        cmd = pipeline._build_command()
+
+        assert cmd[cmd.index("-g") + 1] == "30"
 
 
 class TestRecordingSession:

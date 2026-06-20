@@ -40,6 +40,9 @@
 - 已將 recording retry、attempt DB 更新、status callback 與 stage notification 拆到 `scheduling/recording_executor.py`。
 - 已將 recording monitor loop 抽到 `recording/monitor.py`，集中 duration、finish/cancel、FFmpeg stall 與 auto-detect 判斷。
 - 已新增 `recording/activity.py`，集中媒體活動 probe、完成檔 batch activity analysis 與 smart trim helper，避免 provider DOM selector 進入媒體邊界判斷。
+- 已移除 legacy provider-level `duration_mode=auto` / auto-detect-end 的 UI/API 設定與 recording stop path，統一改用 smart trim + dynamic extension 作為動態起訖機制。
+- 已清除 legacy provider end detector 死碼與測試，並補上 fixed baseline duration update 驗證，避免舊 auto-detect 語意殘留。
+- 已重整 Detection Logs 為 activity/extension diagnostics，並以 server-side filters 與約 1 秒 GOP 改善 smart trim 輸出邊界精度。
 - 已將 `api/routes/ui.py` 的 auth/dashboard/meeting/schedule/settings route 群組拆到獨立子 router；`api.routes.ui.router` 保留為聚合入口。
 - 已將 Telegram create schedule、edit schedule、create meeting conversation 拆到獨立模組；`telegram_bot.conversations` 保留為相容 re-export 聚合器。
 - 已將 Zoom join/prejoin 改為 provider 專用狀態推進，處理 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支，避免假設固定頁面順序。
@@ -54,3 +57,5 @@
 - 已讓自動 YouTube 上傳使用 preferred trimmed output，成功後刪除本地裁剪 artifact 並回退 DB `output_path` 到 raw recording。
 - 已新增 provider bounded wait helper，並將 Jitsi/Webex/Zoom join/prejoin flow 剩餘固定 sleep 收斂為 selector/state/function bounded wait 或集中短 debounce。
 - 已最佳化 smart trim / dynamic extension 媒體活動辨識效能，包含 live audio 長駐 meter、streaming completed-file probes、並行 audio/video probe 與 boundary refinement diagnostics。
+- 已改善 smart trim 實際輸出精度，錄影 GOP 約 1 秒、trim 使用 duration-based stream copy，並記錄 expected/actual trimmed output duration。
+- 已改善 Detection Logs 與 trim runner 的效能穩定性，包含 filtered summary/indexes、filter-aware CSV export、bounded trim stderr handling，以及 immediate/schedule retry window 共用 bounded dynamic extension 規則。

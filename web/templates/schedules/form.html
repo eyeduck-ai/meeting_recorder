@@ -155,76 +155,6 @@
 
                     <div class="divider my-2"></div>
 
-                    <!-- Auto-Detection End -->
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-3">
-                            <input type="checkbox" name="auto_detect_end" id="auto_detect_end"
-                                value="true" class="checkbox checkbox-info"
-                                onchange="toggleAutoDetect()"
-                                {% if schedule and schedule.duration_mode == 'auto' %}checked{% endif %}>
-                            <span class="label-text font-bold">Enable Auto-Detection End</span>
-                        </label>
-                    </div>
-
-                    <div id="auto-detect-options" class="hidden pl-8 space-y-4 border-l-2 border-info/30 ml-3">
-                        <!-- Detection Mode -->
-                        <div class="form-control">
-                            <label class="label font-bold text-gray-500 text-xs uppercase py-1">Detection Mode</label>
-                            <div class="space-y-2">
-                                <label class="label cursor-pointer justify-start gap-3 py-1">
-                                    <input type="radio" name="auto_detect_mode" value="after_min"
-                                        class="radio radio-sm radio-info"
-                                        {% if not schedule or not schedule.auto_detect_mode or schedule.auto_detect_mode == 'after_min' %}checked{% endif %}>
-                                    <div>
-                                        <span class="label-text">After Minimum Duration</span>
-                                        <span class="text-xs text-gray-500 block">Record at least X minutes before detecting end</span>
-                                    </div>
-                                </label>
-                                <label class="label cursor-pointer justify-start gap-3 py-1">
-                                    <input type="radio" name="auto_detect_mode" value="immediate"
-                                        class="radio radio-sm radio-info"
-                                        {% if schedule and schedule.auto_detect_mode == 'immediate' %}checked{% endif %}>
-                                    <div>
-                                        <span class="label-text">Immediate</span>
-                                        <span class="text-xs text-gray-500 block">Detect meeting end from the start</span>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
-
-                        <!-- Min Duration -->
-                        <div id="min-duration-field" class="form-control">
-                            <label class="label font-bold text-gray-500 text-xs uppercase py-1">Minimum Duration (Minutes)</label>
-                            <input type="number" name="min_duration_min"
-                                value="{{ (schedule.min_duration_sec // 60) if schedule and schedule.min_duration_sec else 30 }}"
-                                class="input input-bordered input-sm bg-[#16181c] border-[#2f3336] w-32">
-                        </div>
-
-                        <!-- Stillness Timeout -->
-                        <div class="form-control">
-                            <label class="label font-bold text-gray-500 text-xs uppercase py-1">Screen Freeze Timeout (Seconds)</label>
-                            <input type="number" name="stillness_timeout_sec"
-                                value="{{ schedule.stillness_timeout_sec if schedule else 180 }}"
-                                class="input input-bordered input-sm bg-[#16181c] border-[#2f3336] w-32">
-                            <span class="text-xs text-gray-500 mt-1">Stop if screen is frozen for this duration</span>
-                        </div>
-
-                        <!-- Dry Run -->
-                        <div class="form-control">
-                            <label class="label cursor-pointer justify-start gap-3 py-1">
-                                <input type="checkbox" name="dry_run" value="true"
-                                    class="checkbox checkbox-warning checkbox-sm"
-                                    {% if schedule and schedule.dry_run %}checked{% endif %}>
-                                <div>
-                                    <span class="label-text text-warning">Dry Run (Test Mode)</span>
-                                    <span class="text-xs text-gray-500 block">Log detection events but don't stop recording</span>
-                                </div>
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="divider my-2"></div>
-
                     <!-- Smart Recording Boundaries -->
                     <div class="space-y-4">
                         <h3 class="font-bold text-sm text-gray-400">Smart Recording Boundaries</h3>
@@ -308,30 +238,6 @@
 </div>
 
 <script>
-    function toggleAutoDetect() {
-        const enabled = document.getElementById('auto_detect_end').checked;
-        const options = document.getElementById('auto-detect-options');
-        const durationField = document.getElementById('duration-field');
-
-        if (enabled) {
-            options.classList.remove('hidden');
-            durationField.classList.add('hidden');
-        } else {
-            options.classList.add('hidden');
-            durationField.classList.remove('hidden');
-        }
-    }
-
-    function toggleAutoDetectMode() {
-        const mode = document.querySelector('input[name="auto_detect_mode"]:checked')?.value;
-        const minField = document.getElementById('min-duration-field');
-        if (mode === 'immediate') {
-            minField.classList.add('hidden');
-        } else {
-            minField.classList.remove('hidden');
-        }
-    }
-
     function toggleScheduleFields() {
         const type = document.getElementById('schedule_type').value;
         const once = document.getElementById('once-fields');
@@ -359,16 +265,9 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        toggleAutoDetect();
-        toggleAutoDetectMode();
         toggleScheduleFields();
         toggleResolutionFields();
         toggleYouTube();
-
-        // Add event listeners for auto detect mode radio buttons
-        document.querySelectorAll('input[name="auto_detect_mode"]').forEach(radio => {
-            radio.addEventListener('change', toggleAutoDetectMode);
-        });
 
         // Default start time
         const start = document.querySelector('input[name="start_time"]');
