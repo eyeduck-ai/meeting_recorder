@@ -53,6 +53,8 @@ class CreateScheduleStates(IntEnum):
 async def create_schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the schedule creation wizard."""
     from recording.worker import get_worker
+    from scheduling.job_runner import get_job_runner
+    from services.job_runtime_state import JobRuntimeStateService
 
     db = get_db_session()
     try:
@@ -66,11 +68,19 @@ async def create_schedule_start(update: Update, context: ContextTypes.DEFAULT_TY
                 await update.message.reply_text(text, reply_markup=get_main_menu_keyboard())
             return ConversationHandler.END
 
-        # Check if recording is in progress
         worker = get_worker()
+        runner = get_job_runner()
+        runtime_snapshot = JobRuntimeStateService().build_snapshot(db, worker=worker, runner=runner)
         recording_warning = ""
-        if worker.is_busy:
-            recording_warning = "⚠️ 目前有錄製進行中\n選擇「現在」將會排隊等待\n\n"
+        warning_lines = []
+        if runtime_snapshot.available_slots <= 0:
+            warning_lines.append("⚠️ 錄製容量已滿，選擇「現在」將會排隊等待")
+        if runtime_snapshot.queue_length:
+            warning_lines.append(f"⏳ 佇列中: {runtime_snapshot.queue_length} 筆")
+        if runtime_snapshot.retry_waiting_count:
+            warning_lines.append(f"🔁 等待重試: {runtime_snapshot.retry_waiting_count} 筆")
+        if warning_lines:
+            recording_warning = "\n".join(warning_lines) + "\n\n"
 
         # Clear any previous wizard data
         context.user_data.clear()

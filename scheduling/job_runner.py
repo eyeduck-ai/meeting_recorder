@@ -11,7 +11,9 @@ from croniter import croniter
 from config.settings import get_settings
 from database.models import ErrorCode, JobStatus, Schedule
 from database.session import JobRepository, get_session_local
-from recording.worker import RecordingJob, get_worker
+from recording.job_types import RecordingJob
+from recording.post_processing import RecordingPostProcessingRequest, RecordingPostProcessor
+from recording.worker import get_worker
 from scheduling.recording_executor import RecordingExecutionOutcome, RecordingExecutor, RecordingRetryRequest
 from scheduling.schedule_queue import QueuedRunItem, QueuedRunView, QueueScheduleResult, ScheduleRunQueue
 from scheduling.upload_runner import UploadRequest, YouTubeUploadRunner
@@ -62,10 +64,24 @@ class QueuedJobCancelResult:
     schedule_id: int | None = None
 
 
+@dataclass(frozen=True)
+class PostProcessingTaskState:
+    """Tracked post-processing task state."""
+
+    request: RecordingPostProcessingRequest
+    kind: Literal["process", "settle"]
+
+
 class JobRunner:
     """Job runner with bounded recording concurrency."""
 
-    def __init__(self, *, worker=None, max_concurrent_recordings: int | None = None):
+    def __init__(
+        self,
+        *,
+        worker=None,
+        max_concurrent_recordings: int | None = None,
+        post_processor: RecordingPostProcessor | None = None,
+    ):
         self._worker = worker
         settings = get_settings()
         configured_limit = (
@@ -73,6 +89,7 @@ class JobRunner:
         )
         self._max_concurrent_recordings = max(1, int(configured_limit))
         self._recording_executor = RecordingExecutor(worker_provider=self._get_worker)
+        self._post_processor = post_processor or RecordingPostProcessor()
         self._upload_runner = YouTubeUploadRunner()
         self._schedule_queue = ScheduleRunQueue()
         self._direct_payloads: dict[str, DirectRecordingQueueItem] = {}
@@ -80,6 +97,7 @@ class JobRunner:
         self._retry_tasks: dict[str, asyncio.Task] = {}
         self._retry_ready_at: dict[str, datetime] = {}
         self._active_tasks: set[asyncio.Task] = set()
+        self._post_processing_tasks: dict[asyncio.Task, PostProcessingTaskState] = {}
         self._upload_tasks: dict[asyncio.Task, UploadRequest] = {}
         self._shutting_down = False
 
@@ -693,6 +711,8 @@ class JobRunner:
                     self._mark_schedule_completed(outcome.schedule_id)
                 return
             self._schedule_retry(outcome)
+        elif isinstance(outcome, RecordingPostProcessingRequest):
+            self._start_post_processing_task(outcome)
         elif isinstance(outcome, UploadRequest):
             self._start_upload_task(outcome)
 
@@ -790,7 +810,132 @@ class JobRunner:
         except Exception as e:
             logger.error("Upload task failed for job %s: %s", upload_request.job_id if upload_request else "?", e)
 
-    async def shutdown(self, *, upload_timeout_sec: float = 15.0, recording_timeout_sec: float = 10.0) -> None:
+    def _start_post_processing_task(self, request: RecordingPostProcessingRequest) -> None:
+        if self._shutting_down:
+            self._start_post_processing_settle_task(
+                request,
+                error_message="Recording post-processing skipped because server is shutting down",
+            )
+            return
+        else:
+            task = asyncio.create_task(self._run_post_processing_task(request))
+        self._track_post_processing_task(task, PostProcessingTaskState(request=request, kind="process"))
+
+    def _start_post_processing_settle_task(
+        self,
+        request: RecordingPostProcessingRequest,
+        *,
+        error_message: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self._complete_post_processing_with_raw_recording(
+                request,
+                error_message=error_message,
+            )
+        )
+        self._track_post_processing_task(task, PostProcessingTaskState(request=request, kind="settle"))
+
+    def _track_post_processing_task(self, task: asyncio.Task, state: PostProcessingTaskState) -> None:
+        self._post_processing_tasks[task] = state
+        try:
+            task.add_done_callback(self._post_processing_task_done)
+        except AttributeError:
+            logger.debug("Post-processing task does not support done callbacks")
+
+    async def _run_post_processing_task(self, request: RecordingPostProcessingRequest) -> UploadRequest | None:
+        return await self._post_processor.run(request)
+
+    async def _complete_post_processing_with_raw_recording(
+        self,
+        request: RecordingPostProcessingRequest,
+        *,
+        error_message: str,
+    ) -> None:
+        await self._post_processor.complete_with_raw_recording(request, error_message=error_message)
+
+    async def _complete_post_processing_with_raw_recording_best_effort(
+        self,
+        request: RecordingPostProcessingRequest,
+        *,
+        error_message: str,
+    ) -> None:
+        try:
+            await self._post_processor.complete_with_raw_recording(request, error_message=error_message)
+        except Exception:
+            logger.exception("Failed to settle raw recording success for job %s", request.job.job_id)
+
+    def _post_processing_task_done(self, task: asyncio.Task) -> None:
+        state = self._post_processing_tasks.get(task)
+        if state is None:
+            return
+        if self._shutting_down:
+            return
+        try:
+            upload_request = task.result()
+        except asyncio.CancelledError:
+            self._post_processing_tasks.pop(task, None)
+            if state.kind == "process":
+                self._start_post_processing_settle_task(
+                    state.request,
+                    error_message="Recording post-processing interrupted by server shutdown",
+                )
+            else:
+                logger.warning("Post-processing settle task canceled for job %s", state.request.job.job_id)
+            return
+        except Exception as e:
+            self._post_processing_tasks.pop(task, None)
+            if state.kind == "process":
+                logger.error("Post-processing task failed for job %s: %s", state.request.job.job_id, e)
+                self._start_post_processing_settle_task(
+                    state.request,
+                    error_message=f"Recording post-processing failed; raw recording retained: {e}",
+                )
+            else:
+                logger.exception("Post-processing settle task failed for job %s", state.request.job.job_id)
+            return
+        self._post_processing_tasks.pop(task, None)
+        if state.kind == "process" and upload_request:
+            self._start_upload_task(upload_request)
+
+    async def _settle_post_processing_task_for_shutdown(
+        self,
+        task: asyncio.Task,
+        state: PostProcessingTaskState,
+    ) -> None:
+        try:
+            upload_request = task.result()
+        except asyncio.CancelledError:
+            if state.kind == "process":
+                await self._complete_post_processing_with_raw_recording_best_effort(
+                    state.request,
+                    error_message="Recording post-processing interrupted by server shutdown",
+                )
+            else:
+                logger.warning(
+                    "Post-processing settle task canceled during shutdown for job %s", state.request.job.job_id
+                )
+            return
+        except Exception as e:
+            if state.kind == "process":
+                await self._complete_post_processing_with_raw_recording_best_effort(
+                    state.request,
+                    error_message=f"Recording post-processing failed during shutdown; raw recording retained: {e}",
+                )
+            else:
+                logger.exception(
+                    "Post-processing settle task failed during shutdown for job %s", state.request.job.job_id
+                )
+            return
+        if state.kind == "process" and upload_request:
+            self._mark_upload_interrupted(upload_request.job_id)
+
+    async def shutdown(
+        self,
+        *,
+        upload_timeout_sec: float = 15.0,
+        recording_timeout_sec: float = 10.0,
+        post_processing_timeout_sec: float = 10.0,
+    ) -> None:
         """Stop queue draining and settle tracked delayed retries, recordings, and uploads."""
         self._shutting_down = True
 
@@ -822,6 +967,22 @@ class JobRunner:
                 for task in pending:
                     self._active_tasks.discard(task)
 
+        post_processing_tasks = list(self._post_processing_tasks.keys())
+        if post_processing_tasks:
+            done, pending = await asyncio.wait(post_processing_tasks, timeout=post_processing_timeout_sec)
+            for task in done:
+                state = self._post_processing_tasks.pop(task, None)
+                if state:
+                    await self._settle_post_processing_task_for_shutdown(task, state)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in pending:
+                    state = self._post_processing_tasks.pop(task, None)
+                    if state:
+                        await self._settle_post_processing_task_for_shutdown(task, state)
+
         upload_tasks = list(self._upload_tasks.keys())
         if not upload_tasks:
             return
@@ -844,7 +1005,15 @@ class JobRunner:
         try:
             repo = JobRepository(session)
             db_job = repo.get_by_job_id(job_id)
-            if not db_job or db_job.status != JobStatus.UPLOADING.value:
+            if not db_job:
+                return
+            upload_in_progress = db_job.status == JobStatus.UPLOADING.value
+            upload_not_started = (
+                db_job.status == JobStatus.SUCCEEDED.value
+                and bool(db_job.youtube_enabled)
+                and not db_job.youtube_video_id
+            )
+            if not upload_in_progress and not upload_not_started:
                 return
             repo.update_status(
                 job_id,

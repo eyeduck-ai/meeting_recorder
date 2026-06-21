@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     ffmpeg_transcode_audio_bitrate: str = "96k"
     ffmpeg_transcode_video_bitrate: str | None = "1500k"
     max_parallel_transcodes: int = 1
+    max_parallel_activity_analyses: int = 1
 
     # Paths
     recordings_dir: Path = Path("./recordings")
@@ -121,6 +122,8 @@ class Settings(BaseSettings):
                 "MAX_CONCURRENT_RECORDINGS must be <= RECORDING_DISPLAY_POOL_SIZE "
                 f"({self.max_concurrent_recordings} > {self.recording_display_pool_size})"
             )
+        if self.max_parallel_activity_analyses < 1:
+            raise ValueError("MAX_PARALLEL_ACTIVITY_ANALYSES must be >= 1")
         return self
 
     @property

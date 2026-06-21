@@ -19,11 +19,24 @@ from recording.worker import RecordingWorker, reset_worker_instance, set_worker_
 from scheduling.job_runner import JobRunner, reset_job_runner_instance, set_job_runner_instance
 from scheduling.scheduler import SchedulerService, reset_scheduler_instance, set_scheduler_instance
 from uploading.youtube import close_youtube_uploader
+from utils.timezone import utc_now
 
 # Configure logging with file handler
 setup_logging()
 
 settings_config = get_settings()
+
+
+def _job_has_existing_recording_file(job: RecordingJob) -> bool:
+    for path_value in (job.raw_output_path, job.output_path):
+        if not path_value:
+            continue
+        try:
+            if Path(path_value).exists():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def cleanup_orphaned_jobs() -> None:
@@ -36,9 +49,21 @@ def cleanup_orphaned_jobs() -> None:
             JobStatus.JOINING.value,
             JobStatus.WAITING_LOBBY.value,
             JobStatus.RECORDING.value,
-            JobStatus.FINALIZING.value,
         ]
         orphaned_jobs = db.query(RecordingJob).filter(RecordingJob.status.in_(running_statuses)).all()
+        stale_finalizing = db.query(RecordingJob).filter(RecordingJob.status == JobStatus.FINALIZING.value).all()
+        restored_finalizing_count = 0
+        for job in stale_finalizing:
+            if _job_has_existing_recording_file(job):
+                logging.warning(f"Restoring interrupted post-processing job {job.job_id}")
+                job.status = JobStatus.SUCCEEDED.value
+                job.error_message = "Recording post-processing interrupted by server restart"
+                job.completed_at = utc_now()
+                if not job.end_reason:
+                    job.end_reason = "completed"
+                restored_finalizing_count += 1
+            else:
+                orphaned_jobs.append(job)
         for job in orphaned_jobs:
             logging.warning(f"Cleaning up orphaned job {job.job_id} (was {job.status})")
             job.status = JobStatus.FAILED.value
@@ -48,11 +73,13 @@ def cleanup_orphaned_jobs() -> None:
             logging.warning(f"Restoring interrupted upload job {job.job_id}")
             job.status = JobStatus.SUCCEEDED.value
             job.error_message = "YouTube upload interrupted by server restart"
-        if orphaned_jobs or stale_uploads:
+        if orphaned_jobs or stale_uploads or restored_finalizing_count:
             db.commit()
             logging.info(
-                "Cleaned up %s orphaned job(s), restored %s interrupted upload job(s)",
+                "Cleaned up %s orphaned job(s), restored %s interrupted finalizing job(s), "
+                "restored %s interrupted upload job(s)",
                 len(orphaned_jobs),
+                restored_finalizing_count,
                 len(stale_uploads),
             )
     except Exception as e:

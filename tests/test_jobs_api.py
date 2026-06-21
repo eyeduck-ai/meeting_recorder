@@ -215,6 +215,40 @@ async def test_jobs_current_keeps_compat_shape_with_active_count(db_session):
 
 
 @pytest.mark.asyncio
+async def test_jobs_current_ignores_finalizing_job_outside_worker_registry(db_session):
+    db_session.add(_job("job-finalizing", JobStatus.FINALIZING.value, "room-finalizing"))
+    db_session.commit()
+    worker = SimpleNamespace(active_jobs=[], is_busy=False)
+    runner = SimpleNamespace(queue_length=0, max_concurrent_recordings=2, available_slots=2)
+
+    active_response = await get_active_recordings(_request(worker, runner), db_session)
+    current_response = await get_current_recording(_request(worker, runner), db_session)
+
+    assert active_response["active"] is False
+    assert active_response["active_count"] == 0
+    assert active_response["active_jobs"] == []
+    assert current_response["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_jobs_current_ignores_stale_private_current_job_fallback(db_session):
+    db_session.add(_job("job-stale", JobStatus.RECORDING.value, "room-stale"))
+    db_session.commit()
+    worker = SimpleNamespace(
+        active_jobs=[],
+        is_busy=True,
+        _current_job=SimpleNamespace(job_id="job-stale"),
+    )
+    runner = SimpleNamespace(queue_length=0, max_concurrent_recordings=2, available_slots=2)
+
+    response = await get_current_recording(_request(worker, runner), db_session)
+
+    assert response["active"] is False
+    assert response["active_count"] == 0
+    assert response["job"] is None
+
+
+@pytest.mark.asyncio
 async def test_stop_job_cancels_queued_immediate_job(db_session):
     db_session.add(_job("job-q", JobStatus.QUEUED.value, "room-q"))
     db_session.commit()
@@ -401,6 +435,21 @@ async def test_ui_jobs_detail_does_not_allow_controls_for_non_recording_status_i
 
     assert response["template"] == "jobs/detail.html"
     assert response["can_control_job"] is False
+
+
+@pytest.mark.asyncio
+async def test_ui_jobs_detail_does_not_allow_controls_for_finalizing_outside_worker_registry(db_session, monkeypatch):
+    db_session.add(_job("job-finalizing", JobStatus.FINALIZING.value, "room-finalizing"))
+    db_session.commit()
+    worker = SimpleNamespace(active_jobs=[])
+    runner = SimpleNamespace(queued_items=[])
+    monkeypatch.setattr(ui_jobs_module.ui_common, "render_template", _capture_render_template)
+
+    response = await ui_jobs_module.jobs_detail(_request(worker, runner), "job-finalizing", db_session)
+
+    assert response["template"] == "jobs/detail.html"
+    assert response["can_control_job"] is False
+    assert response["can_delete_job"] is False
 
 
 @pytest.mark.asyncio

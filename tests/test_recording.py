@@ -1,5 +1,6 @@
 """Tests for recording module."""
 
+import asyncio
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -13,12 +14,17 @@ import recording.session as session_module
 import recording.worker as worker_module
 from database.models import ErrorCode, JobStatus
 from providers.base import JoinResult
-from recording.activity import TrimDecision
 from recording.ffmpeg_pipeline import FFmpegPipeline, RecordingInfo
+from recording.job_types import RecordingJob, RecordingResult
 from recording.session import RecordingSession
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
-from recording.worker import RecordingJob, RecordingResult, RecordingWorker
+from recording.worker import RecordingWorker
 from utils.timezone import utc_now
+
+
+def test_worker_reexports_recording_job_types():
+    assert worker_module.RecordingJob is RecordingJob
+    assert worker_module.RecordingResult is RecordingResult
 
 
 class TestRecordingJob:
@@ -30,7 +36,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 900
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job1 = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -52,7 +58,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 900
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -70,7 +76,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 900
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -93,7 +99,7 @@ class TestRecordingJob:
         mock_settings.lobby_wait_sec = 900
         custom_dir = Path("/custom/output")
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -110,7 +116,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 900
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="webex",
                 meeting_code="https://webex.com/meet/user",
@@ -132,7 +138,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 900
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -152,7 +158,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 1200  # Custom default
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -168,7 +174,7 @@ class TestRecordingJob:
         mock_settings.recordings_dir = Path("/recordings")
         mock_settings.lobby_wait_sec = 900
 
-        with patch("recording.worker.get_settings", return_value=mock_settings):
+        with patch("recording.job_types.get_settings", return_value=mock_settings):
             job = RecordingJob.create(
                 provider="jitsi",
                 meeting_code="test-room",
@@ -191,10 +197,25 @@ class TestRecordingWorker:
         assert worker.is_busy is False
         assert worker.current_status == JobStatus.QUEUED
 
-    def test_is_busy_when_job_running(self):
-        """is_busy should return True when a job is set."""
+    def test_is_busy_ignores_stale_current_job(self):
+        """is_busy should ignore stale compatibility current-job state."""
         worker = RecordingWorker()
         worker._current_job = Mock()
+
+        assert worker.is_busy is False
+
+    def test_is_busy_when_active_registry_has_job(self, tmp_path):
+        """is_busy should return True only when a job is active in the registry."""
+        worker = RecordingWorker()
+        job = RecordingJob(
+            job_id="job-active",
+            provider="jitsi",
+            meeting_code="room-active",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+        )
+        worker._active_jobs[job.job_id] = worker_module.ActiveRecordingState(job=job)
 
         assert worker.is_busy is True
 
@@ -205,17 +226,137 @@ class TestRecordingWorker:
         result = worker.request_cancel()
 
         assert result is False
-        assert worker._cancel_requested is False
 
-    def test_request_cancel_with_job(self):
-        """request_cancel should set flag when job is running."""
+    def test_request_cancel_with_latest_active_job(self, tmp_path):
+        """request_cancel without job id should target the latest active job."""
         worker = RecordingWorker()
-        worker._current_job = Mock()
+        old_job = RecordingJob(
+            job_id="job-old",
+            provider="jitsi",
+            meeting_code="room-old",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "old",
+        )
+        new_job = RecordingJob(
+            job_id="job-new",
+            provider="jitsi",
+            meeting_code="room-new",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "new",
+        )
+        worker._active_jobs[old_job.job_id] = worker_module.ActiveRecordingState(
+            job=old_job,
+            started_at=utc_now() - timedelta(seconds=60),
+        )
+        worker._active_jobs[new_job.job_id] = worker_module.ActiveRecordingState(job=new_job, started_at=utc_now())
 
         result = worker.request_cancel()
 
         assert result is True
-        assert worker._cancel_requested is True
+        assert worker._active_jobs["job-old"].cancel_requested is False
+        assert worker._active_jobs["job-new"].cancel_requested is True
+
+    def test_request_cancel_with_job_id_only_targets_that_job(self, tmp_path):
+        """request_cancel with job id should only affect the requested active job."""
+        worker = RecordingWorker()
+        first_job = RecordingJob(
+            job_id="job-a",
+            provider="jitsi",
+            meeting_code="room-a",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "a",
+        )
+        second_job = RecordingJob(
+            job_id="job-b",
+            provider="jitsi",
+            meeting_code="room-b",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "b",
+        )
+        worker._active_jobs[first_job.job_id] = worker_module.ActiveRecordingState(job=first_job)
+        worker._active_jobs[second_job.job_id] = worker_module.ActiveRecordingState(job=second_job)
+
+        result = worker.request_cancel("job-a")
+
+        assert result is True
+        assert worker._active_jobs["job-a"].cancel_requested is True
+        assert worker._active_jobs["job-b"].cancel_requested is False
+
+    def test_request_cancel_ignores_stale_current_job_without_active_state(self):
+        """A stale _current_job alone should not be cancelable."""
+        worker = RecordingWorker()
+        worker._current_job = Mock()
+
+        assert worker.request_cancel() is False
+
+    def test_request_finish_no_job(self):
+        """request_finish should return False when no job is active."""
+        worker = RecordingWorker()
+
+        assert worker.request_finish() is False
+
+    def test_request_finish_with_latest_active_job(self, tmp_path):
+        """request_finish without job id should target the latest active job."""
+        worker = RecordingWorker()
+        old_job = RecordingJob(
+            job_id="job-old",
+            provider="jitsi",
+            meeting_code="room-old",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "old",
+        )
+        new_job = RecordingJob(
+            job_id="job-new",
+            provider="jitsi",
+            meeting_code="room-new",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "new",
+        )
+        worker._active_jobs[old_job.job_id] = worker_module.ActiveRecordingState(
+            job=old_job,
+            started_at=utc_now() - timedelta(seconds=60),
+        )
+        worker._active_jobs[new_job.job_id] = worker_module.ActiveRecordingState(job=new_job, started_at=utc_now())
+
+        result = worker.request_finish()
+
+        assert result is True
+        assert worker._active_jobs["job-old"].finish_requested is False
+        assert worker._active_jobs["job-new"].finish_requested is True
+
+    def test_request_finish_with_job_id_only_targets_that_job(self, tmp_path):
+        """request_finish with job id should only affect the requested active job."""
+        worker = RecordingWorker()
+        first_job = RecordingJob(
+            job_id="job-a",
+            provider="jitsi",
+            meeting_code="room-a",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "a",
+        )
+        second_job = RecordingJob(
+            job_id="job-b",
+            provider="jitsi",
+            meeting_code="room-b",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "b",
+        )
+        worker._active_jobs[first_job.job_id] = worker_module.ActiveRecordingState(job=first_job)
+        worker._active_jobs[second_job.job_id] = worker_module.ActiveRecordingState(job=second_job)
+
+        result = worker.request_finish("job-b")
+
+        assert result is True
+        assert worker._active_jobs["job-a"].finish_requested is False
+        assert worker._active_jobs["job-b"].finish_requested is True
 
     def test_status_callback(self):
         """Status callback should be called on status update."""
@@ -289,61 +430,175 @@ class TestRecordingWorker:
         assert worker._can_fallback_to_normal_browser(job, result) is False
 
     @pytest.mark.asyncio
-    async def test_smart_trim_summary_records_expected_and_actual_duration(self, monkeypatch, tmp_path):
-        raw_path = tmp_path / "recording.mkv"
-        raw_path.write_bytes(b"raw")
-        now = utc_now()
-        raw_info = RecordingInfo(
-            output_path=raw_path,
-            file_size=raw_path.stat().st_size,
-            duration_sec=30.0,
-            start_time=now,
-            end_time=now + timedelta(seconds=30),
-        )
-        session = SimpleNamespace(diagnostics_dir=tmp_path)
+    async def test_record_cleans_runtime_before_returning_success(self, monkeypatch, tmp_path):
+        cleanup_reached = asyncio.Event()
+
+        class FakeSession:
+            def __init__(self, job, runtime_resources=None):
+                self.job = job
+                self.runtime_resources = runtime_resources
+                self.stage = None
+                self.diagnostics_dir = tmp_path
+
+            def begin_stage(self, stage):
+                self.stage = stage
+
+            def end_stage(self, stage, status="ok"):
+                if self.stage == stage:
+                    self.stage = None
+
+            def current_stage(self):
+                return self.stage
+
+            async def prepare_runtime(self):
+                return None
+
+            async def join_meeting(self):
+                return JoinResult(success=True)
+
+            async def dismiss_provider_overlays(self, _stage):
+                return False
+
+            async def set_layout(self, _preset):
+                return True
+
+            async def prepare_capture_surface(self):
+                return None
+
+            async def start_capture(self):
+                return None
+
+            async def probe_provider_state(self, _stage):
+                return None
+
+            async def finalize_capture(self):
+                raw_path = self.job.output_dir / "recording.mkv"
+                raw_path.write_bytes(b"raw")
+                now = utc_now()
+                return RecordingInfo(
+                    output_path=raw_path,
+                    file_size=raw_path.stat().st_size,
+                    duration_sec=1.0,
+                    start_time=now,
+                    end_time=now,
+                )
+
+            def process_returncode(self):
+                return None
+
+            def build_runtime_summary(self, **kwargs):
+                return kwargs
+
+            async def collect_diagnostics(self, **_kwargs):
+                return None
+
+            async def cleanup(self):
+                cleanup_reached.set()
+
+        worker = RecordingWorker()
+        monkeypatch.setattr("recording.worker.RecordingSession", FakeSession)
+        monkeypatch.setattr(worker, "_monitor_recording", AsyncMock(return_value=("completed", None, None)))
+
         job = RecordingJob(
-            job_id="job123",
+            job_id="job-post-processing-wait",
             provider="jitsi",
             meeting_code="room",
             display_name="Bot",
             duration_sec=60,
             output_dir=tmp_path,
         )
-        result = RecordingResult(job_id="job123", status=JobStatus.FINALIZING, recording_info=raw_info)
+        result = await worker.record(job)
 
-        class FakeAnalyzer:
-            def __init__(self, _config):
-                pass
+        assert result.status == JobStatus.SUCCEEDED
+        assert result.raw_output_path == result.recording_info.output_path
+        assert result.output_path == result.recording_info.output_path
+        assert cleanup_reached.is_set() is True
 
-            async def analyze(self, _path):
-                return TrimDecision(
-                    status="trimmed",
-                    reason="media activity boundaries detected",
-                    trim_start_sec=2.0,
-                    trim_end_sec=10.0,
-                    duration_sec=30.0,
-                    diagnostics={"probe": "fake"},
+    @pytest.mark.asyncio
+    async def test_record_cleanup_failure_does_not_override_success(self, monkeypatch, tmp_path):
+        cleanup_calls = 0
+
+        class FakeSession:
+            def __init__(self, job, runtime_resources=None):
+                self.job = job
+                self.runtime_resources = runtime_resources
+                self.stage = None
+                self.diagnostics_dir = tmp_path
+
+            def begin_stage(self, stage):
+                self.stage = stage
+
+            def end_stage(self, stage, status="ok"):
+                if self.stage == stage:
+                    self.stage = None
+
+            def current_stage(self):
+                return self.stage
+
+            async def prepare_runtime(self):
+                return None
+
+            async def join_meeting(self):
+                return JoinResult(success=True)
+
+            async def dismiss_provider_overlays(self, _stage):
+                return False
+
+            async def set_layout(self, _preset):
+                return True
+
+            async def prepare_capture_surface(self):
+                return None
+
+            async def start_capture(self):
+                return None
+
+            async def probe_provider_state(self, _stage):
+                return None
+
+            async def finalize_capture(self):
+                raw_path = self.job.output_dir / "recording.mkv"
+                raw_path.write_bytes(b"raw")
+                now = utc_now()
+                return RecordingInfo(
+                    output_path=raw_path,
+                    file_size=raw_path.stat().st_size,
+                    duration_sec=1.0,
+                    start_time=now,
+                    end_time=now,
                 )
 
-        async def fake_trim_recording(**kwargs):
-            trimmed_path = kwargs["output_path"]
-            trimmed_path.write_bytes(b"trimmed")
-            return RecordingInfo(
-                output_path=trimmed_path,
-                file_size=trimmed_path.stat().st_size,
-                duration_sec=8.75,
-                start_time=now,
-                end_time=now + timedelta(seconds=8.75),
-            )
+            def process_returncode(self):
+                return None
 
-        monkeypatch.setattr(worker_module, "RecordingActivityAnalyzer", FakeAnalyzer)
-        monkeypatch.setattr(worker_module, "trim_recording", fake_trim_recording)
+            def build_runtime_summary(self, **kwargs):
+                return kwargs
 
-        await RecordingWorker()._apply_smart_trim(session, job, result)
+            async def collect_diagnostics(self, **_kwargs):
+                return None
 
-        assert result.trim_diagnostics["trim_output_expected_duration_sec"] == 8.0
-        assert result.trim_diagnostics["trim_output_actual_duration_sec"] == 8.75
-        assert result.recording_info.duration_sec == 8.75
+            async def cleanup(self):
+                nonlocal cleanup_calls
+                cleanup_calls += 1
+                raise RuntimeError("cleanup failed")
+
+        worker = RecordingWorker()
+        monkeypatch.setattr("recording.worker.RecordingSession", FakeSession)
+        monkeypatch.setattr(worker, "_monitor_recording", AsyncMock(return_value=("completed", None, None)))
+
+        job = RecordingJob(
+            job_id="job-cleanup-failure",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+        )
+
+        result = await worker.record(job)
+
+        assert result.status == JobStatus.SUCCEEDED
+        assert cleanup_calls == 2
 
     @pytest.mark.asyncio
     async def test_record_retries_app_failure_once_with_normal_auto_crop(self, monkeypatch, tmp_path):
@@ -356,6 +611,7 @@ class TestRecordingWorker:
                 self.runtime_resources = runtime_resources
                 self.stage = None
                 self.cleaned = False
+                self.diagnostics_dir = tmp_path
                 sessions.append(self)
 
             def begin_stage(self, stage):
@@ -449,6 +705,93 @@ class TestRecordingWorker:
         assert worker.is_busy is False
 
     @pytest.mark.asyncio
+    async def test_record_uses_hard_deadline_when_fixed_deadline_passed(self, monkeypatch, tmp_path):
+        class FakeSession:
+            def __init__(self, job, runtime_resources=None):
+                self.job = job
+                self.runtime_resources = runtime_resources
+                self.stage = None
+                self.diagnostics_dir = tmp_path
+
+            def begin_stage(self, stage):
+                self.stage = stage
+
+            def end_stage(self, stage, status="ok"):
+                if self.stage == stage:
+                    self.stage = None
+
+            def current_stage(self):
+                return self.stage
+
+            async def prepare_runtime(self):
+                return None
+
+            async def join_meeting(self):
+                return JoinResult(success=True)
+
+            async def dismiss_provider_overlays(self, _stage):
+                return False
+
+            async def set_layout(self, _preset):
+                return True
+
+            async def prepare_capture_surface(self):
+                return None
+
+            async def start_capture(self):
+                return None
+
+            async def probe_provider_state(self, _stage):
+                return None
+
+            async def finalize_capture(self):
+                now = utc_now()
+                return RecordingInfo(
+                    output_path=self.job.output_dir / "recording.mkv",
+                    file_size=123,
+                    duration_sec=1.0,
+                    start_time=now,
+                    end_time=now,
+                )
+
+            def process_returncode(self):
+                return None
+
+            def build_runtime_summary(self, **kwargs):
+                return kwargs
+
+            async def collect_diagnostics(self, **_kwargs):
+                return None
+
+            async def cleanup(self):
+                return None
+
+        worker = RecordingWorker()
+        monitor_mock = AsyncMock(return_value=("completed", None, "hard_deadline_reached"))
+        monkeypatch.setattr("recording.worker.RecordingSession", FakeSession)
+        monkeypatch.setattr(worker, "_monitor_recording", monitor_mock)
+
+        job = RecordingJob(
+            job_id="job-hard-deadline",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            deadline_at=utc_now() - timedelta(seconds=5),
+            hard_deadline_at=utc_now() + timedelta(seconds=60),
+            dynamic_extension_enabled=True,
+            dynamic_extension_max_sec=60,
+        )
+
+        result = await worker.record(job)
+
+        assert result.status == JobStatus.SUCCEEDED
+        monitored_job = monitor_mock.await_args.kwargs["job"]
+        assert monitored_job.deadline_at is None
+        assert monitored_job.duration_sec == 1
+
+    @pytest.mark.asyncio
     async def test_record_fails_before_runtime_when_disk_space_is_low(self, tmp_path):
         from recording.capacity_guard import RecordingCapacityGuard
 
@@ -473,6 +816,29 @@ class TestRecordingWorker:
         assert result.error_code == ErrorCode.DISK_FULL.value
         assert result.failure_stage == "prepare_runtime"
         assert worker.is_busy is False
+
+    def test_capacity_guard_estimate_includes_dynamic_extension_max(self, tmp_path):
+        from recording.capacity_guard import RecordingCapacityGuard
+
+        guard = RecordingCapacityGuard(settings_provider=lambda: SimpleNamespace(min_free_disk_gb_before_recording=0))
+        job = RecordingJob(
+            job_id="job-capacity-extension",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=3600,
+            output_dir=tmp_path / "recordings" / "job-capacity-extension",
+            resolution_w=1920,
+            resolution_h=1080,
+            dynamic_extension_enabled=True,
+            dynamic_extension_max_sec=3600,
+        )
+
+        assert guard.estimate_required_gb(job) == pytest.approx(5.0)
+
+        job.dynamic_extension_enabled = False
+
+        assert guard.estimate_required_gb(job) == pytest.approx(2.5)
 
     @pytest.mark.asyncio
     async def test_recording_session_constructor_type_error_is_not_fallback_swallowed(self, monkeypatch, tmp_path):
@@ -991,6 +1357,10 @@ class TestRecordingSession:
         assert captured["ffmpeg_kwargs"]["height"] == 768
         assert captured["ffmpeg_kwargs"]["capture_y"] == 80
         assert captured["ffmpeg_started"] is True
+        session.virtual_env = None
+        summary = session.build_runtime_summary(end_reason="completed")
+        assert summary["display"] == ":99"
+        assert summary["audio_source"] == "virtual.monitor"
 
     @pytest.mark.asyncio
     async def test_prepare_capture_surface_records_browser_dimensions(self):

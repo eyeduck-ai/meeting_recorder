@@ -1,5 +1,6 @@
 """Telegram notification functions with single-message updates."""
 
+import asyncio
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,6 +11,9 @@ from database.session import get_session_local
 from telegram_bot.bot import get_bot
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_NOTIFICATION_TIMEOUT_SEC = 10.0
+TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY = 3
 
 # Map error codes to user-friendly descriptions (in Chinese)
 _ERROR_DESCRIPTIONS = {
@@ -174,6 +178,63 @@ async def _get_approved_chat_ids(notification_type: str) -> list[int]:
         db.close()
 
 
+async def _telegram_call_with_timeout(
+    call,
+    *args,
+    operation: str,
+    chat_id: int,
+    **kwargs,
+) -> tuple[bool, object | None]:
+    """Run one Telegram API call with a bounded timeout."""
+    try:
+        awaitable = call(*args, chat_id=chat_id, **kwargs)
+        result = await asyncio.wait_for(awaitable, timeout=TELEGRAM_NOTIFICATION_TIMEOUT_SEC)
+        return True, result
+    except TimeoutError:
+        logger.warning(
+            "Telegram %s timed out for chat %s after %.1fs",
+            operation,
+            chat_id,
+            TELEGRAM_NOTIFICATION_TIMEOUT_SEC,
+        )
+    except Exception as e:
+        logger.error("Telegram %s failed for chat %s: %s", operation, chat_id, e)
+    return False, None
+
+
+async def _send_or_edit_one_chat(bot, *, chat_id: int, job: RecordingJob, message: str) -> int | None:
+    if job.telegram_message_id:
+        edited, _ = await _telegram_call_with_timeout(
+            bot.edit_message_text,
+            chat_id=chat_id,
+            message_id=job.telegram_message_id,
+            text=message,
+            operation="edit",
+        )
+        if edited:
+            return job.telegram_message_id
+
+        sent, fallback_message = await _telegram_call_with_timeout(
+            bot.send_message,
+            chat_id=chat_id,
+            text=message,
+            operation="fallback-send",
+        )
+        if sent and fallback_message is not None:
+            return getattr(fallback_message, "message_id", None)
+        return None
+
+    sent, sent_message = await _telegram_call_with_timeout(
+        bot.send_message,
+        chat_id=chat_id,
+        text=message,
+        operation="send",
+    )
+    if sent and sent_message is not None:
+        return getattr(sent_message, "message_id", None)
+    return None
+
+
 async def _send_or_edit_status_message(
     *,
     job: RecordingJob,
@@ -187,30 +248,19 @@ async def _send_or_edit_status_message(
 
     chat_ids = await _get_approved_chat_ids(notification_type)
     first_message_id = job.telegram_message_id
+    semaphore = asyncio.Semaphore(TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY)
 
-    for chat_id in chat_ids:
-        try:
-            if job.telegram_message_id:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=job.telegram_message_id,
-                    text=message,
-                )
-                if first_message_id is None:
-                    first_message_id = job.telegram_message_id
-            else:
-                sent = await bot.send_message(chat_id=chat_id, text=message)
-                if first_message_id is None:
-                    first_message_id = sent.message_id
-        except Exception as e:
-            logger.error(f"Failed to send/edit notification to {chat_id}: {e}")
-            if job.telegram_message_id:
-                try:
-                    sent = await bot.send_message(chat_id=chat_id, text=message)
-                    if first_message_id is None:
-                        first_message_id = sent.message_id
-                except Exception as send_err:
-                    logger.error(f"Failed to fallback-send notification to {chat_id}: {send_err}")
+    async def send_one(chat_id: int) -> int | None:
+        async with semaphore:
+            return await _send_or_edit_one_chat(bot, chat_id=chat_id, job=job, message=message)
+
+    results = await asyncio.gather(*(send_one(chat_id) for chat_id in chat_ids), return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error("Unexpected Telegram notification fanout error: %s", result)
+            continue
+        if first_message_id is None and result is not None:
+            first_message_id = result
 
     return first_message_id
 
@@ -302,11 +352,18 @@ async def send_to_approved_users(message: str, notification_type: str = "all") -
         return
 
     chat_ids = await _get_approved_chat_ids(notification_type)
-    for chat_id in chat_ids:
-        try:
-            await bot.send_message(chat_id=chat_id, text=message)
-        except Exception as e:
-            logger.error(f"Failed to send message to {chat_id}: {e}")
+    semaphore = asyncio.Semaphore(TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY)
+
+    async def send_one(chat_id: int) -> None:
+        async with semaphore:
+            await _telegram_call_with_timeout(
+                bot.send_message,
+                chat_id=chat_id,
+                text=message,
+                operation="send",
+            )
+
+    await asyncio.gather(*(send_one(chat_id) for chat_id in chat_ids), return_exceptions=True)
 
 
 async def send_to_user(chat_id: int, message: str) -> bool:
@@ -315,9 +372,10 @@ async def send_to_user(chat_id: int, message: str) -> bool:
     if bot is None:
         return False
 
-    try:
-        await bot.send_message(chat_id=chat_id, text=message)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send message to chat {chat_id}: {e}")
-        return False
+    sent, _ = await _telegram_call_with_timeout(
+        bot.send_message,
+        chat_id=chat_id,
+        text=message,
+        operation="send",
+    )
+    return sent

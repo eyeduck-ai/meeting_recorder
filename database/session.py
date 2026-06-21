@@ -14,7 +14,7 @@ from database.migrations import run_schema_migrations
 
 if TYPE_CHECKING:
     from database.models import RecordingJob
-    from recording.worker import RecordingResult
+    from recording.job_types import RecordingResult
 
 
 _engine: Engine | None = None

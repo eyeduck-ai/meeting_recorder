@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
 from uuid import uuid4
+
+from recording.subprocess_utils import run_bounded_subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ async def validate_mp4_file(path: Path) -> bool:
         return False
 
     try:
-        process = await asyncio.create_subprocess_exec(
+        result = await run_bounded_subprocess(
             "ffprobe",
             "-v",
             "error",
@@ -44,20 +45,20 @@ async def validate_mp4_file(path: Path) -> bool:
             "-show_entries",
             "format=duration:stream=codec_type",
             str(path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout_sec=30,
+            stdout_limit=16384,
+            stderr_limit=4096,
         )
-        stdout, stderr = await process.communicate()
     except Exception as exc:
         logger.warning("Could not validate MP4 %s with ffprobe: %s", path, exc)
         return False
 
-    if process.returncode != 0:
-        logger.warning("MP4 validation failed for %s: %s", path, stderr.decode(errors="ignore")[:400])
+    if result.returncode != 0:
+        logger.warning("MP4 validation failed for %s: %s", path, result.stderr[:400])
         return False
 
     try:
-        metadata = json.loads(stdout.decode(errors="ignore") or "{}")
+        metadata = json.loads(result.stdout.decode(errors="ignore") or "{}")
     except json.JSONDecodeError:
         return False
 

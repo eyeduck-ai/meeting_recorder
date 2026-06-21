@@ -60,20 +60,29 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 ### 受控並行錄製
 
 - `recording.worker.get_worker()` 是 singleton
+- `recording.job_types.py` 是 `RecordingJob` / `RecordingResult` DTO owner；`recording.worker` 只保留相容 re-export，新內部模組不要為了 DTO import worker implementation
 - `scheduling.job_runner.JobRunner` 以 `MAX_CONCURRENT_RECORDINGS` 控制同時錄製數；不要恢復成單一長時間 global lock
 - `scheduling.schedule_queue.ScheduleRunQueue` 負責 unified FIFO run queue，統一管理 schedule/immediate queued item、pending、active schedule set、duplicate、queued cancellation 與 queue position 狀態；不要把第二條 direct queue 或 queue 容器狀態重新塞回 `JobRunner`
-- `scheduling.recording_executor.RecordingExecutor` 負責單次 recording attempt DB 更新、status callback 與 stage notification；retry wait 必須由 `JobRunner` delayed requeue 管理，不可在 active recording task 內 sleep 佔用 slot
+- `scheduling.recording_executor.RecordingExecutor` 負責單次 recording attempt DB 更新、status callback 與 stage notification；retry wait 必須由 `JobRunner` delayed requeue 管理，不可在 active recording task 內 sleep 佔用 slot。stage notification 是 best-effort async task，送出前必須重讀 DB status 並 skip stale status，避免舊 `recording` / `finalizing` 訊息覆蓋已 `succeeded` / `failed` / `canceled` 的 job
+- retry attempt 必須攜帶 process-local hard deadline，baseline duration 不可把 `dynamic_extension_max_sec` 重複加算；若 fixed baseline 已過但仍在 bounded extension window，retry 應直接進 extension/hard-deadline 模式
 - delayed retry waiting 不屬於 FIFO queue position，`queue_length` 不應包含它；但它必須透過 `retry_waiting_items[]` / Web UI / Telegram 可觀測，並可用 job stop 語意取消
+- 錄製 capacity slot 只涵蓋實際 capture runtime；`RecordingWorker` 在 FFmpeg `finalize_capture()` 後要先 cleanup browser、Xvfb 與 per-job audio lease，smart trim 與本機 MP4 canonicalization 由 tracked post-processing task 處理，不可放回 active recording task 內佔用 `MAX_CONCURRENT_RECORDINGS`
+- `recording.post_processing.RecordingPostProcessor` 負責成功 raw capture 後的 completed-file smart trim、本機 MP4 canonicalization、trim metadata/runtime summary 更新、完成通知與 upload request 建立；raw recording 成功優先於 smart trim 成敗，後處理例外應保留 raw recording 並讓 job 收斂為 `succeeded`
+- post-processing `process` task 失敗或取消時最多只能排一次 raw-success `settle` task；`settle` task 失敗只記 log，不可遞迴重排，也不可改成無追蹤的 fire-and-forget
+- DetectionLog 寫入是 diagnostics best-effort；寫入失敗只能 rollback + warning，不得阻斷 raw recording terminal success
 - `scheduling.upload_runner.YouTubeUploadRunner` 負責錄影完成後的 remux/transcode progress 與 YouTube upload；不要把 upload 細節重新塞回 `JobRunner`
-- `scheduling.job_runner.JobRunner` 負責 delayed retry、active recording 與 tracked upload task shutdown；新增 upload path 時不要回到 fire-and-forget 且無 interrupted cleanup 的 task
-- `recording.capacity_guard.RecordingCapacityGuard` 負責 process-local disk reservation；不要只用單 job free-space check 判斷多路長錄製容量
+- `scheduling.job_runner.JobRunner` 負責 delayed retry、active recording、tracked post-processing 與 tracked upload task shutdown；新增後處理或 upload path 時不要回到 fire-and-forget 且無 interrupted cleanup 的 task
+- `recording.capacity_guard.RecordingCapacityGuard` 負責 process-local disk reservation，估算必須包含已啟用的 bounded `dynamic_extension_max_sec`；若 `dynamic_extension_max_sec=0`，用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限；不要只用單 job free-space check 判斷多路長錄製容量
 - `recording.runtime_resources.RuntimeResourceAllocator` 負責每個 active job 的 Xvfb display 與 PipeWire/Pulse sink lease；不要在 provider 或 runner 內硬編 `:99` 或共用 `virtual_speaker` 作為並行錄製資源
-- `RecordingWorker` 維護 active job registry；cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象
+- `RecordingWorker` 維護 active job registry；`is_busy` 只代表 `_active_jobs` 非空，cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象。`_current_job` 只保留作為 worker 內部/相容欄位，route、template、Telegram handler 不得用它推論 active recording 或容量
 - `services.job_actions.JobActionService` 是 job stop/finish/delete/cancel queued 的單一狀態決策層；`ACTIVE_RECORDING_STATUSES` 與 `TERMINAL_JOB_STATUSES` 也由同一模組提供，REST route、Web UI route 與 template 不要各自維護不同的 job status 操作表
-- `services.job_runtime_state.JobRuntimeStateService` 是 API / Web UI / Telegram active、FIFO queued、retry waiting view 的單一組裝層；不要在 route、template 或 Telegram handler 重新拼 active job ids、queue maps 或 retry countdown maps
+- `services.job_runtime_state.JobRuntimeStateService` 是 API / Web UI / Telegram active、FIFO queued、retry waiting view 的單一組裝層；runner capacity/count fallback 與 invalid value normalization 也必須集中在這裡處理，不要在 route、template 或 Telegram handler 重新拼 active job ids、queue maps、capacity fallback 或 retry countdown maps
 - queued immediate job 可由 job stop endpoint 取消；queued schedule run 要用 schedule cancel-queued 語意，不要把 queued schedule 當成已有 job row 的 recording job
 - delete job 只允許 `succeeded`、`failed`、`canceled` 終態；`uploading` 代表錄影已成功但正在處理/上傳，不可 stop/finish/delete，upload issue 應回到 `succeeded` 並記錄在既有 job 欄位
+- app restart 時 stale `finalizing` 若已有 `raw_output_path` 或 `output_path` 指向存在檔案，應恢復為 `succeeded` 並記錄 post-processing interrupted；只有沒有可用錄影檔的 stale finalizing/running job 才標 failed
 - Telegram `/list` 與無參數 `/stop` 必須以 worker active registry 與 DB active status 交集為準，避免 stale DB active row 誤導；Telegram `/stop` 必須走 `JobActionService`，多路錄製下無參數只停止最新 active recording，指定 `/stop <job_id>` 時只作用於該 job
+- Telegram notification API 呼叫不可無界等待；send/edit/fallback-send 必須走 bounded timeout helper，fanout 必須 bounded concurrent，timeout 只能記 log，不得阻斷 recording/post-processing/upload 主流程
+- Telegram 建立排程 wizard 的「現在會排隊」提示必須看 `JobRuntimeStateService` snapshot 的 `available_slots`，不可只用 `worker.is_busy`，因為多路錄製下有 active job 不代表容量已滿
 - 現況預設支援 2 個同時錄製工作，可由 `.env` 的 `MAX_CONCURRENT_RECORDINGS` 調整
 - `MAX_CONCURRENT_RECORDINGS` 必須小於等於 `RECORDING_DISPLAY_POOL_SIZE`，設定錯誤會在 settings validation 階段 fail fast
 - 若新 schedule 或 immediate job 進來時錄製 slot 已滿，會進 queue 等待
@@ -139,8 +148,10 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `RecordingMonitor` 到達 `duration_sec` 後才進入 dynamic extension phase；音訊或影像任一 active 就繼續錄，兩者都 inactive 達 `dynamic_extension_idle_sec` 或達 `dynamic_extension_max_sec` 才停止。
 - 原始錄影檔必須保留；`raw_output_path` 指向原始檔，`output_path` 是 Web UI/API preferred local output，`trimmed_output_path` 是裁剪檔 metadata。
 - 完成檔案的 smart trim analysis 應使用 batch media probes；不要回到每個 sample 各自啟動 FFmpeg 子程序的做法。
+- 完成檔案的 smart trim analysis 與 trim subprocess 受 `recording.post_processing.ActivityAnalysisLimiter` / `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；live dynamic extension probe 不應被這個後處理 semaphore 阻塞，`recording.activity` 也不應直接讀 app settings。等待 limiter 時不得持有 browser/Xvfb/audio runtime，也不得佔用 recording capacity slot。
 - smart trim 實際裁剪維持 stream-copy；錄影 GOP 應保持約 1 秒 keyframe interval，並在 trim diagnostics 記錄 expected/actual output duration。
 - `trim_recording()` 不應共用會完整 `communicate()` stdout/stderr 的 generic probe runner；trim stderr 應串流寫入 log 或 bounded excerpt，避免長錄影後處理放大記憶體。
+- remux、MP4 validation、duration probe、thumbnail 等一般 FFmpeg/ffprobe helper 應使用 `recording.subprocess_utils.run_bounded_subprocess()` 或等價 bounded runner；不要新增裸 `communicate()` 且無 timeout 的 media subprocess path。
 - Detection Logs 是 activity/extension diagnostics；查詢、summary、CSV export 應套用同一組 filter，SQLite 應保留 `triggered_at`、`job_id + triggered_at`、`detector_type + detected + triggered_at` indexes。
 - 自動 YouTube 上傳使用 preferred output；若裁剪檔上傳成功，會刪除本地裁剪檔與其 MP4 artifact，並將 DB `output_path` 回退到 raw output。
 - Legacy provider-level end detection 已移除；不要重新加入 WebRTC/Text/Video/URL/ScreenFreeze/AudioSilence detector 作為錄影停止條件，也不要把 screen top crop、provider overlay、provider end state 與 smart trim 混成同一責任。

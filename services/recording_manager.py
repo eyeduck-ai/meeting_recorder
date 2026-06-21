@@ -1,6 +1,5 @@
 """Recording management service for thumbnails, cleanup, and disk monitoring."""
 
-import asyncio
 import logging
 import os
 import shutil
@@ -10,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from config.settings import get_settings
+from recording.subprocess_utils import run_bounded_subprocess
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
@@ -123,18 +123,18 @@ class RecordingManager:
                 str(output_path),
             ]
 
-            process = await asyncio.create_subprocess_exec(
+            result = await run_bounded_subprocess(
                 *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout_sec=60,
+                stdout_limit=1024,
+                stderr_limit=2048,
             )
-            _, stderr = await process.communicate()
 
-            if process.returncode == 0 and output_path.exists():
+            if result.returncode == 0 and output_path.exists():
                 logger.info(f"Generated thumbnail: {output_path}")
                 return str(output_path)
             else:
-                logger.warning(f"FFmpeg failed: {stderr.decode()[:200]}")
+                logger.warning(f"FFmpeg failed: {result.stderr[:200]}")
                 return None
 
         except Exception as e:

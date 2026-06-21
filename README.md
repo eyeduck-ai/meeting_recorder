@@ -44,15 +44,17 @@ mkdir -p data recordings diagnostics logs
 - `MAX_CONCURRENT_RECORDINGS`: 同時錄製上限，預設 `2`
 - `RECORDING_DISPLAY_START` / `RECORDING_DISPLAY_POOL_SIZE`: 每路錄製使用的 Xvfb display pool，預設從 `:100` 起共 `16` 個
 - `MIN_FREE_DISK_GB_BEFORE_RECORDING`: 啟動錄製前最低剩餘磁碟空間，預設 `10`
+- `MAX_RECORDING_SEC`: 單次錄製時間上限，也作為無上限 dynamic extension 的容量估算上限，預設 `14400`
 - `MAX_PARALLEL_TRANSCODES`: YouTube 上傳前 remux/transcode 並行上限，預設 `1`
+- `MAX_PARALLEL_ACTIVITY_ANALYSES`: 完成檔 smart trim / activity analysis 並行上限，預設 `1`
 - `TELEGRAM_BOT_TOKEN`: 要使用 Telegram Bot 時設定
 - `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET`: 要使用 YouTube 上傳時設定
 
 其餘錄製與通知相關設定可先使用預設值。Web UI 的設定頁可調整錄製解析度、lobby 等待時間、瀏覽器啟動模式、上方裁切 fallback，以及 Detection & Activity 中的智慧裁剪與動態延長預設值。解析度與 lobby 等待時間會套用到手動錄製與之後新建立的排程，既有排程會保留自己的錄製設定；瀏覽器模式與上方裁切是全域錄製設定，會套用到之後執行的錄製工作。智慧裁剪與動態延長可用全域預設，也可在單一排程的 Advanced Options 覆寫。
 
-`MAX_CONCURRENT_RECORDINGS` 必須大於等於 `1`，且不可大於 `RECORDING_DISPLAY_POOL_SIZE`；設定錯誤時服務會在啟動時 fail fast。錄製 slot 滿時，立即錄製與手動觸發排程會依進入順序排隊；Web UI 的 Dashboard / Jobs 會顯示 queue position，queued immediate job 與 queued schedule run 都可取消，queued job 不支援 Finish。錄製中的 job 才能 Stop/Finish；等待 retry 的 job 會顯示 retry 倒數並可取消，但不佔錄製 slot，也不分配 FIFO queue position。YouTube remux/upload 中的 job 只顯示 Processing，不支援 Stop、Finish 或 Delete。Jobs 頁的 Delete completed 只刪除 `succeeded`、`failed`、`canceled` 等終態 job，會保留 queued、active 與 uploading job。
+`MAX_CONCURRENT_RECORDINGS` 必須大於等於 `1`，且不可大於 `RECORDING_DISPLAY_POOL_SIZE`；`MAX_PARALLEL_ACTIVITY_ANALYSES` 必須大於等於 `1`；設定錯誤時服務會在啟動時 fail fast。錄製 slot 滿時，立即錄製與手動觸發排程會依進入順序排隊；Web UI 的 Dashboard / Jobs 會顯示 queue position，queued immediate job 與 queued schedule run 都可取消，queued job 不支援 Finish。錄製中的 job 才能 Stop/Finish；等待 retry 的 job 會顯示 retry 倒數並可取消，但不佔錄製 slot，也不分配 FIFO queue position。YouTube remux/upload 中的 job 只顯示 Processing，不支援 Stop、Finish 或 Delete。Jobs 頁的 Delete completed 只刪除 `succeeded`、`failed`、`canceled` 等終態 job，會保留 queued、active 與 uploading job。
 
-多路錄製會對每個 active job 做保守磁碟預留，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿；若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊。若服務在 YouTube upload 中重啟，job 會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在 `uploading`。
+多路錄製會對每個 active job 做保守磁碟預留，估算會包含已啟用的最長 dynamic extension；若 `dynamic_extension_max_sec=0`，則用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿。若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊；retry attempt 受原本 fixed baseline + bounded dynamic extension 的 hard deadline 限制，不會重複加算延長時間。多場同時完成時，錄製 runtime 會在 FFmpeg finalize 後先釋放，smart trim / activity analysis 再受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；後處理中的 job 可能仍顯示 Processing/Finalizing，但不再佔用 `MAX_CONCURRENT_RECORDINGS` 錄製 slot，避免後處理 FFmpeg probe 互相搶 CPU/IO 或阻塞下一場錄製。若服務在後處理期間重啟，已有 raw/output 檔的 `finalizing` job 會恢復為 `succeeded` 並記錄 post-processing interrupted；若服務在 YouTube upload 中重啟，job 也會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在非終態。
 
 ### 4. 啟動服務
 
@@ -91,7 +93,7 @@ python -m scripts.dev_compose up --build -d
 4. 使用者先對 Bot 發送 `/start`。
 5. 進入 Web UI 的 `/settings` 或 Telegram 管理流程核准使用者。
 
-常用指令包含 `/list`、`/record`、`/edit`、`/meetings` 與 `/stop`。多場錄製同時進行時，`/list` 會顯示 active job id、FIFO queue count 與 retry waiting count；`/stop` 會停止最新 active recording，`/stop <job_id>` 可停止指定 active job，或取消指定 queued / retry waiting job。
+常用指令包含 `/list`、`/record`、`/edit`、`/meetings` 與 `/stop`。多場錄製同時進行時，`/list` 會顯示 active job id、FIFO queue count 與 retry waiting count；`/record` 建立「現在」錄製時只會在錄製容量已滿時提示會排隊；`/stop` 會停止最新 active recording，`/stop <job_id>` 可停止指定 active job，或取消指定 queued / retry waiting job。
 
 ### YouTube 上傳
 

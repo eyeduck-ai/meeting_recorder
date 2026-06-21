@@ -1,7 +1,8 @@
 """Tests for recording execution retry and status flow."""
 
+import logging
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import create_engine
@@ -13,9 +14,9 @@ from database.models import Base, JobStatus
 from database.models import RecordingJob as RecordingJobModel
 from database.session import JobRepository
 from recording.ffmpeg_pipeline import RecordingInfo
-from recording.worker import RecordingJob, RecordingResult
+from recording.job_types import RecordingJob, RecordingResult
+from recording.post_processing import RecordingPostProcessingRequest
 from scheduling.recording_executor import RecordingExecutor, RecordingRetryRequest
-from services.storage_maintenance import CanonicalRecording
 from utils.timezone import utc_now
 
 
@@ -51,7 +52,6 @@ def executor_session_local(tmp_path, monkeypatch):
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     monkeypatch.setattr(executor_module, "get_session_local", lambda: SessionLocal)
-    monkeypatch.setattr(executor_module, "notify_recording_completed", AsyncMock())
     monkeypatch.setattr(executor_module, "notify_recording_failed", AsyncMock())
     monkeypatch.setattr(executor_module, "notify_recording_retry", AsyncMock())
     monkeypatch.setattr(executor_module, "notify_recording_status", AsyncMock(return_value=None))
@@ -79,6 +79,140 @@ def _create_db_job(session_local, job: RecordingJob) -> None:
         session.commit()
     finally:
         session.close()
+
+
+def _create_db_job_with_status(session_local, *, job_id: str, status: JobStatus) -> None:
+    session = session_local()
+    try:
+        session.add(
+            RecordingJobModel(
+                job_id=job_id,
+                provider="jitsi",
+                meeting_code="room-123",
+                display_name="Recorder Bot",
+                duration_sec=300,
+                lobby_wait_sec=900,
+                status=status.value,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_stage_notification_skips_stale_db_status(executor_session_local, monkeypatch):
+    """A late stage notification should not overwrite or send after the job has moved on."""
+    _create_db_job_with_status(executor_session_local, job_id="stage-stale", status=JobStatus.SUCCEEDED)
+    notify = AsyncMock(return_value=123)
+    monkeypatch.setattr(executor_module, "notify_recording_status", notify)
+    executor = RecordingExecutor(worker_provider=lambda: FakeWorker([]))
+
+    await executor._notify_stage_update("stage-stale", JobStatus.RECORDING)
+
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stage_notification_skips_stale_finalizing_db_status(executor_session_local, monkeypatch):
+    """A finalizing notification should not be sent after the job has already completed."""
+    _create_db_job_with_status(executor_session_local, job_id="stage-finalizing-stale", status=JobStatus.SUCCEEDED)
+    notify = AsyncMock(return_value=123)
+    monkeypatch.setattr(executor_module, "notify_recording_status", notify)
+    executor = RecordingExecutor(worker_provider=lambda: FakeWorker([]))
+
+    await executor._notify_stage_update("stage-finalizing-stale", JobStatus.FINALIZING)
+
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stage_notification_sends_when_db_status_still_matches(executor_session_local, monkeypatch):
+    """A current stage notification should be sent and persist the Telegram message id."""
+    _create_db_job_with_status(executor_session_local, job_id="stage-current", status=JobStatus.RECORDING)
+    notify = AsyncMock(return_value=321)
+    monkeypatch.setattr(executor_module, "notify_recording_status", notify)
+    executor = RecordingExecutor(worker_provider=lambda: FakeWorker([]))
+
+    await executor._notify_stage_update("stage-current", JobStatus.RECORDING)
+
+    notify.assert_awaited_once()
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "stage-current").one()
+        assert db_job.telegram_message_id == 321
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_stage_notification_failure_is_best_effort(executor_session_local, monkeypatch, caplog):
+    """Notification failure should warn without raising or mutating the job result."""
+    _create_db_job_with_status(executor_session_local, job_id="stage-failure", status=JobStatus.RECORDING)
+    notify = AsyncMock(side_effect=RuntimeError("telegram unavailable"))
+    monkeypatch.setattr(executor_module, "notify_recording_status", notify)
+    executor = RecordingExecutor(worker_provider=lambda: FakeWorker([]))
+
+    with caplog.at_level(logging.WARNING):
+        await executor._notify_stage_update("stage-failure", JobStatus.RECORDING)
+
+    notify.assert_awaited_once()
+    assert "Failed to send stage notification for job stage-failure" in caplog.text
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "stage-failure").one()
+        assert db_job.status == JobStatus.RECORDING.value
+        assert db_job.telegram_message_id is None
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_raw_capture_schedules_finalizing_notification(executor_session_local, tmp_path):
+    """Successful raw captures should expose the finalizing stage before post-processing."""
+    output_path = tmp_path / "recording.mkv"
+    output_path.write_bytes(b"video")
+    now = utc_now()
+    job = RecordingJob(
+        job_id="finalizing-stage",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Recorder Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job(executor_session_local, job)
+    fake_worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.SUCCEEDED,
+                attempt_no=1,
+                recording_info=RecordingInfo(
+                    output_path=output_path,
+                    file_size=output_path.stat().st_size,
+                    duration_sec=60.0,
+                    start_time=now,
+                    end_time=now + timedelta(seconds=60),
+                ),
+                end_time=now + timedelta(seconds=60),
+            )
+        ]
+    )
+    executor = RecordingExecutor(worker_provider=lambda: fake_worker)
+    schedule_stage_notification = Mock()
+    executor._schedule_stage_notification = schedule_stage_notification
+
+    await executor.run_with_retry(
+        job=job,
+        schedule_id=None,
+        meeting_end_time=utc_now() + timedelta(minutes=5),
+        youtube_enabled=False,
+        youtube_privacy="unlisted",
+        meeting_name=None,
+    )
+
+    schedule_stage_notification.assert_called_once_with("finalizing-stage", JobStatus.FINALIZING)
 
 
 @pytest.mark.asyncio
@@ -160,8 +294,94 @@ async def test_retryable_failure_returns_delayed_retry_request(executor_session_
 
 
 @pytest.mark.asyncio
-async def test_success_with_youtube_enabled_returns_upload_request(executor_session_local, monkeypatch, tmp_path):
-    """Successful YouTube-enabled recordings should return an upload request."""
+async def test_retry_request_sets_hard_deadline_without_double_counting_dynamic_extension(
+    executor_session_local, tmp_path
+):
+    job = RecordingJob(
+        job_id="retry-hard-deadline",
+        provider="jitsi",
+        meeting_code="room-123",
+        display_name="Recorder Bot",
+        duration_sec=120,
+        output_dir=tmp_path,
+        dynamic_extension_enabled=True,
+        dynamic_extension_max_sec=60,
+    )
+    _create_db_job(executor_session_local, job)
+    fake_worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.FAILED,
+                attempt_no=1,
+                error_message="ERR_NAME_NOT_RESOLVED while joining",
+                end_time=utc_now(),
+            )
+        ]
+    )
+    executor = RecordingExecutor(worker_provider=lambda: fake_worker)
+    meeting_end_time = utc_now() + timedelta(seconds=180)
+
+    retry_request = await executor.run_with_retry(
+        job=job,
+        schedule_id=None,
+        meeting_end_time=meeting_end_time,
+        youtube_enabled=False,
+        youtube_privacy="unlisted",
+        meeting_name=None,
+    )
+
+    assert isinstance(retry_request, RecordingRetryRequest)
+    assert retry_request.job.hard_deadline_at == meeting_end_time
+    assert 1 <= retry_request.job.duration_sec <= 120
+
+
+@pytest.mark.asyncio
+async def test_retry_request_clears_expired_fixed_deadline_for_extension_window(executor_session_local, tmp_path):
+    job = RecordingJob(
+        job_id="retry-expired-base",
+        provider="jitsi",
+        meeting_code="room-123",
+        display_name="Recorder Bot",
+        duration_sec=120,
+        output_dir=tmp_path,
+        deadline_at=utc_now() - timedelta(seconds=5),
+        dynamic_extension_enabled=True,
+        dynamic_extension_max_sec=60,
+    )
+    _create_db_job(executor_session_local, job)
+    fake_worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.FAILED,
+                attempt_no=1,
+                error_message="ERR_NAME_NOT_RESOLVED while joining",
+                end_time=utc_now(),
+            )
+        ]
+    )
+    executor = RecordingExecutor(worker_provider=lambda: fake_worker)
+    meeting_end_time = utc_now() + timedelta(seconds=50)
+
+    retry_request = await executor.run_with_retry(
+        job=job,
+        schedule_id=10,
+        meeting_end_time=meeting_end_time,
+        youtube_enabled=False,
+        youtube_privacy="unlisted",
+        meeting_name=None,
+    )
+
+    assert isinstance(retry_request, RecordingRetryRequest)
+    assert retry_request.job.deadline_at is None
+    assert retry_request.job.hard_deadline_at == meeting_end_time
+    assert retry_request.job.duration_sec == 1
+
+
+@pytest.mark.asyncio
+async def test_success_with_youtube_enabled_returns_post_processing_request(executor_session_local, tmp_path):
+    """Successful raw captures should leave capacity and continue in post-processing."""
     output_path = tmp_path / "recording.mkv"
     output_path.write_bytes(b"video")
     now = utc_now()
@@ -174,7 +394,6 @@ async def test_success_with_youtube_enabled_returns_upload_request(executor_sess
         output_dir=tmp_path,
     )
     _create_db_job(executor_session_local, job)
-    monkeypatch.setattr(executor_module, "canonicalize_recording_file", AsyncMock(return_value=None))
 
     fake_worker = FakeWorker(
         [
@@ -196,7 +415,7 @@ async def test_success_with_youtube_enabled_returns_upload_request(executor_sess
     )
     executor = RecordingExecutor(worker_provider=lambda: fake_worker)
 
-    upload_request = await executor.run_with_retry(
+    outcome = await executor.run_with_retry(
         job=job,
         schedule_id=123,
         meeting_end_time=utc_now() + timedelta(minutes=5),
@@ -205,249 +424,20 @@ async def test_success_with_youtube_enabled_returns_upload_request(executor_sess
         meeting_name="Weekly Review",
     )
 
-    assert upload_request is not None
-    assert upload_request.job_id == "upload123"
-    assert upload_request.video_path == output_path
-    assert upload_request.raw_video_path is None
-    assert upload_request.cleanup_video_path_after_success is None
-    assert upload_request.privacy == "private"
-    assert "Weekly Review" in upload_request.title
-    assert "https://zoom.us/j/123" in upload_request.title
+    assert isinstance(outcome, RecordingPostProcessingRequest)
+    assert outcome.job.job_id == "upload123"
+    assert outcome.result.recording_info.output_path == output_path
+    assert outcome.youtube_enabled is True
+    assert outcome.youtube_privacy == "private"
+    assert outcome.meeting_name == "Weekly Review"
 
     session = executor_session_local()
     try:
         db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "upload123").first()
-        assert db_job.status == JobStatus.SUCCEEDED.value
+        assert db_job.status == JobStatus.FINALIZING.value
+        assert db_job.output_path == str(output_path)
+        assert db_job.raw_output_path == str(output_path)
+        assert db_job.completed_at is None
         assert db_job.youtube_enabled is True
-    finally:
-        session.close()
-
-
-@pytest.mark.asyncio
-async def test_successful_recording_canonicalization_updates_runtime_summary(
-    executor_session_local, monkeypatch, tmp_path
-):
-    mkv_path = tmp_path / "recording.mkv"
-    mp4_path = tmp_path / "recording.mp4"
-    mkv_path.write_bytes(b"mkv")
-    mp4_path.write_bytes(b"mp4")
-    now = utc_now()
-    job = RecordingJob(
-        job_id="canon123",
-        provider="jitsi",
-        meeting_code="room",
-        display_name="Recorder Bot",
-        duration_sec=300,
-        output_dir=tmp_path,
-    )
-    _create_db_job(executor_session_local, job)
-
-    monkeypatch.setattr(
-        executor_module,
-        "canonicalize_recording_file",
-        AsyncMock(return_value=CanonicalRecording(output_path=mp4_path, file_size=mp4_path.stat().st_size)),
-    )
-    fake_worker = FakeWorker(
-        [
-            RecordingResult(
-                job_id=job.job_id,
-                status=JobStatus.SUCCEEDED,
-                attempt_no=1,
-                recording_info=RecordingInfo(
-                    output_path=mkv_path,
-                    file_size=mkv_path.stat().st_size,
-                    duration_sec=60.0,
-                    start_time=now,
-                    end_time=now + timedelta(seconds=60),
-                ),
-                runtime_summary={
-                    "recording_info": {
-                        "output_path": str(mkv_path),
-                        "file_size": mkv_path.stat().st_size,
-                    }
-                },
-                end_time=now + timedelta(seconds=60),
-            )
-        ]
-    )
-
-    await RecordingExecutor(worker_provider=lambda: fake_worker).run_with_retry(
-        job=job,
-        schedule_id=None,
-        meeting_end_time=utc_now() + timedelta(minutes=5),
-        youtube_enabled=False,
-        youtube_privacy="unlisted",
-        meeting_name=None,
-    )
-
-    session = executor_session_local()
-    try:
-        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "canon123").first()
-        assert db_job.output_path == str(mp4_path)
-        assert db_job.file_size == mp4_path.stat().st_size
-        assert db_job.runtime_summary["recording_info"]["output_path"] == str(mp4_path)
-        assert db_job.runtime_summary["recording_info"]["file_size"] == mp4_path.stat().st_size
-    finally:
-        session.close()
-
-
-@pytest.mark.asyncio
-async def test_success_with_trimmed_output_uploads_trimmed_and_keeps_raw_cleanup_metadata(
-    executor_session_local, tmp_path
-):
-    raw_path = tmp_path / "recording.mkv"
-    trimmed_path = tmp_path / "recording.trimmed.mkv"
-    raw_path.write_bytes(b"raw")
-    trimmed_path.write_bytes(b"trimmed")
-    now = utc_now()
-    job = RecordingJob(
-        job_id="trimup",
-        provider="jitsi",
-        meeting_code="trim-room",
-        display_name="Recorder Bot",
-        duration_sec=300,
-        output_dir=tmp_path,
-    )
-    _create_db_job(executor_session_local, job)
-
-    fake_worker = FakeWorker(
-        [
-            RecordingResult(
-                job_id=job.job_id,
-                status=JobStatus.SUCCEEDED,
-                attempt_no=1,
-                recording_info=RecordingInfo(
-                    output_path=trimmed_path,
-                    file_size=trimmed_path.stat().st_size,
-                    duration_sec=45.0,
-                    start_time=now,
-                    end_time=now + timedelta(seconds=45),
-                ),
-                output_path=trimmed_path,
-                raw_output_path=raw_path,
-                trimmed_output_path=trimmed_path,
-                trim_status="trimmed",
-                trim_start_sec=10.0,
-                trim_end_sec=55.0,
-                recording_started_at=now,
-                end_time=now + timedelta(seconds=60),
-            )
-        ]
-    )
-    executor = RecordingExecutor(worker_provider=lambda: fake_worker)
-
-    upload_request = await executor.run_with_retry(
-        job=job,
-        schedule_id=123,
-        meeting_end_time=utc_now() + timedelta(minutes=5),
-        youtube_enabled=True,
-        youtube_privacy="unlisted",
-        meeting_name="Trimmed Review",
-    )
-
-    assert upload_request is not None
-    assert upload_request.video_path == trimmed_path
-    assert upload_request.raw_video_path == raw_path
-    assert upload_request.cleanup_video_path_after_success == trimmed_path
-
-    session = executor_session_local()
-    try:
-        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "trimup").first()
-        assert db_job.output_path == str(trimmed_path)
-        assert db_job.raw_output_path == str(raw_path)
-        assert db_job.trimmed_output_path == str(trimmed_path)
-        assert db_job.trim_status == "trimmed"
-    finally:
-        session.close()
-
-
-@pytest.mark.asyncio
-async def test_trimmed_recording_canonicalization_normalizes_upload_and_db_paths(
-    executor_session_local, monkeypatch, tmp_path
-):
-    raw_path = tmp_path / "recording.mkv"
-    trimmed_mkv_path = tmp_path / "recording.trimmed.mkv"
-    trimmed_mp4_path = tmp_path / "recording.trimmed.mp4"
-    raw_path.write_bytes(b"raw")
-    trimmed_mkv_path.write_bytes(b"trimmed")
-    trimmed_mp4_path.write_bytes(b"mp4")
-    now = utc_now()
-    job = RecordingJob(
-        job_id="trimcanon",
-        provider="jitsi",
-        meeting_code="trim-canon-room",
-        display_name="Recorder Bot",
-        duration_sec=300,
-        output_dir=tmp_path,
-    )
-    _create_db_job(executor_session_local, job)
-
-    monkeypatch.setattr(
-        executor_module,
-        "canonicalize_recording_file",
-        AsyncMock(
-            return_value=CanonicalRecording(
-                output_path=trimmed_mp4_path,
-                file_size=trimmed_mp4_path.stat().st_size,
-            )
-        ),
-    )
-    fake_worker = FakeWorker(
-        [
-            RecordingResult(
-                job_id=job.job_id,
-                status=JobStatus.SUCCEEDED,
-                attempt_no=1,
-                recording_info=RecordingInfo(
-                    output_path=trimmed_mkv_path,
-                    file_size=trimmed_mkv_path.stat().st_size,
-                    duration_sec=45.0,
-                    start_time=now,
-                    end_time=now + timedelta(seconds=45),
-                ),
-                output_path=trimmed_mkv_path,
-                raw_output_path=raw_path,
-                trimmed_output_path=trimmed_mkv_path,
-                trim_status="trimmed",
-                trim_start_sec=10.0,
-                trim_end_sec=55.0,
-                runtime_summary={
-                    "recording_info": {
-                        "output_path": str(trimmed_mkv_path),
-                        "file_size": trimmed_mkv_path.stat().st_size,
-                    },
-                    "trim": {
-                        "raw_output_path": str(raw_path),
-                        "trimmed_output_path": str(trimmed_mkv_path),
-                    },
-                },
-                recording_started_at=now,
-                end_time=now + timedelta(seconds=60),
-            )
-        ]
-    )
-
-    upload_request = await RecordingExecutor(worker_provider=lambda: fake_worker).run_with_retry(
-        job=job,
-        schedule_id=123,
-        meeting_end_time=utc_now() + timedelta(minutes=5),
-        youtube_enabled=True,
-        youtube_privacy="unlisted",
-        meeting_name="Trimmed Canonical Review",
-    )
-
-    assert upload_request is not None
-    assert upload_request.video_path == trimmed_mp4_path
-    assert upload_request.raw_video_path == raw_path
-    assert upload_request.cleanup_video_path_after_success == trimmed_mp4_path
-
-    session = executor_session_local()
-    try:
-        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "trimcanon").first()
-        assert db_job.output_path == str(trimmed_mp4_path)
-        assert db_job.raw_output_path == str(raw_path)
-        assert db_job.trimmed_output_path == str(trimmed_mp4_path)
-        assert db_job.runtime_summary["recording_info"]["output_path"] == str(trimmed_mp4_path)
-        assert db_job.runtime_summary["trim"]["trimmed_output_path"] == str(trimmed_mp4_path)
     finally:
         session.close()

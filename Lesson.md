@@ -68,3 +68,21 @@
 - active / queued / retry waiting 是 runtime view，不只是 template helper；若 API、Web UI、Telegram 各自重建 ids 和 countdown maps，很容易出現 stale DB active row、retry waiting 不可見或 queued cancel 文案不一致，應由單一 snapshot service 產生。
 - 相容測試用的 broad `TypeError` fallback 會吞掉 constructor 內部真正錯誤；若要支援新參數，應更新 fake/test double，而不是在 production path 靜默退回舊資源模型。
 - runtime startup cleanup 不應只看 `_started` flag；Xvfb、audio keepalive 或 sink module 可能在 `_started=True` 前已建立，取消或例外路徑也必須逐項回收。
+- retry window 若已包含 `dynamic_extension_max_sec`，retry attempt 的 baseline duration 不可再包含同一段 extension；應用 hard deadline 截止，並讓已進入 extension window 的 retry 直接用 dynamic extension/idle 判斷，避免錄製超出原本 bounded window。
+- 多路錄製的磁碟預留要用最壞情況錄製長度，dynamic extension enabled 時不能只用 fixed `duration_sec`，否則多場同時延長會比 admission guard 預期更快吃滿磁碟。
+- completed-file smart trim probe 已是 batch/streaming，但多場同時 finalizing 還是會同時開 FFmpeg 後處理；需要和 live probe 分開節流，避免後處理 CPU/IO spike 影響錄製中 job。
+- smart trim 後處理節流如果放在 session cleanup 前，等待 limiter 的 job 仍會持有 browser、Xvfb 與 per-job audio sink；應在 FFmpeg finalize 後先 cleanup runtime，再排隊做 completed-file analysis。
+- 媒體分析 helper 不應直接讀 app settings 來管理 process-wide semaphore；limiter 屬於 post-processing orchestration 邊界，應可注入測試與 worker。
+- 釋放 browser/Xvfb/audio runtime 不等於釋放 `JobRunner` capacity；若 smart trim 仍在 active recording task 內等待 limiter，FIFO queue 還是會被阻塞。capture task 與 post-processing task 必須分開追蹤，測試也要直接驗證 `available_slots`。
+- post-processing failure path 需要區分 primary `process` 與 fallback `settle`；若 settle 失敗後還自動重排，會形成無界背景任務。fallback terminal update 應 best-effort log-and-stop。
+- DetectionLog 是診斷資料，不是錄影成果的一部分；寫入失敗不能讓 raw recording success 回退或卡在 `finalizing`。
+- restart cleanup 不能把所有 stale `finalizing` 一律標 failed；若 raw/output 檔已存在，應優先保留錄影成功語意並記錄 post-processing interrupted。
+- 多路錄製下 `worker.is_busy` 只代表 active registry 有錄製 runtime，不代表容量已滿；UI/Telegram 是否提示排隊應看 `JobRuntimeStateService.available_slots`。
+- `worker._current_job` 是相容欄位，不是 runtime truth；API/Web UI/Telegram active state 都應來自 worker active registry 與 DB active status 的交集。
+- async stage notification 送出前要重新讀 DB status；否則延遲的 `recording` / `finalizing` 訊息可能在 job 已 `succeeded` / `failed` / `canceled` 後覆蓋使用者可見 Telegram 狀態。
+- partial runner/test double 缺少 `available_slots`、`queue_length` 或 `retry_waiting_count` 時，不應由 route 各自 fallback；應由 `JobRuntimeStateService` 依 active count 或 item list 統一推導，避免 UI/Telegram 誤判容量已滿或 queue count。
+- Telegram API call 不可在 notification lock 裡無界等待；send/edit/fallback-send 都要有 timeout，否則網路 hang 會讓後續 stage/completion/upload notification 全部排隊卡住。
+- `FINALIZING` 若被列為使用者可見 stage，就必須由成功 raw capture 轉入 post-processing 時明確送出；只把它放在 status set 裡但沒有 callback 來源，會造成文件與實際通知行為不一致。
+- snapshot fallback 對負數或非數字 runner count 不能簡單 clamp 成 0；queue/retry count 應回到實際 item list 長度，capacity 應在 max 有效時用 active count 推導，避免 test double 或 partial runner 誤導 UI。
+- 多 chat Telegram fanout 若逐一等待，即使每個 call 有 timeout，總耗時仍會跟 chat 數線性放大；應使用 bounded concurrency，並讓單一 chat 失敗不影響其他 chat。
+- media subprocess helper 不應讓每個呼叫點各自管理 `communicate()`、timeout 與 stderr excerpt；抽成共用 bounded runner 後，remux、duration probe、ffprobe validation、thumbnail 才能一致地 terminate/kill、保留診斷 excerpt 並避免無界記憶體。

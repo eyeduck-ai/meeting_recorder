@@ -14,6 +14,23 @@ def _status_value(job: RecordingJobModel) -> str:
     return job.status.value if hasattr(job.status, "value") else job.status
 
 
+def _coerce_non_negative_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    parsed = _coerce_non_negative_int(value)
+    if parsed is None or parsed < 1:
+        return None
+    return parsed
+
+
 def active_job_payload(job: RecordingJobModel) -> dict[str, Any]:
     """Return the public active-job payload used by REST and status views."""
     return {
@@ -154,6 +171,37 @@ class JobRuntimeSnapshot:
 class JobRuntimeStateService:
     """Build a single runtime state snapshot for API, Web UI, and Telegram."""
 
+    def _runner_queue_length(self, runner, queued_items: list[dict[str, Any]]) -> int:
+        if hasattr(runner, "queue_length"):
+            queue_length = _coerce_non_negative_int(runner.queue_length)
+            if queue_length is not None:
+                return queue_length
+        return len(queued_items)
+
+    def _runner_retry_waiting_count(self, runner, retry_waiting_items: list[dict[str, Any]]) -> int:
+        if hasattr(runner, "retry_waiting_count"):
+            retry_waiting_count = _coerce_non_negative_int(runner.retry_waiting_count)
+            if retry_waiting_count is not None:
+                return retry_waiting_count
+        return len(retry_waiting_items)
+
+    def _runner_configured_max_concurrent_recordings(self, runner) -> int | None:
+        if hasattr(runner, "max_concurrent_recordings"):
+            return _coerce_positive_int(runner.max_concurrent_recordings)
+        return None
+
+    def _runner_max_concurrent_recordings(self, runner) -> int:
+        return self._runner_configured_max_concurrent_recordings(runner) or 1
+
+    def _runner_available_slots(self, runner, *, max_concurrent_recordings: int, active_count: int) -> int:
+        if hasattr(runner, "available_slots"):
+            available_slots = _coerce_non_negative_int(runner.available_slots)
+            if available_slots is not None:
+                return available_slots
+        if self._runner_configured_max_concurrent_recordings(runner) is not None:
+            return max(0, max_concurrent_recordings - active_count)
+        return 0
+
     def build_snapshot(
         self,
         db: Session,
@@ -191,16 +239,22 @@ class JobRuntimeStateService:
         retry_after_by_job_id = {
             item["job_id"]: item["retry_after_sec"] for item in retry_waiting_items if item.get("job_id")
         }
+        max_concurrent_recordings = self._runner_max_concurrent_recordings(runner)
+        available_slots = self._runner_available_slots(
+            runner,
+            max_concurrent_recordings=max_concurrent_recordings,
+            active_count=len(active_jobs),
+        )
 
         return JobRuntimeSnapshot(
             active_jobs=active_jobs,
             active_job_ids={job.job_id for job in active_jobs},
             queued_items=queued_items,
             retry_waiting_items=retry_waiting_items,
-            queue_length=getattr(runner, "queue_length", 0),
-            retry_waiting_count=getattr(runner, "retry_waiting_count", len(retry_waiting_items)),
-            max_concurrent_recordings=getattr(runner, "max_concurrent_recordings", 1),
-            available_slots=getattr(runner, "available_slots", 0),
+            queue_length=self._runner_queue_length(runner, queued_items),
+            retry_waiting_count=self._runner_retry_waiting_count(runner, retry_waiting_items),
+            max_concurrent_recordings=max_concurrent_recordings,
+            available_slots=available_slots,
             queued_job_ids=queued_job_ids,
             retry_waiting_job_ids=retry_waiting_job_ids,
             queued_positions_by_job_id=queued_positions_by_job_id,

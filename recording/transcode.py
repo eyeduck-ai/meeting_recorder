@@ -5,13 +5,14 @@ import logging
 from pathlib import Path
 
 from recording.mp4_validation import discard_file, replace_with_validated_mp4, temporary_mp4_path
+from recording.subprocess_utils import run_bounded_subprocess
 
 logger = logging.getLogger(__name__)
 
 
 async def _probe_duration_sec(input_path: Path) -> float | None:
     try:
-        result = await asyncio.create_subprocess_exec(
+        result = await run_bounded_subprocess(
             "ffprobe",
             "-v",
             "error",
@@ -20,11 +21,14 @@ async def _probe_duration_sec(input_path: Path) -> float | None:
             "-of",
             "default=noprint_wrappers=1:nokey=1",
             str(input_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout_sec=10.0,
+            stdout_limit=1024,
+            stderr_limit=2048,
         )
-        stdout, _ = await result.communicate()
-        duration_str = stdout.decode().strip()
+        if result.returncode != 0:
+            logger.warning("Could not probe duration for %s: %s", input_path, result.stderr[:200])
+            return None
+        duration_str = result.stdout.decode(errors="ignore").strip()
         return float(duration_str) if duration_str else None
     except Exception as exc:
         logger.warning(f"Could not probe duration for {input_path}: {exc}")

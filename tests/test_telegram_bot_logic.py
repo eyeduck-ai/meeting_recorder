@@ -7,11 +7,13 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import telegram_bot.conversation_create_schedule as create_schedule_module
 import telegram_bot.handlers as handlers_module
 from database.migrations import run_schema_migrations
-from database.models import Base, JobStatus, RecordingJob, TelegramUser
+from database.models import Base, JobStatus, Meeting, RecordingJob, TelegramUser
 from scheduling.job_runner import QueueScheduleResult
 from telegram_bot.conversation_common import _parse_duration_minutes, _validate_duration_minutes
+from telegram_bot.conversation_create_schedule import CreateScheduleStates, create_schedule_start
 from telegram_bot.handlers import _is_schedule_visible, list_handler, schedule_action_callback, stop_handler
 from telegram_bot.notifications import _build_status_message
 from utils.timezone import utc_now
@@ -91,6 +93,22 @@ def _add_recording_job(session_local, job_id: str, status: str, *, started_offse
                 duration_sec=3600,
                 status=status,
                 started_at=utc_now() + timedelta(seconds=started_offset_sec),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
+def _add_meeting(session_local, *, name: str = "Team Sync"):
+    session = session_local()
+    try:
+        session.add(
+            Meeting(
+                name=name,
+                provider="jitsi",
+                meeting_code="team-sync",
+                default_display_name="Recorder Bot",
             )
         )
         session.commit()
@@ -285,6 +303,60 @@ async def test_stop_handler_without_job_id_cancels_latest_active_job(monkeypatch
 
     assert worker.canceled == ["job-new"]
     assert "job-new" in message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_start_warns_when_recording_capacity_is_full(monkeypatch, telegram_session_local):
+    _add_meeting(telegram_session_local)
+    worker = SimpleNamespace(active_jobs=[SimpleNamespace(job_id="job-active")])
+    runner = SimpleNamespace(
+        queue_length=2,
+        retry_waiting_count=1,
+        max_concurrent_recordings=2,
+        available_slots=0,
+        queued_items=[],
+        retry_waiting_items=[],
+    )
+    monkeypatch.setattr(create_schedule_module, "get_db_session", lambda: telegram_session_local())
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: runner)
+    message = FakeTelegramMessage()
+    context = SimpleNamespace(user_data={"stale": "data"})
+
+    state = await create_schedule_start(_telegram_update(message), context)
+
+    assert state == CreateScheduleStates.SELECT_MEETING
+    assert "錄製容量已滿" in message.replies[-1]
+    assert "佇列中: 2 筆" in message.replies[-1]
+    assert "等待重試: 1 筆" in message.replies[-1]
+    assert context.user_data == {}
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_start_does_not_warn_when_active_job_has_available_slot(
+    monkeypatch,
+    telegram_session_local,
+):
+    _add_meeting(telegram_session_local)
+    worker = SimpleNamespace(active_jobs=[SimpleNamespace(job_id="job-active")])
+    runner = SimpleNamespace(
+        queue_length=0,
+        retry_waiting_count=0,
+        max_concurrent_recordings=2,
+        available_slots=1,
+        queued_items=[],
+        retry_waiting_items=[],
+    )
+    monkeypatch.setattr(create_schedule_module, "get_db_session", lambda: telegram_session_local())
+    monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
+    monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: runner)
+    message = FakeTelegramMessage()
+
+    state = await create_schedule_start(_telegram_update(message), SimpleNamespace(user_data={}))
+
+    assert state == CreateScheduleStates.SELECT_MEETING
+    assert "錄製容量已滿" not in message.replies[-1]
+    assert "排隊等待" not in message.replies[-1]
 
 
 @pytest.mark.asyncio

@@ -1,145 +1,19 @@
 import asyncio
 import logging
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
-from config.settings import get_settings
 from database.models import ErrorCode, JobStatus
-from recording.activity import ActivityConfig, LiveMediaActivityProbe, RecordingActivityAnalyzer, trim_recording
+from recording.activity import LiveMediaActivityProbe
 from recording.capacity_guard import RecordingCapacityError, RecordingCapacityGuard, RecordingCapacityReservation
-from recording.ffmpeg_pipeline import RecordingInfo
+from recording.job_types import RecordingJob, RecordingResult
 from recording.monitor import RecordingMonitor
 from recording.runtime_resources import RuntimeResourceAllocator, RuntimeResourceLease
 from recording.session import RecordingSession
-from services.runtime_config import RuntimeRecordingConfig, get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class RecordingResult:
-    """Result of a recording job."""
-
-    job_id: str
-    status: JobStatus
-    attempt_no: int = 1
-    recording_info: RecordingInfo | None = None
-    output_path: Path | None = None
-    raw_output_path: Path | None = None
-    trimmed_output_path: Path | None = None
-    trim_start_sec: float | None = None
-    trim_end_sec: float | None = None
-    trim_status: str | None = None
-    trim_reason: str | None = None
-    trim_diagnostics: dict | None = None
-    dynamic_extension_stop_reason: str | None = None
-    diagnostic_data: object | None = None
-    error_code: str | None = None
-    error_message: str | None = None
-    start_time: datetime | None = None
-    joined_at: datetime | None = None
-    recording_started_at: datetime | None = None
-    recording_stopped_at: datetime | None = None
-    end_time: datetime | None = None
-    end_reason: str | None = None
-    failure_stage: str | None = None
-    ffmpeg_exit_code: int | None = None
-    runtime_summary: dict | None = None
-
-
-@dataclass
-class RecordingJob:
-    """A recording job configuration."""
-
-    job_id: str
-    provider: str
-    meeting_code: str
-    display_name: str
-    duration_sec: int
-    output_dir: Path
-    attempt_no: int = 1
-    deadline_at: datetime | None = None
-    base_url: str | None = None
-    password: str | None = None
-    lobby_wait_sec: int = 900
-    resolution_w: int = 1920
-    resolution_h: int = 1080
-    recording_browser_mode: str = "app"
-    resolved_browser_mode: str | None = None
-    recording_crop_mode: str = "off"
-    recording_crop_top_px: int = 0
-    browser_fallback_used: bool = False
-    browser_fallback_reason: str | None = None
-    browser_fallback_attempts: int = 0
-    diagnostics_dir: Path | None = None
-    ffmpeg_stall_timeout_sec: int = 120
-    ffmpeg_stall_grace_sec: int = 30
-    smart_trim_enabled: bool = True
-    dynamic_extension_enabled: bool = True
-    dynamic_extension_idle_sec: int = 300
-    dynamic_extension_max_sec: int = 3600
-    activity_config: ActivityConfig = field(default_factory=ActivityConfig)
-
-    @property
-    def resolution(self) -> tuple[int, int]:
-        return (self.resolution_w, self.resolution_h)
-
-    @classmethod
-    def create(
-        cls,
-        provider: str,
-        meeting_code: str,
-        display_name: str,
-        duration_sec: int,
-        output_dir: Path | None = None,
-        job_id: str | None = None,
-        attempt_no: int = 1,
-        **kwargs,
-    ) -> "RecordingJob":
-        """Create a new recording job with generated ID."""
-        runtime_config: RuntimeRecordingConfig | None = kwargs.get("runtime_config")
-        if runtime_config is None:
-            runtime_config = get_runtime_config_service(settings=get_settings()).get_recording_config(
-                lobby_wait_sec=kwargs.get("lobby_wait_sec"),
-                resolution_w=kwargs.get("resolution_w"),
-                resolution_h=kwargs.get("resolution_h"),
-            )
-        resolved_job_id = job_id or str(uuid.uuid4())[:8]
-        timestamp = utc_now().strftime("%Y%m%d_%H%M%S")
-
-        if output_dir is None:
-            output_dir = runtime_config.recordings_dir / f"{timestamp}_{resolved_job_id}"
-
-        return cls(
-            job_id=resolved_job_id,
-            provider=provider,
-            meeting_code=meeting_code,
-            display_name=display_name,
-            duration_sec=duration_sec,
-            output_dir=output_dir,
-            attempt_no=attempt_no,
-            deadline_at=kwargs.get("deadline_at"),
-            lobby_wait_sec=runtime_config.lobby_wait_sec,
-            resolution_w=runtime_config.resolution_w,
-            resolution_h=runtime_config.resolution_h,
-            recording_browser_mode=runtime_config.recording_browser_mode,
-            recording_crop_mode=runtime_config.recording_crop_mode,
-            recording_crop_top_px=runtime_config.recording_crop_top_px,
-            diagnostics_dir=runtime_config.diagnostics_dir / resolved_job_id,
-            ffmpeg_stall_timeout_sec=runtime_config.ffmpeg_stall_timeout_sec,
-            ffmpeg_stall_grace_sec=runtime_config.ffmpeg_stall_grace_sec,
-            base_url=kwargs.get("base_url"),
-            password=kwargs.get("password"),
-            smart_trim_enabled=runtime_config.smart_trim_enabled,
-            dynamic_extension_enabled=runtime_config.dynamic_extension_enabled,
-            dynamic_extension_idle_sec=runtime_config.dynamic_extension_idle_sec,
-            dynamic_extension_max_sec=runtime_config.dynamic_extension_max_sec,
-            activity_config=runtime_config.activity_config,
-        )
 
 
 @dataclass
@@ -165,15 +39,13 @@ class RecordingWorker:
         self._active_jobs: dict[str, ActiveRecordingState] = {}
         self._current_job: RecordingJob | None = None
         self._status: JobStatus = JobStatus.QUEUED
-        self._cancel_requested: bool = False
-        self._finish_requested: bool = False
         self._status_callback: Callable[[str, JobStatus], None] | None = None
         self._resource_allocator = resource_allocator or RuntimeResourceAllocator()
         self._capacity_guard = capacity_guard or RecordingCapacityGuard()
 
     @property
     def is_busy(self) -> bool:
-        return bool(self._active_jobs) or self._current_job is not None
+        return bool(self._active_jobs)
 
     @property
     def active_jobs(self) -> list[RecordingJob]:
@@ -205,11 +77,6 @@ class RecordingWorker:
         state = self._resolve_active_state(job_id)
         if state:
             state.cancel_requested = True
-            if not job_id or (self._current_job and self._current_job.job_id == state.job.job_id):
-                self._cancel_requested = True
-            return True
-        if self._current_job and not job_id:
-            self._cancel_requested = True
             return True
         return False
 
@@ -217,11 +84,6 @@ class RecordingWorker:
         state = self._resolve_active_state(job_id)
         if state:
             state.finish_requested = True
-            if not job_id or (self._current_job and self._current_job.job_id == state.job.job_id):
-                self._finish_requested = True
-            return True
-        if self._current_job and not job_id:
-            self._finish_requested = True
             return True
         return False
 
@@ -247,13 +109,6 @@ class RecordingWorker:
 
     def _set_current_job(self, job: RecordingJob | None) -> None:
         self._current_job = job
-        if job is None:
-            self._cancel_requested = False
-            self._finish_requested = False
-            return
-        state = self._active_jobs.get(job.job_id)
-        self._cancel_requested = bool(state.cancel_requested if state else False)
-        self._finish_requested = bool(state.finish_requested if state else False)
 
     def _can_fallback_to_normal_browser(self, job: RecordingJob, result: RecordingResult) -> bool:
         return (
@@ -361,6 +216,7 @@ class RecordingWorker:
     ) -> RecordingJob | None:
         """Execute one browser attempt for a recording job."""
 
+        session_cleaned = False
         try:
             session = RecordingSession(job, runtime_resources=runtime_resources)
         except Exception as e:
@@ -437,9 +293,33 @@ class RecordingWorker:
                 if deadline_at:
                     remaining = int((deadline_at - utc_now()).total_seconds())
                     if remaining <= 0:
-                        raise RuntimeError("Recording deadline already passed")
-                    job.duration_sec = remaining
-                    logger.info(f"Fixed duration deadline: {deadline_at.isoformat()} (remaining {remaining}s)")
+                        hard_deadline_at = ensure_utc(job.hard_deadline_at)
+                        if hard_deadline_at and hard_deadline_at > utc_now():
+                            job.deadline_at = None
+                            job.duration_sec = 1
+                            logger.info(
+                                "Fixed duration deadline already passed; using hard deadline %s for retry window",
+                                hard_deadline_at.isoformat(),
+                            )
+                        else:
+                            raise RuntimeError("Recording deadline already passed")
+                    else:
+                        job.duration_sec = remaining
+                        logger.info(f"Fixed duration deadline: {deadline_at.isoformat()} (remaining {remaining}s)")
+
+            if job.hard_deadline_at:
+                hard_deadline_at = ensure_utc(job.hard_deadline_at)
+                if hard_deadline_at:
+                    hard_remaining = int((hard_deadline_at - utc_now()).total_seconds())
+                    if hard_remaining <= 0:
+                        raise RuntimeError("Recording hard deadline already passed")
+                    if job.duration_sec > hard_remaining:
+                        job.duration_sec = hard_remaining
+                        logger.info(
+                            "Hard recording deadline: %s (remaining %ss)",
+                            hard_deadline_at.isoformat(),
+                            hard_remaining,
+                        )
 
             if self._is_finish_requested(job.job_id):
                 raise asyncio.CancelledError("Finish requested before recording started")
@@ -476,17 +356,21 @@ class RecordingWorker:
             result.recording_info = await session.finalize_capture()
             session.end_stage("finalize_capture")
             result.recording_stopped_at = utc_now()
-            await self._apply_smart_trim(session, job, result)
+            session_cleaned = await self._cleanup_session(session, job.job_id, context="post_capture")
+            if result.recording_info:
+                result.raw_output_path = result.recording_info.output_path
+                result.output_path = result.recording_info.output_path
 
             result.status = JobStatus.SUCCEEDED
             result.end_time = utc_now()
             result.runtime_summary = session.build_runtime_summary(
                 end_reason=result.end_reason,
                 recording_info=result.recording_info,
-                trim_summary=self._build_trim_summary(result),
                 dynamic_extension_stop_reason=result.dynamic_extension_stop_reason,
             )
-            self._update_status(JobStatus.SUCCEEDED, job.job_id)
+            self._status = JobStatus.SUCCEEDED
+            if job.job_id in self._active_jobs:
+                self._active_jobs[job.job_id].status = JobStatus.SUCCEEDED
 
             logger.info(f"Recording completed successfully: {result.recording_info.output_path}")
 
@@ -565,9 +449,19 @@ class RecordingWorker:
             except Exception as e:
                 logger.warning(f"Failed to save detection logs: {e}")
 
-            await session.cleanup()
+            if not session_cleaned:
+                session_cleaned = await self._cleanup_session(session, job.job_id, context="finalizer")
 
         return None
+
+    async def _cleanup_session(self, session: RecordingSession, job_id: str, *, context: str) -> bool:
+        """Best-effort cleanup that never rewrites the recording result."""
+        try:
+            await session.cleanup()
+            return True
+        except Exception as e:
+            logger.warning("Recording session cleanup failed for job %s during %s: %s", job_id, context, e)
+            return False
 
     async def _save_detection_logs(
         self,
@@ -640,80 +534,6 @@ class RecordingWorker:
         )
         end_reason, ffmpeg_exit_code = await monitor.run()
         return end_reason, ffmpeg_exit_code, monitor.dynamic_extension_stop_reason
-
-    async def _apply_smart_trim(
-        self,
-        session: RecordingSession,
-        job: RecordingJob,
-        result: RecordingResult,
-    ) -> None:
-        """Analyze and optionally create a trimmed preferred output."""
-        if not result.recording_info:
-            return
-
-        raw_info = result.recording_info
-        raw_path = raw_info.output_path
-        result.raw_output_path = raw_path
-        result.output_path = raw_path
-        result.trim_start_sec = 0.0
-        result.trim_end_sec = raw_info.duration_sec
-
-        if not raw_path.exists():
-            result.trim_status = "skipped"
-            result.trim_reason = "raw recording file not available"
-            return
-
-        if not job.smart_trim_enabled:
-            result.trim_status = "disabled"
-            result.trim_reason = "smart trim disabled"
-            return
-
-        analyzer = RecordingActivityAnalyzer(job.activity_config)
-        decision = await analyzer.analyze(raw_path)
-        result.trim_start_sec = decision.trim_start_sec
-        result.trim_end_sec = decision.trim_end_sec
-        result.trim_status = decision.status
-        result.trim_reason = decision.reason
-        result.trim_diagnostics = dict(decision.diagnostics)
-
-        if not decision.should_trim or decision.trim_end_sec is None:
-            return
-
-        trimmed_path = raw_path.with_name(f"{raw_path.stem}.trimmed{raw_path.suffix}")
-        trimmed_info = await trim_recording(
-            input_path=raw_path,
-            output_path=trimmed_path,
-            trim_start_sec=decision.trim_start_sec,
-            trim_end_sec=decision.trim_end_sec,
-            log_path=session.diagnostics_dir / "trim.log",
-        )
-        if not trimmed_info:
-            result.trim_status = "failed"
-            result.trim_reason = "trim command failed; raw recording retained"
-            result.trimmed_output_path = None
-            result.output_path = raw_path
-            result.recording_info = raw_info
-            return
-
-        expected_duration_sec = max(0.0, decision.trim_end_sec - decision.trim_start_sec)
-        result.trim_diagnostics["trim_output_expected_duration_sec"] = round(expected_duration_sec, 3)
-        result.trim_diagnostics["trim_output_actual_duration_sec"] = round(trimmed_info.duration_sec, 3)
-        trimmed_info.start_time = raw_info.start_time + timedelta(seconds=decision.trim_start_sec)
-        trimmed_info.end_time = trimmed_info.start_time + timedelta(seconds=trimmed_info.duration_sec)
-        result.trimmed_output_path = trimmed_path
-        result.output_path = trimmed_path
-        result.recording_info = trimmed_info
-
-    def _build_trim_summary(self, result: RecordingResult) -> dict:
-        return {
-            "raw_output_path": str(result.raw_output_path) if result.raw_output_path else None,
-            "trimmed_output_path": str(result.trimmed_output_path) if result.trimmed_output_path else None,
-            "trim_start_sec": result.trim_start_sec,
-            "trim_end_sec": result.trim_end_sec,
-            "trim_status": result.trim_status,
-            "trim_reason": result.trim_reason,
-            "diagnostics": result.trim_diagnostics,
-        }
 
 
 _worker_instance: RecordingWorker | None = None

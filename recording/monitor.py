@@ -3,7 +3,10 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
+
+from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,7 @@ class RecordingMonitor:
         ffmpeg_stall_grace_sec: int,
         check_interval_sec: float = 5.0,
         clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
     ):
         self.session = session
@@ -34,6 +38,7 @@ class RecordingMonitor:
         self.ffmpeg_stall_grace_sec = ffmpeg_stall_grace_sec
         self.check_interval_sec = check_interval_sec
         self._clock = clock
+        self._wall_clock = wall_clock or utc_now
         self._sleep = sleep or asyncio.sleep
         self.dynamic_extension_stop_reason: str | None = None
         self._extension_started = False
@@ -89,6 +94,11 @@ class RecordingMonitor:
 
             if self.is_cancel_requested():
                 raise asyncio.CancelledError("Job cancelled")
+
+            if self._hard_deadline_reached():
+                self.dynamic_extension_stop_reason = "hard_deadline_reached"
+                logger.info("Recording hard deadline reached")
+                return "completed", self.session.process_returncode()
 
             await self._prime_dynamic_extension_probe(elapsed)
 
@@ -183,3 +193,7 @@ class RecordingMonitor:
             logger.info("Dynamic extension idle timeout reached (%ss)", idle_timeout)
             return False
         return True
+
+    def _hard_deadline_reached(self) -> bool:
+        hard_deadline_at = ensure_utc(getattr(self.job, "hard_deadline_at", None))
+        return bool(hard_deadline_at and self._wall_clock() >= hard_deadline_at)

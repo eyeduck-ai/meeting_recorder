@@ -70,6 +70,8 @@ class RecordingSession:
         self._capture_surface: dict | None = None
         self._join_url: str | None = None
         self._browser_context_type: str | None = None
+        self._last_display: str | None = None
+        self._last_audio_source: str | None = None
 
     def _normalize_browser_mode(self, value: object) -> str:
         mode = str(value).strip().lower()
@@ -157,6 +159,8 @@ class RecordingSession:
             )
         )
         env_vars = await self.virtual_env.start()
+        self._last_display = self.virtual_env.display
+        self._last_audio_source = self.virtual_env.pulse_monitor
 
         self.playwright = await async_playwright().start()
         if self.resolved_browser_mode == "app":
@@ -445,7 +449,7 @@ class RecordingSession:
             "dynamic_extension_stop_reason": dynamic_extension_stop_reason,
             "error_code": error_code,
             "error_message": error_message,
-            "display": self.virtual_env.display if self.virtual_env else None,
+            "display": self.virtual_env.display if self.virtual_env else self._last_display,
             "recording_browser_mode": self.recording_browser_mode,
             "resolved_browser_mode": self.resolved_browser_mode,
             "browser_context_type": self._browser_context_type,
@@ -469,7 +473,7 @@ class RecordingSession:
                 "height": self.resolution_h,
             },
             "browser_surface": self._capture_surface,
-            "audio_source": self.virtual_env.pulse_monitor if self.virtual_env else None,
+            "audio_source": self.virtual_env.pulse_monitor if self.virtual_env else self._last_audio_source,
             "output_file": str(self.output_file),
             "provider_state_log": str(self.provider_state_path) if self.provider_state_path.exists() else None,
             "stages": self._stage_timings,

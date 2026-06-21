@@ -191,3 +191,84 @@ def test_cleanup_orphaned_jobs_restores_stale_uploading(monkeypatch, tmp_path):
         assert job.error_message == "YouTube upload interrupted by server restart"
     finally:
         session.close()
+
+
+def test_cleanup_orphaned_jobs_restores_stale_finalizing_with_existing_recording(monkeypatch, tmp_path):
+    """Interrupted post-processing should preserve successful raw recordings after restart."""
+    import api.main as main_module
+
+    raw_path = tmp_path / "recording.mkv"
+    raw_path.write_bytes(b"raw")
+    engine = create_engine(f"sqlite:///{tmp_path / 'cleanup-finalizing.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    try:
+        session.add(
+            RecordingJob(
+                job_id="finalizing-stale",
+                provider="jitsi",
+                meeting_code="room",
+                display_name="Recorder Bot",
+                duration_sec=3600,
+                status=JobStatus.FINALIZING.value,
+                raw_output_path=str(raw_path),
+                output_path=str(raw_path),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    monkeypatch.setattr(main_module, "get_session_local", lambda: SessionLocal)
+
+    main_module.cleanup_orphaned_jobs()
+
+    session = SessionLocal()
+    try:
+        job = session.query(RecordingJob).filter(RecordingJob.job_id == "finalizing-stale").one()
+        assert job.status == JobStatus.SUCCEEDED.value
+        assert job.error_message == "Recording post-processing interrupted by server restart"
+        assert job.completed_at is not None
+    finally:
+        session.close()
+
+
+def test_cleanup_orphaned_jobs_fails_stale_finalizing_without_recording(monkeypatch, tmp_path):
+    """Finalizing jobs without any persisted recording file remain failed after restart cleanup."""
+    import api.main as main_module
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'cleanup-finalizing-missing.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = SessionLocal()
+    try:
+        session.add(
+            RecordingJob(
+                job_id="finalizing-missing",
+                provider="jitsi",
+                meeting_code="room",
+                display_name="Recorder Bot",
+                duration_sec=3600,
+                status=JobStatus.FINALIZING.value,
+                raw_output_path=str(tmp_path / "missing.mkv"),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    monkeypatch.setattr(main_module, "get_session_local", lambda: SessionLocal)
+
+    main_module.cleanup_orphaned_jobs()
+
+    session = SessionLocal()
+    try:
+        job = session.query(RecordingJob).filter(RecordingJob.job_id == "finalizing-missing").one()
+        assert job.status == JobStatus.FAILED.value
+        assert job.error_message == "Job interrupted by server restart"
+    finally:
+        session.close()

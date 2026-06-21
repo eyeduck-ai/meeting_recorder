@@ -11,15 +11,7 @@ import pytest
 import recording.mp4_validation as mp4_validation_module
 import recording.remux as remux_module
 import recording.transcode as transcode_module
-
-
-class FakeRemuxProcess:
-    def __init__(self, returncode: int, stderr: bytes = b""):
-        self.returncode = returncode
-        self._stderr = stderr
-
-    async def communicate(self):
-        return b"", self._stderr
+from recording.subprocess_utils import BoundedSubprocessResult
 
 
 class EmptyAsyncStream:
@@ -46,12 +38,12 @@ async def test_remux_publishes_only_validated_temp_output(tmp_path, monkeypatch)
     output_path = tmp_path / "recording.mp4"
     input_path.write_bytes(b"mkv")
 
-    async def fake_exec(*args, **kwargs):
+    async def fake_run_bounded_subprocess(*args, **kwargs):
         temp_path = Path(args[-1])
         temp_path.write_bytes(b"mp4")
-        return FakeRemuxProcess(0)
+        return BoundedSubprocessResult(returncode=0, stdout=b"", stderr="")
 
-    monkeypatch.setattr(remux_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(remux_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
     monkeypatch.setattr(mp4_validation_module, "validate_mp4_file", AsyncMock(return_value=True))
 
     result = await remux_module.remux_to_mp4(input_path, output_path)
@@ -67,12 +59,12 @@ async def test_remux_discards_invalid_temp_output(tmp_path, monkeypatch):
     output_path = tmp_path / "recording.mp4"
     input_path.write_bytes(b"mkv")
 
-    async def fake_exec(*args, **kwargs):
+    async def fake_run_bounded_subprocess(*args, **kwargs):
         temp_path = Path(args[-1])
         temp_path.write_bytes(b"partial")
-        return FakeRemuxProcess(0)
+        return BoundedSubprocessResult(returncode=0, stdout=b"", stderr="")
 
-    monkeypatch.setattr(remux_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(remux_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
     monkeypatch.setattr(mp4_validation_module, "validate_mp4_file", AsyncMock(return_value=False))
 
     result = await remux_module.remux_to_mp4(input_path, output_path)
@@ -81,6 +73,29 @@ async def test_remux_discards_invalid_temp_output(tmp_path, monkeypatch):
     assert input_path.exists()
     assert not output_path.exists()
     assert list(tmp_path.glob("*.tmp.*.mp4")) == []
+
+
+@pytest.mark.asyncio
+async def test_remux_discards_failed_temp_output_and_logs_excerpt(tmp_path, monkeypatch, caplog):
+    input_path = tmp_path / "recording.mkv"
+    output_path = tmp_path / "recording.mp4"
+    input_path.write_bytes(b"mkv")
+
+    async def fake_run_bounded_subprocess(*args, **kwargs):
+        temp_path = Path(args[-1])
+        temp_path.write_bytes(b"partial")
+        return BoundedSubprocessResult(returncode=1, stdout=b"", stderr="x" * 5000)
+
+    monkeypatch.setattr(remux_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
+
+    with caplog.at_level("ERROR"):
+        result = await remux_module.remux_to_mp4(input_path, output_path)
+
+    assert result is None
+    assert input_path.exists()
+    assert not output_path.exists()
+    assert list(tmp_path.glob("*.tmp.*.mp4")) == []
+    assert "Remux failed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -109,6 +124,40 @@ async def test_transcode_discards_failed_temp_output(tmp_path, monkeypatch):
     assert input_path.exists()
     assert not output_path.exists()
     assert list(tmp_path.glob("*.tmp.*.mp4")) == []
+
+
+@pytest.mark.asyncio
+async def test_transcode_duration_probe_failure_keeps_progress_total_unknown(tmp_path, monkeypatch):
+    input_path = tmp_path / "recording.mkv"
+    output_path = tmp_path / "recording.mp4"
+    input_path.write_bytes(b"mkv")
+    progress_updates = []
+
+    async def fake_run_bounded_subprocess(*args, **kwargs):
+        assert args[0] == "ffprobe"
+        assert kwargs["timeout_sec"] == 10.0
+        return BoundedSubprocessResult(returncode=1, stdout=b"", stderr="duration unavailable")
+
+    async def fake_exec(*args, **kwargs):
+        temp_path = Path(args[-1])
+        temp_path.write_bytes(b"mp4")
+        return FakeTranscodeProcess(0)
+
+    monkeypatch.setattr(transcode_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
+    monkeypatch.setattr(transcode_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(transcode_module, "replace_with_validated_mp4", AsyncMock(return_value=output_path))
+
+    result = await transcode_module.transcode_to_mp4(
+        input_path=input_path,
+        output_path=output_path,
+        preset="veryfast",
+        crf=23,
+        audio_bitrate="128k",
+        progress_callback=lambda current, total: progress_updates.append((current, total)),
+    )
+
+    assert result == output_path
+    assert progress_updates[0] == (0, None)
 
 
 @pytest.mark.asyncio
@@ -180,3 +229,16 @@ async def test_upload_mp4_transcodes_existing_canonical_mp4_when_enabled(tmp_pat
     assert result == upload_path
     transcode.assert_awaited_once()
     remux.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mp4_validation_failure_returns_false(tmp_path, monkeypatch):
+    input_path = tmp_path / "recording.mp4"
+    input_path.write_bytes(b"mp4")
+
+    async def fake_run_bounded_subprocess(*args, **kwargs):
+        return BoundedSubprocessResult(returncode=124, stdout=b"", stderr="process timed out", timed_out=True)
+
+    monkeypatch.setattr(mp4_validation_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
+
+    assert await mp4_validation_module.validate_mp4_file(input_path) is False

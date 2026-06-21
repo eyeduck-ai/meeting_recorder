@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from recording.capacity_guard import RecordingCapacityError, RecordingCapacityGuard
-from recording.worker import RecordingJob
+from recording.job_types import RecordingJob
 
 
 def _job(job_id: str, tmp_path, *, duration_sec: int = 7200) -> RecordingJob:
@@ -16,6 +16,7 @@ def _job(job_id: str, tmp_path, *, duration_sec: int = 7200) -> RecordingJob:
         output_dir=tmp_path / job_id,
         resolution_w=1920,
         resolution_h=1080,
+        dynamic_extension_enabled=False,
     )
 
 
@@ -39,3 +40,17 @@ async def test_capacity_guard_reserves_estimated_disk_space(tmp_path):
     second = await guard.reserve(_job("job-b", tmp_path))
 
     assert second.reserved_gb == pytest.approx(5.0)
+
+
+def test_capacity_guard_uses_max_recording_sec_for_unbounded_dynamic_extension(tmp_path):
+    guard = RecordingCapacityGuard(
+        settings_provider=lambda: SimpleNamespace(
+            min_free_disk_gb_before_recording=0,
+            max_recording_sec=14400,
+        ),
+    )
+    job = _job("job-unbounded", tmp_path, duration_sec=3600)
+    job.dynamic_extension_enabled = True
+    job.dynamic_extension_max_sec = 0
+
+    assert guard.estimate_required_gb(job) == pytest.approx(10.0)

@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-import recording.worker as worker_module
+import recording.job_types as job_types_module
 import scheduling.job_runner as job_runner_module
 import scheduling.recording_executor as recording_executor_module
 import scheduling.upload_runner as upload_runner_module
@@ -24,8 +24,16 @@ from database.models import (
 from database.models import (
     RecordingJob as RecordingJobModel,
 )
-from recording.worker import RecordingJob, RecordingResult
-from scheduling.job_runner import JobRunner, QueueScheduleResult, calculate_retry_window_end
+from recording.ffmpeg_pipeline import RecordingInfo
+from recording.job_types import RecordingJob, RecordingResult
+from recording.post_processing import RecordingPostProcessingRequest, RecordingPostProcessor
+from scheduling.job_runner import (
+    DirectRecordingQueueItem,
+    JobRunner,
+    PostProcessingTaskState,
+    QueueScheduleResult,
+    calculate_retry_window_end,
+)
 from scheduling.recording_executor import RecordingRetryRequest
 from scheduling.schedule_queue import QueuedRunItem
 from scheduling.upload_runner import UploadRequest
@@ -80,7 +88,6 @@ def session_local(tmp_path, monkeypatch):
 
     monkeypatch.setattr(job_runner_module, "get_session_local", lambda: SessionLocal)
     monkeypatch.setattr(recording_executor_module, "get_session_local", lambda: SessionLocal)
-    monkeypatch.setattr(recording_executor_module, "notify_recording_completed", AsyncMock())
     monkeypatch.setattr(recording_executor_module, "notify_recording_failed", AsyncMock())
     monkeypatch.setattr(recording_executor_module, "notify_recording_retry", AsyncMock())
     monkeypatch.setattr(recording_executor_module, "notify_recording_status", AsyncMock(return_value=None))
@@ -126,7 +133,7 @@ def session_local(tmp_path, monkeypatch):
         resolution_w=1920,
         resolution_h=1080,
     )
-    monkeypatch.setattr(worker_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(job_types_module, "get_settings", lambda: settings)
 
     return SessionLocal
 
@@ -380,6 +387,89 @@ class TestJobRunner:
         assert next_item.job_id == job_id
         for coro in scheduled:
             coro.close()
+
+    @pytest.mark.asyncio
+    async def test_post_processing_does_not_occupy_recording_slot(self, tmp_path, monkeypatch):
+        """A raw capture entering post-processing should release capacity for queued recordings."""
+        post_processing_started = asyncio.Event()
+        release_post_processing = asyncio.Event()
+
+        class BlockingPostProcessor:
+            async def run(self, _request):
+                post_processing_started.set()
+                await release_post_processing.wait()
+                return None
+
+            async def complete_with_raw_recording(self, _request, *, error_message):
+                return None
+
+        runner = JobRunner(max_concurrent_recordings=1, post_processor=BlockingPostProcessor())
+        job1 = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-1",
+            display_name="Recorder Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "job1",
+            job_id="slotjob1",
+        )
+        job2 = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-2",
+            display_name="Recorder Bot",
+            duration_sec=60,
+            output_dir=tmp_path / "job2",
+            job_id="slotjob2",
+        )
+        request = RecordingPostProcessingRequest(
+            job=job1,
+            result=RecordingResult(job_id=job1.job_id, status=JobStatus.SUCCEEDED),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+        calls = []
+
+        async def fake_run_recording_with_retry(**kwargs):
+            calls.append(kwargs["job"].job_id)
+            if kwargs["job"].job_id == job1.job_id:
+                return request
+            return None
+
+        monkeypatch.setattr(runner, "_run_recording_with_retry", fake_run_recording_with_retry)
+        runner._direct_payloads[job1.job_id] = DirectRecordingQueueItem(
+            job=job1,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+        runner._direct_payloads[job2.job_id] = DirectRecordingQueueItem(
+            job=job2,
+            meeting_end_time=utc_now() + timedelta(minutes=5),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+        runner._schedule_queue.enqueue_immediate(job1.job_id, can_start_now=True)
+        runner._schedule_queue.enqueue_immediate(job2.job_id, can_start_now=False)
+
+        runner._drain_queues()
+        await asyncio.wait_for(post_processing_started.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert calls == [job1.job_id, job2.job_id]
+        assert runner.active_count == 0
+        assert runner.available_slots == 1
+        assert runner.queue_length == 0
+        assert len(runner._post_processing_tasks) == 1
+
+        release_post_processing.set()
+        for _ in range(5):
+            if not runner._post_processing_tasks:
+                break
+            await asyncio.sleep(0)
+        assert runner._post_processing_tasks == {}
 
     @pytest.mark.asyncio
     async def test_manual_schedule_trigger_deadline_uses_trigger_time(self, session_local, monkeypatch):
@@ -789,6 +879,217 @@ class TestJobRunner:
         assert worker.canceled == ["active-shutdown"]
         assert task.cancelled()
         assert runner.active_count == 0
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_post_processing_and_marks_raw_success(self, session_local, tmp_path):
+        """Shutdown should not leave post-processing jobs stuck in finalizing."""
+        raw_path = tmp_path / "recording.mkv"
+        raw_path.write_bytes(b"raw")
+        now = utc_now()
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            output_dir=tmp_path,
+            job_id="post-shutdown",
+        )
+        session = session_local()
+        try:
+            session.add(
+                RecordingJobModel(
+                    job_id=job.job_id,
+                    provider=job.provider,
+                    meeting_code=job.meeting_code,
+                    display_name=job.display_name,
+                    duration_sec=job.duration_sec,
+                    status=JobStatus.FINALIZING.value,
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        post_processing_started = asyncio.Event()
+
+        class BlockingPostProcessor(RecordingPostProcessor):
+            async def run(self, _request):
+                post_processing_started.set()
+                await asyncio.sleep(300)
+                return None
+
+        post_processor = BlockingPostProcessor(
+            session_factory=lambda: session_local,
+            completed_notifier=AsyncMock(),
+        )
+        runner = JobRunner(post_processor=post_processor)
+        request = RecordingPostProcessingRequest(
+            job=job,
+            result=RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.SUCCEEDED,
+                attempt_no=1,
+                recording_info=RecordingInfo(
+                    output_path=raw_path,
+                    file_size=raw_path.stat().st_size,
+                    duration_sec=60.0,
+                    start_time=now,
+                    end_time=now + timedelta(seconds=60),
+                ),
+                runtime_summary={"recording_info": {"output_path": str(raw_path)}},
+            ),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+
+        runner._start_post_processing_task(request)
+        await asyncio.wait_for(post_processing_started.wait(), timeout=1.0)
+        await runner.shutdown(upload_timeout_sec=0, recording_timeout_sec=0, post_processing_timeout_sec=0)
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == job.job_id).one()
+            assert db_job.status == JobStatus.SUCCEEDED.value
+            assert db_job.output_path == str(raw_path)
+            assert db_job.trim_status == "failed"
+            assert db_job.error_message == "Recording post-processing interrupted by server shutdown"
+        finally:
+            session.close()
+
+    @pytest.mark.asyncio
+    async def test_post_processing_settle_failure_does_not_requeue_recursively(self, tmp_path):
+        """A failed settle task should be logged and removed, not requeued forever."""
+
+        class FailingPostProcessor:
+            def __init__(self):
+                self.settle_calls = 0
+
+            async def run(self, _request):
+                raise RuntimeError("process failed")
+
+            async def complete_with_raw_recording(self, _request, *, error_message):
+                self.settle_calls += 1
+                raise RuntimeError(f"settle failed after {error_message}")
+
+        post_processor = FailingPostProcessor()
+        runner = JobRunner(post_processor=post_processor)
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            output_dir=tmp_path,
+            job_id="post-settle-fail",
+        )
+        request = RecordingPostProcessingRequest(
+            job=job,
+            result=RecordingResult(job_id=job.job_id, status=JobStatus.SUCCEEDED),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+
+        runner._start_post_processing_task(request)
+        for _ in range(10):
+            if not runner._post_processing_tasks:
+                break
+            await asyncio.sleep(0)
+
+        assert post_processor.settle_calls == 1
+        assert runner._post_processing_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_settle_failure_is_best_effort(self, tmp_path):
+        """Shutdown should continue even if raw-success settle fails."""
+
+        class FailingSettlePostProcessor:
+            async def complete_with_raw_recording(self, _request, *, error_message):
+                raise RuntimeError(f"settle failed after {error_message}")
+
+        runner = JobRunner(post_processor=FailingSettlePostProcessor())
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            output_dir=tmp_path,
+            job_id="post-shutdown-settle-fail",
+        )
+        request = RecordingPostProcessingRequest(
+            job=job,
+            result=RecordingResult(job_id=job.job_id, status=JobStatus.SUCCEEDED),
+            youtube_enabled=False,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+        task = asyncio.create_task(asyncio.sleep(300))
+        runner._post_processing_tasks[task] = PostProcessingTaskState(request=request, kind="process")
+
+        await runner.shutdown(upload_timeout_sec=0, recording_timeout_sec=0, post_processing_timeout_sec=0)
+
+        assert runner._post_processing_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_marks_upload_interrupted_when_post_processing_finished_before_upload_start(
+        self, session_local, tmp_path
+    ):
+        """Shutdown should record upload interruption if post-processing produced an upload request."""
+        video_path = tmp_path / "recording.mp4"
+        video_path.write_bytes(b"mp4")
+        job = RecordingJob.create(
+            provider="jitsi",
+            meeting_code="room-123",
+            display_name="Recorder Bot",
+            duration_sec=300,
+            output_dir=tmp_path,
+            job_id="post-upload-shutdown",
+        )
+        session = session_local()
+        try:
+            session.add(
+                RecordingJobModel(
+                    job_id=job.job_id,
+                    provider=job.provider,
+                    meeting_code=job.meeting_code,
+                    display_name=job.display_name,
+                    duration_sec=job.duration_sec,
+                    status=JobStatus.SUCCEEDED.value,
+                    youtube_enabled=True,
+                    output_path=str(video_path),
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        runner = JobRunner()
+        request = RecordingPostProcessingRequest(
+            job=job,
+            result=RecordingResult(job_id=job.job_id, status=JobStatus.SUCCEEDED),
+            youtube_enabled=True,
+            youtube_privacy="unlisted",
+            meeting_name=None,
+        )
+        upload_request = UploadRequest(
+            job_id=job.job_id,
+            video_path=video_path,
+            title="Meeting",
+            privacy="unlisted",
+        )
+        task = asyncio.create_task(asyncio.sleep(0, result=upload_request))
+        await task
+        runner._post_processing_tasks[task] = PostProcessingTaskState(request=request, kind="process")
+
+        await runner.shutdown(upload_timeout_sec=0, recording_timeout_sec=0, post_processing_timeout_sec=0)
+
+        session = session_local()
+        try:
+            db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == job.job_id).one()
+            assert db_job.status == JobStatus.SUCCEEDED.value
+            assert db_job.error_message == "YouTube upload interrupted by server shutdown"
+        finally:
+            session.close()
 
     @pytest.mark.asyncio
     async def test_shutdown_retry_outcome_marks_job_failed_without_new_retry(self, session_local):

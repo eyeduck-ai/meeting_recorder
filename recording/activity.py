@@ -18,6 +18,7 @@ from time import perf_counter
 from typing import Any
 
 from recording.ffmpeg_pipeline import RecordingInfo
+from recording.subprocess_utils import run_bounded_subprocess
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
@@ -209,46 +210,32 @@ def _video_activity_from_frames(
     return states
 
 
-async def _run_ffmpeg_probe(*cmd: str, timeout_sec: float = 10.0) -> tuple[int, bytes, str]:
+async def _probe_media_duration_sec(input_path: Path) -> float | None:
     try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await run_bounded_subprocess(
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(input_path),
+            timeout_sec=10.0,
+            stdout_limit=1024,
+            stderr_limit=2048,
         )
     except FileNotFoundError:
-        return 127, b"", "ffmpeg not found"
-
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_sec)
-    except TimeoutError:
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        await process.wait()
-        return 124, b"", "probe timed out"
-
-    return process.returncode or 0, stdout, stderr.decode(errors="ignore")
-
-
-async def _probe_media_duration_sec(input_path: Path) -> float | None:
-    returncode, stdout, stderr = await _run_ffmpeg_probe(
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(input_path),
-        timeout_sec=10.0,
-    )
-    if returncode != 0:
-        logger.warning("Could not probe duration for %s: %s", input_path, stderr[:200])
+        logger.warning("Could not probe duration for %s: ffprobe not found", input_path)
+        return None
+    except Exception as exc:
+        logger.warning("Could not probe duration for %s: %s", input_path, exc)
+        return None
+    if result.returncode != 0:
+        logger.warning("Could not probe duration for %s: %s", input_path, result.stderr[:200])
         return None
     try:
-        return float(stdout.decode(errors="ignore").strip())
+        return float(result.stdout.decode(errors="ignore").strip())
     except ValueError:
         return None
 

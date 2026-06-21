@@ -57,6 +57,14 @@
 - 已補強多路錄製 robustness：retry wait 改為 delayed requeue 不佔錄製 slot，active jobs 以 process-local disk reservation 防止容量 overcommit，stale `uploading` 會於 restart/shutdown 回到 `succeeded`，Telegram `/stop <job_id>` 可精準取消指定 active job。
 - 已補強 retry/queue robustness：schedule retry cancel 會釋放 duplicate state，delayed retry waiting 透過 API/UI/Telegram 可見且可取消但不計入 FIFO queue position，Telegram active job 選擇改為 worker registry 與 DB status 交集，shutdown 會 best-effort 收斂 active recording task。
 - 已將 active / FIFO queued / retry waiting runtime view 收斂到 `JobRuntimeStateService`，讓 `/jobs/active`、Web UI dashboard/jobs 與 Telegram `/list` / 無參數 `/stop` 共用同一份 snapshot，降低狀態 view drift。
+- 已補強多路錄製與 dynamic boundary merge 後 robustness：disk reservation 納入最長 dynamic extension，retry attempt 以 hard deadline 避免 double extension，smart trim 後處理受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流。
+- 已收斂 smart trim 後處理資源邊界：FFmpeg finalize 後先釋放 browser/Xvfb/audio runtime，再進入受 `ActivityAnalysisLimiter` 節流的 completed-file analysis；unbounded dynamic extension 以 `MAX_RECORDING_SEC` 作為 admission guard 的保守估算上限。
+- 已收斂錄製 slot 與後處理責任邊界：`MAX_CONCURRENT_RECORDINGS` 只計算實際 capture task，smart trim / 本機 MP4 canonicalization 改由 tracked post-processing task 執行，後處理等待不再阻塞 FIFO queue drain。
+- 已補強 post-processing robustness：task state 區分 process/settle，settle failure 不再遞迴重排；DetectionLog 寫入改為 best-effort；stale `finalizing` 若已有 raw/output 檔，restart cleanup 會恢復 `succeeded`。
+- 已收斂多路錄製狀態邊界：`/jobs/current` 不再讀 worker private `_current_job` fallback，Telegram 建立排程提示改看 snapshot capacity，worker cancel/finish 移除舊全域 flag，只保留 per-job state。
+- 已補強 runtime state 與 notification robustness：Telegram stage notification 送出前重讀 DB status 並 skip stale update，`RecordingWorker.is_busy` 只看 active registry，`JobRuntimeStateService` 集中 partial runner capacity/count fallback。
+- 已補強 runtime notification 與 snapshot fallback：Telegram send/edit/fallback-send 加 10 秒 timeout，成功 raw capture 會明確送出 `finalizing` stage notification且仍受 stale guard 保護，snapshot 對 invalid runner capacity/count 值會回到安全 fallback。
+- 已補強 notification fanout 與 media subprocess robustness：Telegram notification 改為 bounded concurrent fanout，timeout helper 收斂為 callable wrapper，remux/MP4 validation/duration probe/thumbnail 改用 bounded subprocess runner 避免無界 `communicate()`。
 - 已讓 `RecordingManager` 的 list、cleanup、disk usage 共用單次 filesystem scan 與 stat metadata，避免同一 request 反覆 `rglob()` / `stat()`。
 - 已將 scheduler `next_run_at` 同步改成單一 DB session 批次更新，並跳過 unchanged `next_run_at`。
 - 已在 FastAPI shutdown 關閉既有 YouTube uploader HTTP client，並將 YouTube upload chunk read 包到 thread，避免大檔讀取阻塞 event loop。

@@ -15,6 +15,7 @@ from recording.activity import (
     _video_activity_from_frames,
     trim_recording,
 )
+from recording.subprocess_utils import BoundedSubprocessResult
 
 
 class FakeAnalyzer(RecordingActivityAnalyzer):
@@ -248,12 +249,15 @@ async def test_trim_recording_uses_duration_and_reports_actual_duration(monkeypa
         output_path.write_bytes(b"trimmed")
         return 0, ""
 
-    async def fake_run_ffmpeg_probe(*cmd, timeout_sec=10.0):
+    async def fake_run_bounded_subprocess(*cmd, timeout_sec, stdout_limit=4096, stderr_limit=4096, **_kwargs):
         assert cmd[0] == "ffprobe"
-        return 0, b"8.750", ""
+        assert timeout_sec == 10.0
+        assert stdout_limit == 1024
+        assert stderr_limit == 2048
+        return BoundedSubprocessResult(returncode=0, stdout=b"8.750", stderr="")
 
     monkeypatch.setattr(activity_module, "_run_ffmpeg_trim", fake_run_ffmpeg_trim)
-    monkeypatch.setattr(activity_module, "_run_ffmpeg_probe", fake_run_ffmpeg_probe)
+    monkeypatch.setattr(activity_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
 
     info = await trim_recording(
         input_path=input_path,
@@ -270,6 +274,20 @@ async def test_trim_recording_uses_duration_and_reports_actual_duration(monkeypa
     assert trim_cmd[trim_cmd.index("-t") + 1] == "8.000"
     assert "-to" not in trim_cmd
     assert info.duration_sec == 8.75
+
+
+@pytest.mark.asyncio
+async def test_activity_duration_probe_failure_returns_none(monkeypatch, tmp_path):
+    input_path = tmp_path / "recording.mkv"
+    input_path.write_bytes(b"raw")
+
+    async def fake_run_bounded_subprocess(*cmd, **_kwargs):
+        assert cmd[0] == "ffprobe"
+        return BoundedSubprocessResult(returncode=124, stdout=b"", stderr="process timed out", timed_out=True)
+
+    monkeypatch.setattr(activity_module, "run_bounded_subprocess", fake_run_bounded_subprocess)
+
+    assert await activity_module._probe_media_duration_sec(input_path) is None
 
 
 @pytest.mark.asyncio

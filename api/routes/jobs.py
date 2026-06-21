@@ -15,7 +15,6 @@ from database.models import (
 from database.session import JobRepository, get_db
 from providers import list_providers, validate_provider_name
 from services.errors import ConflictError, NotFoundError, ServiceError, ValidationError
-from services.job_actions import ACTIVE_RECORDING_STATUSES
 from services.job_runtime_state import active_job_payload
 from services.job_service import ImmediateRecordingData
 from uploading.progress import get_latest_progress, get_progress
@@ -221,11 +220,6 @@ async def get_current_recording(http_request: Request, db: Session = Depends(get
     runner = get_app_job_runner(http_request)
     snapshot = get_app_job_runtime_state_service(http_request).build_snapshot(db, worker=worker, runner=runner)
     jobs = snapshot.active_jobs
-
-    if not jobs and getattr(worker, "is_busy", False) and getattr(worker, "_current_job", None):
-        repo = JobRepository(db)
-        db_job = repo.get_by_job_id(worker._current_job.job_id)
-        jobs = [db_job] if db_job and db_job.status in ACTIVE_RECORDING_STATUSES else []
 
     if not jobs:
         return {"active": False, "job": None, "active_count": 0}

@@ -52,3 +52,11 @@
 - [x] P3：補強多路錄製 robustness，包含 retry delayed requeue、disk reservation、upload shutdown/restart cleanup 與 Telegram 精準 stop。
 - [x] P3：補強 retry/queue robustness，包含 schedule retry cancel 釋放 duplicate state、retry waiting API/UI/Telegram 可見可取消、Telegram registry-first stop 與 active recording shutdown 收斂。
 - [x] P3：收斂 job runtime state view，讓 API/UI/Telegram 共用 active、FIFO queued、retry waiting snapshot 與 structured queued cancel result。
+- [x] P3：補強多路錄製與 dynamic boundary merge 後 robustness，包含 dynamic extension 容量預留、retry hard deadline 與 smart trim 後處理節流。
+- [x] P3：收斂 smart trim 後處理資源邊界，讓 finalize 後先釋放錄製 runtime，再以可注入 ActivityAnalysisLimiter 節流 completed-file analysis，並補齊 unbounded dynamic extension 容量估算。
+- [x] P3：收斂錄製 slot 與後處理責任邊界，讓 raw capture 完成後立即釋放 `MAX_CONCURRENT_RECORDINGS` 容量，smart trim / 本機 MP4 canonicalization 改由 tracked post-processing task 收斂。
+- [x] P3：補強 post-processing robustness，包含 process/settle task state、settle failure 不遞迴、DetectionLog best-effort、stale finalizing restart cleanup 與 DTO owner 收斂。
+- [x] P3：收斂多路錄製狀態邊界，移除 API `_current_job` fallback、Telegram `worker.is_busy` queue warning 與 worker 舊全域 cancel/finish flags。
+- [x] P3：補強 runtime state 與 notification robustness，包含 Telegram stage notification stale guard、`is_busy` active-registry-only 與 snapshot capacity/count fallback。
+- [x] P3：補強 runtime notification 與 snapshot fallback，包含 Telegram send/edit timeout、finalizing stage notification 與 invalid runner count normalization。
+- [x] P3：補強 notification fanout 與 media subprocess robustness，包含 Telegram bounded concurrent fanout、callable timeout helper、duration probe 收斂與 bounded FFmpeg/ffprobe subprocess runner。

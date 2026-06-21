@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 
 from config.settings import get_settings
 from recording.mp4_validation import discard_file, replace_with_validated_mp4, temporary_mp4_path, validate_mp4_file
+from recording.subprocess_utils import run_bounded_subprocess
 from recording.transcode import transcode_to_mp4
 
 logger = logging.getLogger(__name__)
@@ -130,24 +130,20 @@ async def remux_to_mp4(input_path: Path, output_path: Path, log_path: Path | Non
     ]
 
     try:
-        process = await asyncio.create_subprocess_exec(
+        result = await run_bounded_subprocess(
             *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout_sec=3600,
+            stderr_log_path=log_path,
+            stdout_limit=1024,
+            stderr_limit=4096,
         )
-        _, stderr = await process.communicate()
     except Exception:
         discard_file(temp_path)
         raise
 
-    stderr_text = stderr.decode(errors="ignore")
-    if log_path:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(stderr_text, encoding="utf-8")
-
-    if process.returncode != 0 or not temp_path.exists():
+    if result.returncode != 0 or not temp_path.exists():
         discard_file(temp_path)
-        logger.error(f"Remux failed: {stderr_text[:400]}")
+        logger.error(f"Remux failed: {result.stderr[:400]}")
         return None
 
     published_path = await replace_with_validated_mp4(temp_path, output_path)

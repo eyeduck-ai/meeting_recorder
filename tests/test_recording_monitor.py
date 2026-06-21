@@ -1,6 +1,7 @@
 """Tests for the recording monitor loop."""
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,6 +9,7 @@ import pytest
 
 from recording.activity import ActivityConfig, LiveMediaActivityProbe, MediaActivityState
 from recording.monitor import RecordingMonitor
+from utils.timezone import utc_now
 
 
 class FakeOutputFile:
@@ -68,6 +70,7 @@ def make_monitor(
     cancel=False,
     finish=False,
     clock=None,
+    wall_clock=None,
     ffmpeg_stall_timeout_sec=120,
     ffmpeg_stall_grace_sec=30,
 ):
@@ -80,6 +83,7 @@ def make_monitor(
         ffmpeg_stall_timeout_sec=ffmpeg_stall_timeout_sec,
         ffmpeg_stall_grace_sec=ffmpeg_stall_grace_sec,
         clock=clock or sequence_clock(0, 0),
+        wall_clock=wall_clock,
         sleep=AsyncMock(),
     )
 
@@ -250,6 +254,38 @@ async def test_monitor_closes_dynamic_extension_probe_on_cancel():
     with pytest.raises(asyncio.CancelledError):
         await monitor.run()
 
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_stops_at_hard_deadline_before_dynamic_extension_can_extend():
+    now = utc_now()
+    wall_times = [now, now + timedelta(seconds=2)]
+
+    def wall_clock():
+        if wall_times:
+            return wall_times.pop(0)
+        return now + timedelta(seconds=2)
+
+    probe = FakeActivityProbe(MediaActivityState(audio_active=True, video_active=True, reason="active"))
+    monitor = make_monitor(
+        job=make_job(
+            duration_sec=60,
+            dynamic_extension_enabled=True,
+            dynamic_extension_max_sec=3600,
+            hard_deadline_at=now + timedelta(seconds=1),
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 2),
+        wall_clock=wall_clock,
+    )
+
+    end_reason, ffmpeg_exit_code = await monitor.run()
+
+    assert end_reason == "completed"
+    assert ffmpeg_exit_code is None
+    assert monitor.dynamic_extension_stop_reason == "hard_deadline_reached"
+    assert probe.calls == 0
     assert probe.close_calls == 1
 
 

@@ -81,6 +81,15 @@ class RecordingCapacityGuard:
         width = max(1, int(getattr(job, "resolution_w", 1920) or 1920))
         height = max(1, int(getattr(job, "resolution_h", 1080) or 1080))
         duration_sec = max(1, int(getattr(job, "duration_sec", 3600) or 3600))
+        if bool(getattr(job, "dynamic_extension_enabled", False)):
+            extension_max_sec = max(0, int(getattr(job, "dynamic_extension_max_sec", 0) or 0))
+            if extension_max_sec > 0:
+                duration_sec += extension_max_sec
+            else:
+                settings = self._settings_provider()
+                duration_sec = max(
+                    duration_sec, int(getattr(settings, "max_recording_sec", duration_sec) or duration_sec)
+                )
         pixels = width * height
         p720 = 1280 * 720
         p1080 = 1920 * 1080
