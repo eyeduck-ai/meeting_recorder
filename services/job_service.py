@@ -56,8 +56,3 @@ class JobService:
 
             return get_job_runner()
         return self._job_runner
-
-
-def get_job_service(**kwargs) -> JobService:
-    """Create a job service instance."""
-    return JobService(**kwargs)

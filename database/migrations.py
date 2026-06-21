@@ -111,6 +111,8 @@ def run_schema_migrations(engine: Engine) -> None:
         ensure_column(connection, "recording_jobs", "trim_status", "VARCHAR(32)")
         ensure_column(connection, "recording_jobs", "trim_reason", "TEXT")
         ensure_column(connection, "recording_jobs", "dynamic_extension_stop_reason", "VARCHAR(64)")
+        ensure_column(connection, "schedules", "duration_mode", "VARCHAR(32) DEFAULT 'fixed'")
+        ensure_column(connection, "schedules", "dry_run", "BOOLEAN DEFAULT 0")
         ensure_column(connection, "schedules", "last_triggered_at", "DATETIME")
         ensure_column(connection, "schedules", "last_started_at", "DATETIME")
         ensure_column(connection, "schedules", "last_completed_at", "DATETIME")
@@ -133,11 +135,3 @@ def run_schema_migrations(engine: Engine) -> None:
             ("detector_type", "detected", "triggered_at"),
         )
         migrate_legacy_auto_detect_schedules(connection)
-
-
-_has_column = has_column
-_has_table = has_table
-_ensure_column = ensure_column
-_ensure_index = ensure_index
-_migrate_legacy_auto_detect_schedules = migrate_legacy_auto_detect_schedules
-_run_schema_migrations = run_schema_migrations

@@ -7,11 +7,7 @@ from sqlalchemy.orm import Session
 
 from database.models import JobStatus, Schedule
 from database.models import RecordingJob as RecordingJobModel
-from services.job_actions import ACTIVE_RECORDING_STATUSES
-
-
-def _status_value(job: RecordingJobModel) -> str:
-    return job.status.value if hasattr(job.status, "value") else job.status
+from services.job_actions import ACTIVE_RECORDING_STATUSES, job_status_value
 
 
 def _coerce_non_negative_int(value: Any) -> int | None:
@@ -35,7 +31,7 @@ def active_job_payload(job: RecordingJobModel) -> dict[str, Any]:
     """Return the public active-job payload used by REST and status views."""
     return {
         "job_id": job.job_id,
-        "status": _status_value(job),
+        "status": job_status_value(job),
         "meeting_code": job.meeting_code,
         "display_name": job.display_name,
         "duration_sec": job.duration_sec,

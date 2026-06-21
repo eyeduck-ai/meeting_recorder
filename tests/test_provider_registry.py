@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+import providers as providers_module
 from api.routes.jobs import RecordRequest
 from api.routes.meetings import MeetingCreate, MeetingUpdate
 from providers import get_provider_metadata, list_provider_metadata, list_providers, provider_form_config_map
@@ -15,6 +16,7 @@ def test_provider_registry_metadata_is_single_source_for_supported_providers():
     assert [provider.name for provider in metadata] == providers
     assert get_provider_metadata("zoom").meeting_code_label == "Meeting URL / ID"
     assert provider_form_config_map()["zoom"]["hint"] == "Full Zoom invite link is recommended"
+    assert not hasattr(providers_module, "provider_metadata_map")
 
 
 def test_api_provider_validators_normalize_and_reject_unknown_provider():

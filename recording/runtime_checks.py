@@ -1,15 +1,7 @@
 import shutil
 import subprocess
 
-
-def _pactl_short_names(output: str) -> set[str]:
-    """Return exact device names from `pactl list ... short` output."""
-    names = set()
-    for line in output.splitlines():
-        columns = line.split("\t")
-        if len(columns) >= 2 and columns[1]:
-            names.add(columns[1])
-    return names
+from recording import pactl
 
 
 def get_recording_runtime_status() -> dict:
@@ -36,7 +28,7 @@ def get_recording_runtime_status() -> dict:
                     text=True,
                     timeout=3,
                 )
-                virtual_sink_ready = "virtual_speaker" in _pactl_short_names(sinks.stdout)
+                virtual_sink_ready = "virtual_speaker" in pactl.short_names(sinks.stdout)
         except Exception:
             audio_server_ready = False
             virtual_sink_ready = False

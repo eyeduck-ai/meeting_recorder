@@ -12,7 +12,7 @@ from database.models import Base, JobStatus, RecordingJob
 
 def test_jobs_route_import_does_not_initialize_database(monkeypatch):
     """Importing the jobs route must not run schema initialization."""
-    import database.models as models
+    import database.session as session_module
 
     called = False
 
@@ -20,11 +20,87 @@ def test_jobs_route_import_does_not_initialize_database(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr(models, "init_db", fake_init_db)
+    monkeypatch.setattr(session_module, "init_db", fake_init_db)
     sys.modules.pop("api.routes.jobs", None)
     importlib.import_module("api.routes.jobs")
 
     assert called is False
+
+
+def test_services_package_import_does_not_import_service_modules():
+    """Importing the services package should not eagerly import concrete services."""
+    sys.modules.pop("services", None)
+    for module_name in (
+        "services.notification",
+        "services.recording_manager",
+        "services.schedule_service",
+        "services.job_service",
+    ):
+        sys.modules.pop(module_name, None)
+
+    importlib.import_module("services")
+
+    for module_name in (
+        "services.notification",
+        "services.recording_manager",
+        "services.schedule_service",
+        "services.job_service",
+    ):
+        assert module_name not in sys.modules
+
+
+def test_runtime_state_helpers_are_not_reexported_from_routes():
+    """Runtime-state payload helpers should stay in the service owner module."""
+    sys.modules.pop("api.routes.job_queue_payloads", None)
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("api.routes.job_queue_payloads")
+
+
+def test_telegram_package_import_does_not_expose_db_session_helper():
+    """Telegram package import should not eagerly load DB session helpers."""
+    original_telegram_bot = sys.modules.pop("telegram_bot", None)
+    original_database_session = sys.modules.pop("database.session", None)
+    try:
+        package = importlib.import_module("telegram_bot")
+
+        assert not hasattr(package, "get_db_session")
+        assert "database.session" not in sys.modules
+    finally:
+        if original_telegram_bot is not None:
+            sys.modules["telegram_bot"] = original_telegram_bot
+        else:
+            sys.modules.pop("telegram_bot", None)
+
+        if original_database_session is not None:
+            sys.modules["database.session"] = original_database_session
+        else:
+            sys.modules.pop("database.session", None)
+
+
+def test_notification_service_does_not_keep_unwired_event_methods():
+    import services.notification as notification_module
+    from services.notification import NotificationConfig, NotificationService
+
+    service = NotificationService()
+
+    assert not hasattr(notification_module, "EmailNotifier")
+    assert not hasattr(notification_module, "WebhookNotifier")
+
+    for method_name in (
+        "notify_recording_started",
+        "notify_recording_completed",
+        "notify_recording_failed",
+        "notify_disk_space_low",
+    ):
+        assert not hasattr(service, method_name)
+
+    notification_module._notification_service = NotificationService(
+        NotificationConfig(smtp_enabled=True, smtp_host="smtp.example.com")
+    )
+    notification_module.reset_notification_service()
+
+    assert notification_module._notification_service is None
 
 
 @pytest.mark.asyncio
@@ -108,6 +184,7 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
     assert not hasattr(app.state, "worker")
     assert not hasattr(app.state, "job_runner")
     assert not hasattr(app.state, "scheduler")
+    assert not hasattr(main_module, "_clear_runtime_state")
 
 
 @pytest.mark.asyncio
@@ -121,8 +198,6 @@ async def test_start_recording_route_uses_app_state_job_runner(tmp_path):
     session = SessionLocal()
 
     class FakeRunner:
-        is_busy = False
-
         async def run_immediate(self, **_kwargs):
             session.add(
                 RecordingJob(

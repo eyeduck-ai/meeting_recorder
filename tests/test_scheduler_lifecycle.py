@@ -50,6 +50,11 @@ def create_schedule(session_local, **kwargs) -> int:
         session.close()
 
 
+def test_scheduler_service_does_not_keep_unused_job_inspection_wrappers():
+    assert not hasattr(SchedulerService, "get_next_run_time")
+    assert not hasattr(SchedulerService, "get_all_jobs")
+
+
 def test_schema_migration_adds_schedule_lifecycle_columns(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
     with engine.begin() as connection:

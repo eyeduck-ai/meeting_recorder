@@ -102,10 +102,6 @@ class JobRunner:
         self._shutting_down = False
 
     @property
-    def is_busy(self) -> bool:
-        return self.active_count > 0
-
-    @property
     def active_count(self) -> int:
         return len(self._active_tasks)
 
@@ -116,10 +112,6 @@ class JobRunner:
     @property
     def available_slots(self) -> int:
         return max(0, self._max_concurrent_recordings - self.active_count)
-
-    @property
-    def is_at_capacity(self) -> bool:
-        return self.available_slots <= 0
 
     @property
     def current_schedule_id(self) -> int | None:
@@ -156,9 +148,6 @@ class JobRunner:
     def retry_waiting_count(self) -> int:
         return len(self._retry_requests)
 
-    def is_retry_waiting_job(self, job_id: str) -> bool:
-        return job_id in self._retry_requests
-
     def queue_schedule(self, schedule_id: int, manual_trigger: bool = False) -> QueueScheduleResult:
         """Queue a schedule to run."""
         result = self._schedule_queue.enqueue_schedule(
@@ -175,14 +164,6 @@ class JobRunner:
 
         self._drain_queues()
         return result
-
-    def _ensure_queue_processor(self) -> None:
-        """Start the schedule queue processor if no active processor exists."""
-        self._drain_queues()
-
-    async def _process_schedule_queue(self) -> None:
-        """Compatibility wrapper: drain queues into available worker slots."""
-        self._drain_queues()
 
     def _drain_queues(self) -> None:
         """Start queued work while capacity is available."""
@@ -334,10 +315,6 @@ class JobRunner:
         if removed or retry_removed:
             self._drain_queues()
         return QueuedJobCancelResult(removed=removed or retry_removed, source=source, schedule_id=schedule_id)
-
-    def cancel_queued_job(self, job_id: str) -> bool:
-        """Compatibility wrapper for canceling queued work by job id."""
-        return self.cancel_queued_job_for_action(job_id).removed
 
     def cancel_queued_schedule(self, schedule_id: int) -> bool:
         """Cancel a queued schedule run without disabling the schedule."""

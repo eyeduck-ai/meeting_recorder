@@ -193,8 +193,6 @@ def test_schedule_service_trigger_marks_triggered_and_returns_queue_result(db_se
 @pytest.mark.asyncio
 async def test_job_service_start_immediate_returns_persisted_job(db_session):
     class FakeRunner:
-        is_busy = False
-
         async def run_immediate(self, **_kwargs):
             db_session.add(
                 RecordingJob(
@@ -225,8 +223,6 @@ async def test_job_service_start_immediate_returns_persisted_job(db_session):
 @pytest.mark.asyncio
 async def test_job_service_busy_runner_still_queues_immediate_recording(db_session):
     class FakeRunner:
-        is_busy = True
-
         async def run_immediate(self, **_kwargs):
             db_session.add(
                 RecordingJob(

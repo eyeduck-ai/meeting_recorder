@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import services.secrets as secrets_module
 from api.routes.meetings import _to_response
 from api.routes.recording_management import NotificationConfigRequest, get_notification_config, save_notification_config
 from database.models import AppSettings, Base, Meeting
@@ -43,6 +44,10 @@ def test_meeting_response_exposes_only_password_presence():
     assert "password" not in payload
     assert "meeting_password_plaintext" not in payload
     assert "raw-secret" not in json.dumps(payload)
+
+
+def test_secret_module_does_not_expose_mask_detection_helper():
+    assert not hasattr(secrets_module, "is_masked_secret")
 
 
 @pytest.mark.asyncio

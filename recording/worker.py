@@ -7,7 +7,8 @@ from datetime import datetime
 from database.models import ErrorCode, JobStatus
 from recording.activity import LiveMediaActivityProbe
 from recording.capacity_guard import RecordingCapacityError, RecordingCapacityGuard, RecordingCapacityReservation
-from recording.job_types import RecordingJob, RecordingResult
+from recording.job_types import RecordingJob as _RecordingJob
+from recording.job_types import RecordingResult as _RecordingResult
 from recording.monitor import RecordingMonitor
 from recording.runtime_resources import RuntimeResourceAllocator, RuntimeResourceLease
 from recording.session import RecordingSession
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 class ActiveRecordingState:
     """Mutable runtime state for one active recording job."""
 
-    job: RecordingJob
+    job: _RecordingJob
     status: JobStatus = JobStatus.QUEUED
     cancel_requested: bool = False
     finish_requested: bool = False
@@ -37,39 +38,28 @@ class RecordingWorker:
         capacity_guard: RecordingCapacityGuard | None = None,
     ):
         self._active_jobs: dict[str, ActiveRecordingState] = {}
-        self._current_job: RecordingJob | None = None
-        self._status: JobStatus = JobStatus.QUEUED
+        self._current_job: _RecordingJob | None = None
         self._status_callback: Callable[[str, JobStatus], None] | None = None
         self._resource_allocator = resource_allocator or RuntimeResourceAllocator()
         self._capacity_guard = capacity_guard or RecordingCapacityGuard()
 
     @property
-    def is_busy(self) -> bool:
-        return bool(self._active_jobs)
-
-    @property
-    def active_jobs(self) -> list[RecordingJob]:
+    def active_jobs(self) -> list[_RecordingJob]:
         return [state.job for state in self._active_jobs.values()]
 
     @property
     def active_count(self) -> int:
         return len(self._active_jobs)
 
-    @property
-    def current_status(self) -> JobStatus:
-        return self._status
-
     def set_status_callback(self, callback: Callable[[str, JobStatus], None]) -> None:
         self._status_callback = callback
 
-    def _update_status(self, status: JobStatus, job_id: str | None = None) -> None:
-        self._status = status
-        target_job_id = job_id or (self._current_job.job_id if self._current_job else None)
-        if target_job_id and target_job_id in self._active_jobs:
-            self._active_jobs[target_job_id].status = status
-        if self._status_callback and target_job_id:
+    def _update_status(self, status: JobStatus, job_id: str) -> None:
+        if job_id in self._active_jobs:
+            self._active_jobs[job_id].status = status
+        if self._status_callback:
             try:
-                self._status_callback(target_job_id, status)
+                self._status_callback(job_id, status)
             except Exception as e:
                 logger.warning(f"Status callback error: {e}")
 
@@ -107,10 +97,10 @@ class RecordingWorker:
         state = self._active_jobs.get(job_id)
         return bool(state.finish_requested if state else False)
 
-    def _set_current_job(self, job: RecordingJob | None) -> None:
+    def _set_current_job(self, job: _RecordingJob | None) -> None:
         self._current_job = job
 
-    def _can_fallback_to_normal_browser(self, job: RecordingJob, result: RecordingResult) -> bool:
+    def _can_fallback_to_normal_browser(self, job: _RecordingJob, result: _RecordingResult) -> bool:
         return (
             job.recording_browser_mode == "app"
             and (job.resolved_browser_mode in (None, "app"))
@@ -118,7 +108,7 @@ class RecordingWorker:
             and result.recording_started_at is None
         )
 
-    def _build_normal_browser_fallback_job(self, job: RecordingJob, reason: str) -> RecordingJob:
+    def _build_normal_browser_fallback_job(self, job: _RecordingJob, reason: str) -> _RecordingJob:
         fallback_crop_mode = job.recording_crop_mode if job.recording_crop_mode != "off" else "auto"
         return replace(
             job,
@@ -129,9 +119,9 @@ class RecordingWorker:
             browser_fallback_attempts=job.browser_fallback_attempts + 1,
         )
 
-    async def record(self, job: RecordingJob) -> RecordingResult:
+    async def record(self, job: _RecordingJob) -> _RecordingResult:
         """Execute a recording job."""
-        result = RecordingResult(
+        result = _RecordingResult(
             job_id=job.job_id,
             status=JobStatus.STARTING,
             attempt_no=job.attempt_no,
@@ -183,7 +173,7 @@ class RecordingWorker:
             latest = self._resolve_active_state()
             self._set_current_job(latest.job if latest else None)
 
-    def _reset_result_for_attempt(self, result: RecordingResult, job: RecordingJob) -> None:
+    def _reset_result_for_attempt(self, result: _RecordingResult, job: _RecordingJob) -> None:
         result.status = JobStatus.STARTING
         result.attempt_no = job.attempt_no
         result.recording_info = None
@@ -210,10 +200,10 @@ class RecordingWorker:
 
     async def _record_attempt(
         self,
-        job: RecordingJob,
-        result: RecordingResult,
+        job: _RecordingJob,
+        result: _RecordingResult,
         runtime_resources: RuntimeResourceLease | None = None,
-    ) -> RecordingJob | None:
+    ) -> _RecordingJob | None:
         """Execute one browser attempt for a recording job."""
 
         session_cleaned = False
@@ -368,7 +358,6 @@ class RecordingWorker:
                 recording_info=result.recording_info,
                 dynamic_extension_stop_reason=result.dynamic_extension_stop_reason,
             )
-            self._status = JobStatus.SUCCEEDED
             if job.job_id in self._active_jobs:
                 self._active_jobs[job.job_id].status = JobStatus.SUCCEEDED
 
@@ -465,8 +454,8 @@ class RecordingWorker:
 
     async def _save_detection_logs(
         self,
-        job: RecordingJob,
-        result: RecordingResult,
+        job: _RecordingJob,
+        result: _RecordingResult,
     ) -> None:
         """Persist media activity decisions."""
         has_activity_log = result.trim_status is not None
@@ -517,7 +506,7 @@ class RecordingWorker:
         self,
         *,
         session: RecordingSession,
-        job: RecordingJob,
+        job: _RecordingJob,
         ffmpeg_stall_timeout_sec: int,
         ffmpeg_stall_grace_sec: int,
     ) -> tuple[str, int | None, str | None]:

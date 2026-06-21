@@ -17,7 +17,6 @@ from telegram.ext import (
 from config.settings import get_settings
 from database.models import Schedule
 from services.schedule_service import get_schedule_service
-from telegram_bot import get_db_session
 from telegram_bot.conversation_common import _parse_time_text, cancel_conversation
 from telegram_bot.keyboards import (
     get_delete_confirm_keyboard,
@@ -26,6 +25,7 @@ from telegram_bot.keyboards import (
     get_main_menu_keyboard,
     get_schedules_select_keyboard,
 )
+from telegram_bot.session import get_db_session
 from utils.timezone import from_local, to_local
 
 logger = logging.getLogger(__name__)

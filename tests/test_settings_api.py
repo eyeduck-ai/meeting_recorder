@@ -6,8 +6,10 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import services.app_settings as app_settings_module
 from api.routes.settings import SettingsUpdate, get_settings_endpoint, update_settings_endpoint
 from database.models import AppSettings, Base
+from services.app_settings import update_settings
 
 
 @pytest.fixture
@@ -37,6 +39,10 @@ def test_settings_endpoint_returns_recording_crop_top(db_session):
     assert response["dynamic_extension_idle_sec"] == 300
 
 
+def test_app_settings_does_not_expose_defaults_builder():
+    assert not hasattr(app_settings_module, "get_setting_defaults")
+
+
 def test_settings_update_accepts_valid_recording_crop_top(db_session):
     response = update_settings_endpoint(
         SettingsUpdate(
@@ -60,6 +66,51 @@ def test_settings_update_accepts_valid_recording_crop_top(db_session):
     assert response["dynamic_extension_idle_sec"] == 300
     assert response["dynamic_extension_max_sec"] == 3600
     assert response["activity_audio_threshold_db"] == -42.0
+
+
+def test_update_settings_batches_known_key_upserts(db_session, monkeypatch):
+    db_session.add(AppSettings(key="resolution_w", value="1280"))
+    db_session.commit()
+
+    commit_count = 0
+    original_commit = db_session.commit
+
+    def count_commit():
+        nonlocal commit_count
+        commit_count += 1
+        original_commit()
+
+    monkeypatch.setattr(db_session, "commit", count_commit)
+
+    update_settings(
+        db_session,
+        {
+            "resolution_w": "1440",
+            "resolution_h": "900",
+            "unknown_setting": "ignored",
+        },
+    )
+
+    rows = {row.key: row.value for row in db_session.query(AppSettings).all()}
+    assert rows["resolution_w"] == "1440"
+    assert rows["resolution_h"] == "900"
+    assert "unknown_setting" not in rows
+    assert commit_count == 1
+
+
+def test_update_settings_skips_commit_when_no_known_keys(db_session, monkeypatch):
+    commit_count = 0
+
+    def count_commit():
+        nonlocal commit_count
+        commit_count += 1
+
+    monkeypatch.setattr(db_session, "commit", count_commit)
+
+    update_settings(db_session, {"unknown_setting": "ignored"})
+
+    assert db_session.query(AppSettings).count() == 0
+    assert commit_count == 0
 
 
 def test_settings_update_rejects_crop_equal_to_resolution_height(db_session):

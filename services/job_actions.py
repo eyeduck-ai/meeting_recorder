@@ -23,6 +23,10 @@ TERMINAL_JOB_STATUSES = {
 }
 
 
+def job_status_value(job: RecordingJob) -> str:
+    return job.status.value if hasattr(job.status, "value") else job.status
+
+
 @dataclass(frozen=True)
 class JobActionResult:
     """Result of a lifecycle action."""
@@ -41,27 +45,20 @@ class JobActionService:
 
     def stop_job(self, db: Session, job_id: str) -> JobActionResult:
         job = self._get_job(db, job_id)
-        status = self._status_value(job)
+        status = job_status_value(job)
         if status in TERMINAL_JOB_STATUSES:
             raise ValidationError(f"Job is already in terminal state: {status}")
         if status == JobStatus.UPLOADING.value:
             raise ValidationError("Uploading jobs cannot be stopped")
 
         if status == JobStatus.QUEUED.value:
-            cancel_result = None
             cancel_queued_job_for_action = getattr(self._job_runner, "cancel_queued_job_for_action", None)
-            if cancel_queued_job_for_action:
-                cancel_result = cancel_queued_job_for_action(job_id)
-                removed = bool(getattr(cancel_result, "removed", cancel_result))
-                source = getattr(cancel_result, "source", None)
-            else:
-                cancel_queued_job = getattr(self._job_runner, "cancel_queued_job", None)
-                source = (
-                    "retry_waiting"
-                    if getattr(self._job_runner, "is_retry_waiting_job", lambda _job_id: False)(job_id)
-                    else "fifo"
-                )
-                removed = bool(cancel_queued_job and cancel_queued_job(job_id))
+            if not cancel_queued_job_for_action:
+                raise ValidationError("Job is queued but not cancelable in this process")
+
+            cancel_result = cancel_queued_job_for_action(job_id)
+            removed = bool(getattr(cancel_result, "removed", cancel_result))
+            source = getattr(cancel_result, "source", None)
 
             if removed:
                 is_retry_waiting = source == "retry_waiting"
@@ -88,7 +85,7 @@ class JobActionService:
 
     def finish_job(self, db: Session, job_id: str) -> JobActionResult:
         job = self._get_job(db, job_id)
-        status = self._status_value(job)
+        status = job_status_value(job)
         if status in TERMINAL_JOB_STATUSES:
             raise ValidationError(f"Job is already in terminal state: {status}")
         if status == JobStatus.QUEUED.value:
@@ -105,7 +102,7 @@ class JobActionService:
 
     def delete_job(self, db: Session, job_id: str) -> JobActionResult:
         job = self._get_job(db, job_id)
-        status = self._status_value(job)
+        status = job_status_value(job)
         if status not in TERMINAL_JOB_STATUSES:
             raise ValidationError("Only terminal jobs can be deleted")
 
@@ -137,6 +134,3 @@ class JobActionService:
         if not job:
             raise NotFoundError("Job not found")
         return job
-
-    def _status_value(self, job: RecordingJob) -> str:
-        return job.status.value if hasattr(job.status, "value") else job.status

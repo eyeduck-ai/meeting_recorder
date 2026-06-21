@@ -14,6 +14,47 @@ import recording.transcode as transcode_module
 from recording.subprocess_utils import BoundedSubprocessResult
 
 
+def test_remux_module_does_not_expose_upload_path_helper():
+    assert not hasattr(remux_module, "derive_upload_mp4_path")
+    assert not hasattr(remux_module, "_derive_upload_mp4_path")
+    assert not hasattr(remux_module, "_is_valid_fresh_mp4")
+
+
+def test_recording_file_variants_returns_mkv_mp4_siblings(tmp_path):
+    assert remux_module.recording_file_variants(tmp_path / "recording.mkv") == (
+        tmp_path / "recording.mkv",
+        tmp_path / "recording.mp4",
+    )
+    assert remux_module.recording_file_variants(tmp_path / "recording.mp4") == (
+        tmp_path / "recording.mkv",
+        tmp_path / "recording.mp4",
+    )
+    assert remux_module.recording_file_variants(tmp_path / "recording.webm") == (tmp_path / "recording.webm",)
+
+
+def test_delete_recording_artifacts_preserves_raw_and_ignores_duplicates(tmp_path):
+    raw_path = tmp_path / "recording.mkv"
+    raw_mp4_path = tmp_path / "recording.mp4"
+    trimmed_path = tmp_path / "recording.trimmed.mkv"
+    trimmed_mp4_path = tmp_path / "recording.trimmed.mp4"
+    raw_path.write_bytes(b"raw")
+    raw_mp4_path.write_bytes(b"raw-mp4")
+    trimmed_path.write_bytes(b"trimmed")
+    trimmed_mp4_path.write_bytes(b"mp4")
+
+    deleted, errors = remux_module.delete_recording_artifacts(
+        [trimmed_path, raw_path, trimmed_path],
+        preserve_path=raw_path,
+    )
+
+    assert deleted == (trimmed_path, trimmed_mp4_path)
+    assert errors == ()
+    assert raw_path.exists()
+    assert raw_mp4_path.exists()
+    assert not trimmed_path.exists()
+    assert not trimmed_mp4_path.exists()
+
+
 class EmptyAsyncStream:
     async def readline(self):
         return b""

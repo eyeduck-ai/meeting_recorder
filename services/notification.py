@@ -37,7 +37,7 @@ class NotificationConfig:
             self.smtp_to = []
 
 
-class EmailNotifier:
+class _EmailNotifier:
     """Send email notifications via SMTP."""
 
     def __init__(self, config: NotificationConfig):
@@ -94,7 +94,7 @@ class EmailNotifier:
             server.send_message(msg, to_addrs=recipients)
 
 
-class WebhookNotifier:
+class _WebhookNotifier:
     """Send webhook notifications via HTTP POST."""
 
     def __init__(self, config: NotificationConfig):
@@ -154,96 +154,12 @@ class WebhookNotifier:
 
 
 class NotificationService:
-    """Unified notification service."""
+    """Configured email and webhook notification channels."""
 
     def __init__(self, config: NotificationConfig | None = None):
         self.config = config or NotificationConfig()
-        self.email = EmailNotifier(self.config)
-        self.webhook = WebhookNotifier(self.config)
-
-    async def notify_recording_started(self, job: dict) -> None:
-        """Send notifications when recording starts."""
-        # Email
-        if self.config.smtp_enabled:
-            subject = f"🔴 Recording Started: {job.get('meeting_code', 'Unknown')}"
-            body = f"""
-Recording has started.
-
-Meeting: {job.get("meeting_code", "Unknown")}
-Display Name: {job.get("display_name", "Unknown")}
-Job ID: {job.get("job_id", "Unknown")}
-Started At: {job.get("started_at", "Unknown")}
-"""
-            await self.email.send(subject, body)
-
-        # Webhook
-        if self.config.webhook_enabled:
-            await self.webhook.send("recording.started", job)
-
-    async def notify_recording_completed(self, job: dict) -> None:
-        """Send notifications when recording completes."""
-        # Email
-        if self.config.smtp_enabled:
-            subject = f"✅ Recording Completed: {job.get('meeting_code', 'Unknown')}"
-            body = f"""
-Recording has completed successfully.
-
-Meeting: {job.get("meeting_code", "Unknown")}
-Job ID: {job.get("job_id", "Unknown")}
-Duration: {job.get("duration_actual_sec", 0):.0f} seconds
-Output: {job.get("output_path", "Unknown")}
-"""
-            await self.email.send(subject, body)
-
-        # Webhook
-        if self.config.webhook_enabled:
-            await self.webhook.send("recording.completed", job)
-
-    async def notify_recording_failed(self, job: dict) -> None:
-        """Send notifications when recording fails."""
-        # Email
-        if self.config.smtp_enabled:
-            subject = f"❌ Recording Failed: {job.get('meeting_code', 'Unknown')}"
-            body = f"""
-Recording has failed.
-
-Meeting: {job.get("meeting_code", "Unknown")}
-Job ID: {job.get("job_id", "Unknown")}
-Error: {job.get("error_message", "Unknown error")}
-Error Code: {job.get("error_code", "Unknown")}
-"""
-            await self.email.send(subject, body)
-
-        # Webhook
-        if self.config.webhook_enabled:
-            await self.webhook.send("recording.failed", job)
-
-    async def notify_disk_space_low(self, path: str, available_gb: float, threshold_gb: float) -> None:
-        """Send notifications when disk space is low."""
-        # Email
-        if self.config.smtp_enabled:
-            subject = f"⚠️ Low Disk Space Warning: {available_gb:.1f}GB remaining"
-            body = f"""
-Disk space is running low on the recordings directory.
-
-Path: {path}
-Available Space: {available_gb:.1f} GB
-Threshold: {threshold_gb:.1f} GB
-
-Please free up disk space or configure auto-cleanup.
-"""
-            await self.email.send(subject, body)
-
-        # Webhook
-        if self.config.webhook_enabled:
-            await self.webhook.send(
-                "system.disk_low",
-                {
-                    "path": path,
-                    "available_gb": available_gb,
-                    "threshold_gb": threshold_gb,
-                },
-            )
+        self.email = _EmailNotifier(self.config)
+        self.webhook = _WebhookNotifier(self.config)
 
 
 def load_notification_config() -> NotificationConfig:
@@ -308,3 +224,9 @@ def get_notification_service() -> NotificationService:
         config = load_notification_config()
         _notification_service = NotificationService(config)
     return _notification_service
+
+
+def reset_notification_service() -> None:
+    """Clear the cached notification service so config is reloaded on next use."""
+    global _notification_service
+    _notification_service = None

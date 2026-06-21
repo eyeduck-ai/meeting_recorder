@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import time
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from fastapi.responses import RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -114,13 +114,3 @@ class AuthMiddleware(BaseHTTPMiddleware):
         else:
             # Web requests redirect to login
             return RedirectResponse(url=f"/login?next={path}", status_code=302)
-
-
-def require_auth(request: Request):
-    """Dependency to require authentication."""
-    settings = get_settings()
-
-    if settings.auth_password and not is_authenticated(request):
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    return True

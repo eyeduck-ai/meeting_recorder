@@ -77,6 +77,15 @@ def test_calculate_retry_window_end_does_not_extend_unbounded_retry_window():
     assert calculate_retry_window_end(base_end_time, runtime_config) == base_end_time
 
 
+def test_job_runner_does_not_keep_unused_state_probe_helpers():
+    assert not hasattr(JobRunner, "is_busy")
+    assert not hasattr(JobRunner, "is_at_capacity")
+    assert not hasattr(JobRunner, "is_retry_waiting_job")
+    assert not hasattr(JobRunner, "cancel_queued_job")
+    assert not hasattr(JobRunner, "_ensure_queue_processor")
+    assert not hasattr(JobRunner, "_process_schedule_queue")
+
+
 @pytest.fixture
 def session_local(tmp_path, monkeypatch):
     """Provide an isolated SQLite session factory for job runner tests."""
@@ -705,9 +714,10 @@ class TestJobRunner:
 
         runner._schedule_retry(retry_request)
 
-        assert runner.cancel_queued_job("retrycancel") is True
+        result = runner.cancel_queued_job_for_action("retrycancel")
         await asyncio.sleep(0)
 
+        assert result.removed is True
         assert runner.queue_length == 0
         assert "retrycancel" not in runner._retry_requests
         assert "retrycancel" not in runner._direct_payloads
@@ -778,7 +788,7 @@ class TestJobRunner:
         assert waiting_items[0].status == "retry_waiting"
         assert waiting_items[0].retry_after_sec > 0
 
-        runner.cancel_queued_job("retrywait")
+        assert runner.cancel_queued_job_for_action("retrywait").removed is True
         await asyncio.sleep(0)
 
     @pytest.mark.asyncio

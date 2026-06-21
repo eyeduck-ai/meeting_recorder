@@ -15,9 +15,9 @@ from telegram.ext import (
 
 from providers import get_provider_metadata
 from services.meeting_service import MeetingCreateData, get_meeting_service
-from telegram_bot import get_db_session
 from telegram_bot.conversation_common import cancel_conversation
 from telegram_bot.keyboards import get_meeting_confirm_keyboard, get_provider_keyboard
+from telegram_bot.session import get_db_session
 
 logger = logging.getLogger(__name__)
 

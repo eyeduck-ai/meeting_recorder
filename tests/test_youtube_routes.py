@@ -55,6 +55,11 @@ def _get_youtube_job(SessionLocal):
         session.close()
 
 
+def test_youtube_route_does_not_keep_artifact_identity_wrapper():
+    assert not hasattr(youtube_routes, "_same_recording_artifact")
+    assert not hasattr(youtube_routes, "_delete_trimmed_upload_artifacts")
+
+
 @pytest.mark.asyncio
 async def test_manual_upload_deletes_trimmed_artifacts_after_mkv_canonicalization(
     youtube_route_session_local, monkeypatch, tmp_path

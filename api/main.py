@@ -89,12 +89,6 @@ def cleanup_orphaned_jobs() -> None:
         db.close()
 
 
-def _clear_runtime_state(app: FastAPI) -> None:
-    for attr in ("worker", "job_runner", "scheduler"):
-        if hasattr(app.state, attr):
-            delattr(app.state, attr)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Own application runtime dependencies for the FastAPI process."""
@@ -152,7 +146,9 @@ async def lifespan(app: FastAPI):
 
         await close_youtube_uploader()
 
-        _clear_runtime_state(app)
+        for attr in ("worker", "job_runner", "scheduler"):
+            if hasattr(app.state, attr):
+                delattr(app.state, attr)
         reset_scheduler_instance()
         reset_job_runner_instance()
         reset_worker_instance()

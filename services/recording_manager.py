@@ -1,16 +1,15 @@
-"""Recording management service for thumbnails, cleanup, and disk monitoring."""
+"""Recording management service for thumbnails, listing, and disk monitoring."""
 
 import logging
 import os
 import shutil
 import stat
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from config.settings import get_settings
 from recording.subprocess_utils import run_bounded_subprocess
-from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ class RecordingFileEntry:
 
 
 class RecordingManager:
-    """Manages recordings: thumbnails, cleanup, and disk monitoring."""
+    """Manages recordings for thumbnails, listing, and disk monitoring."""
 
     def __init__(self, recordings_dir: str | Path = "recordings"):
         self.recordings_dir = Path(recordings_dir)
@@ -70,10 +69,6 @@ class RecordingManager:
                 )
             )
         return entries
-
-    def _iter_video_files(self) -> list[Path]:
-        """Return video files under the recordings directory, including job subdirectories."""
-        return [entry.path for entry in self._scan_recording_entries()]
 
     async def generate_thumbnail(
         self,
@@ -141,99 +136,6 @@ class RecordingManager:
             logger.error(f"Thumbnail generation failed: {e}")
             return None
 
-    async def cleanup_old_recordings(
-        self,
-        max_age_days: int = 30,
-        max_count: int | None = None,
-        dry_run: bool = False,
-    ) -> dict:
-        """Clean up old recordings based on age or count.
-
-        Args:
-            max_age_days: Delete recordings older than this many days
-            max_count: Keep only this many most recent recordings
-            dry_run: If True, don't actually delete, just report
-
-        Returns:
-            Summary of cleanup operation
-        """
-        result = {
-            "deleted_files": [],
-            "deleted_count": 0,
-            "freed_bytes": 0,
-            "errors": [],
-        }
-
-        if not self.recordings_dir.exists():
-            return result
-
-        # Find all video files, including job subdirectories.
-        entries = self._scan_recording_entries()
-
-        # Sort by modification time (newest first)
-        entries.sort(key=lambda entry: entry.modified_timestamp, reverse=True)
-
-        # Calculate cutoff date
-        cutoff_date = utc_now() - timedelta(days=max_age_days)
-        cutoff_timestamp = cutoff_date.timestamp()
-
-        to_delete = []
-
-        for i, entry in enumerate(entries):
-            should_delete = False
-            reason = ""
-
-            # Check age
-            if entry.modified_timestamp < cutoff_timestamp:
-                should_delete = True
-                reason = f"older than {max_age_days} days"
-
-            # Check count limit
-            if max_count is not None and i >= max_count:
-                should_delete = True
-                reason = f"exceeds max count of {max_count}"
-
-            if should_delete:
-                to_delete.append((entry, reason))
-
-        # Delete files
-        for entry, reason in to_delete:
-            video = entry.path
-            try:
-                file_size = entry.size_bytes
-
-                if not dry_run:
-                    video.unlink()
-
-                    # Also delete thumbnail if exists
-                    if entry.thumbnail_path.exists():
-                        entry.thumbnail_path.unlink()
-
-                result["deleted_files"].append(
-                    {
-                        "path": str(video),
-                        "size": file_size,
-                        "reason": reason,
-                    }
-                )
-                result["deleted_count"] += 1
-                result["freed_bytes"] += file_size
-
-            except Exception as e:
-                result["errors"].append(
-                    {
-                        "path": str(video),
-                        "error": str(e),
-                    }
-                )
-
-        if dry_run:
-            logger.info(f"Dry run: would delete {result['deleted_count']} files")
-        else:
-            logger.info(f"Deleted {result['deleted_count']} files, freed {result['freed_bytes'] / 1024 / 1024:.1f} MB")
-
-        return result
-
     def get_disk_usage(self) -> dict:
         """Get disk usage information for recordings directory.
 
@@ -271,52 +173,6 @@ class RecordingManager:
             "recordings_count": recordings_count,
             "usage_percent": (disk_usage.used / disk_usage.total) * 100,
         }
-
-    async def check_disk_space(
-        self,
-        threshold_gb: float = 10.0,
-        auto_cleanup: bool = False,
-        cleanup_target_gb: float = 20.0,
-    ) -> dict:
-        """Check disk space and optionally trigger cleanup.
-
-        Args:
-            threshold_gb: Warn if free space drops below this
-            auto_cleanup: If True, automatically clean up when threshold is reached
-            cleanup_target_gb: Target free space after cleanup
-
-        Returns:
-            Disk status and any cleanup performed
-        """
-        usage = self.get_disk_usage()
-
-        result = {
-            "status": "ok",
-            "usage": usage,
-            "cleanup_performed": False,
-            "cleanup_result": None,
-        }
-
-        if usage["free_gb"] < threshold_gb:
-            result["status"] = "low"
-            logger.warning(f"Low disk space: {usage['free_gb']:.1f} GB remaining")
-
-            if auto_cleanup:
-                # Start with oldest recordings (more aggressive when disk is low)
-                cleanup_result = await self.cleanup_old_recordings(
-                    max_age_days=7,  # More aggressive when disk is low
-                    dry_run=False,
-                )
-
-                result["cleanup_performed"] = True
-                result["cleanup_result"] = cleanup_result
-
-                # Check if we freed enough
-                new_usage = self.get_disk_usage()
-                if new_usage["free_gb"] >= threshold_gb:
-                    result["status"] = "ok"
-
-        return result
 
     def list_recordings(
         self,

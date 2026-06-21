@@ -9,6 +9,7 @@ from config.settings import get_settings
 from database.models import JobStatus
 from database.session import JobRepository, get_session_local
 from recording.mp4_validation import discard_file
+from recording.remux import delete_recording_artifacts
 from services.storage_maintenance import CanonicalRecording, prepare_upload_recording_file
 from telegram_bot.notifications import notify_youtube_upload_completed
 from uploading.progress import clear_progress, update_progress
@@ -231,13 +232,14 @@ class YouTubeUploadRunner:
         raw_video_path: Path | None,
     ) -> None:
         """Delete local trimmed upload artifacts after a successful upload."""
-        for candidate in {cleanup_path, prepared_upload_path}:
-            try:
-                if candidate.exists() and (raw_video_path is None or candidate != raw_video_path):
-                    candidate.unlink()
-                    logger.info("Deleted uploaded trimmed artifact: %s", candidate)
-            except OSError as exc:
-                logger.warning("Failed to delete uploaded trimmed artifact %s: %s", candidate, exc)
+        deleted, errors = delete_recording_artifacts(
+            [cleanup_path, prepared_upload_path],
+            preserve_path=raw_video_path,
+        )
+        for candidate in deleted:
+            logger.info("Deleted uploaded trimmed artifact: %s", candidate)
+        for candidate, exc in errors:
+            logger.warning("Failed to delete uploaded trimmed artifact %s: %s", candidate, exc)
 
         if raw_video_path and raw_video_path.exists():
             SessionLocal = get_session_local()

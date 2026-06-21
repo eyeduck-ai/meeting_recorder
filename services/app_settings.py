@@ -32,7 +32,7 @@ SETTING_DEFAULTS = {
 }
 
 
-def get_setting_defaults(settings: Settings | None = None) -> dict[str, str]:
+def _get_setting_defaults(settings: Settings | None = None) -> dict[str, str]:
     """Return editable setting defaults from environment-backed settings."""
     settings = settings or get_settings()
     return {
@@ -61,44 +61,6 @@ def get_setting_defaults(settings: Settings | None = None) -> dict[str, str]:
     }
 
 
-def get_setting(db: Session, key: str) -> str:
-    """Get a setting value, falling back to default if not set.
-
-    Args:
-        db: Database session
-        key: Setting key
-
-    Returns:
-        Setting value as string
-    """
-    setting = db.query(AppSettings).filter(AppSettings.key == key).first()
-    if setting:
-        return setting.value
-    return get_setting_defaults().get(key, "")
-
-
-def get_setting_int(db: Session, key: str) -> int:
-    """Get a setting value as integer."""
-    return int(get_setting(db, key))
-
-
-def set_setting(db: Session, key: str, value: str) -> None:
-    """Set a setting value in the database.
-
-    Args:
-        db: Database session
-        key: Setting key
-        value: Setting value (as string)
-    """
-    setting = db.query(AppSettings).filter(AppSettings.key == key).first()
-    if setting:
-        setting.value = value
-    else:
-        setting = AppSettings(key=key, value=value)
-        db.add(setting)
-    db.commit()
-
-
 def get_all_settings(db: Session) -> dict[str, str]:
     """Get all settings with defaults.
 
@@ -106,7 +68,7 @@ def get_all_settings(db: Session) -> dict[str, str]:
         Dictionary of all settings with current values
     """
     # Start with environment-backed defaults
-    result = get_setting_defaults()
+    result = _get_setting_defaults()
 
     # Override with database values
     settings = db.query(AppSettings).all()
@@ -123,6 +85,18 @@ def update_settings(db: Session, settings: dict[str, str]) -> None:
         db: Database session
         settings: Dictionary of key-value pairs to update
     """
-    for key, value in settings.items():
-        if key in SETTING_DEFAULTS:  # Only allow known settings
-            set_setting(db, key, str(value))
+    allowed_updates = {key: str(value) for key, value in settings.items() if key in SETTING_DEFAULTS}
+    if not allowed_updates:
+        return
+
+    existing = db.query(AppSettings).filter(AppSettings.key.in_(allowed_updates)).all()
+    by_key = {setting.key: setting for setting in existing}
+
+    for key, value in allowed_updates.items():
+        setting = by_key.get(key)
+        if setting:
+            setting.value = value
+        else:
+            db.add(AppSettings(key=key, value=value))
+
+    db.commit()

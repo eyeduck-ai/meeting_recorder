@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 import recording.ffmpeg_pipeline as ffmpeg_module
+import recording.pactl as pactl_module
+import recording.runtime_checks as runtime_checks_module
 import recording.session as session_module
+import recording.virtual_env as virtual_env_module
 import recording.worker as worker_module
 from database.models import ErrorCode, JobStatus
 from providers.base import JoinResult
@@ -22,9 +25,16 @@ from recording.worker import RecordingWorker
 from utils.timezone import utc_now
 
 
-def test_worker_reexports_recording_job_types():
-    assert worker_module.RecordingJob is RecordingJob
-    assert worker_module.RecordingResult is RecordingResult
+def test_worker_does_not_reexport_recording_job_types():
+    assert not hasattr(worker_module, "RecordingJob")
+    assert not hasattr(worker_module, "RecordingResult")
+
+
+def test_pactl_short_name_parser_has_single_owner():
+    assert pactl_module.short_names(b"0\tvirtual_speaker\tmodule-null-sink.c\n") == {"virtual_speaker"}
+    assert not hasattr(runtime_checks_module, "_pactl_short_names")
+    assert not hasattr(virtual_env_module, "_pactl_short_names")
+    assert not hasattr(ffmpeg_module, "_pactl_short_names")
 
 
 class TestRecordingJob:
@@ -191,21 +201,24 @@ class TestRecordingWorker:
     """Tests for RecordingWorker class."""
 
     def test_initial_state(self):
-        """Worker should start with no job and QUEUED status."""
+        """Worker should start with no active jobs."""
         worker = RecordingWorker()
 
-        assert worker.is_busy is False
-        assert worker.current_status == JobStatus.QUEUED
+        assert worker.active_count == 0
+        assert worker.active_jobs == []
+        assert not hasattr(worker, "is_busy")
+        assert not hasattr(worker, "current_status")
 
-    def test_is_busy_ignores_stale_current_job(self):
-        """is_busy should ignore stale compatibility current-job state."""
+    def test_active_registry_ignores_stale_current_job(self):
+        """Stale compatibility current-job state should not affect active state."""
         worker = RecordingWorker()
         worker._current_job = Mock()
 
-        assert worker.is_busy is False
+        assert worker.active_count == 0
+        assert worker.active_jobs == []
 
-    def test_is_busy_when_active_registry_has_job(self, tmp_path):
-        """is_busy should return True only when a job is active in the registry."""
+    def test_active_registry_reports_active_jobs(self, tmp_path):
+        """Active state should come from the active job registry."""
         worker = RecordingWorker()
         job = RecordingJob(
             job_id="job-active",
@@ -217,7 +230,8 @@ class TestRecordingWorker:
         )
         worker._active_jobs[job.job_id] = worker_module.ActiveRecordingState(job=job)
 
-        assert worker.is_busy is True
+        assert worker.active_count == 1
+        assert worker.active_jobs == [job]
 
     def test_request_cancel_no_job(self):
         """request_cancel should return False when no job running."""
@@ -363,24 +377,38 @@ class TestRecordingWorker:
         worker = RecordingWorker()
         callback = Mock()
         worker.set_status_callback(callback)
+        job = RecordingJob(
+            job_id="test-123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir="recordings/test-123",
+        )
+        worker._active_jobs[job.job_id] = worker_module.ActiveRecordingState(job=job)
 
-        # Simulate setting a job and updating status
-        worker._current_job = Mock()
-        worker._current_job.job_id = "test-123"
-        worker._update_status(JobStatus.RECORDING)
+        worker._update_status(JobStatus.RECORDING, job.job_id)
 
         callback.assert_called_once_with("test-123", JobStatus.RECORDING)
+        assert worker._active_jobs[job.job_id].status == JobStatus.RECORDING
 
     def test_status_callback_not_set(self):
         """Should not fail when callback is not set."""
         worker = RecordingWorker()
-        worker._current_job = Mock()
-        worker._current_job.job_id = "test-123"
+        job = RecordingJob(
+            job_id="test-123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir="recordings/test-123",
+        )
+        worker._active_jobs[job.job_id] = worker_module.ActiveRecordingState(job=job)
 
         # Should not raise
-        worker._update_status(JobStatus.RECORDING)
+        worker._update_status(JobStatus.RECORDING, job.job_id)
 
-        assert worker._status == JobStatus.RECORDING
+        assert worker._active_jobs[job.job_id].status == JobStatus.RECORDING
 
     def test_app_mode_failure_before_capture_builds_normal_auto_crop_fallback(self, tmp_path):
         """App-mode pre-capture failures should retry once in normal mode with crop protection."""
@@ -702,7 +730,7 @@ class TestRecordingWorker:
         assert result.runtime_summary["fallback_used"] is True
         assert result.runtime_summary["fallback_attempts"] == 1
         assert result.failure_stage is None
-        assert worker.is_busy is False
+        assert worker.active_count == 0
 
     @pytest.mark.asyncio
     async def test_record_uses_hard_deadline_when_fixed_deadline_passed(self, monkeypatch, tmp_path):
@@ -815,7 +843,7 @@ class TestRecordingWorker:
         assert result.status == JobStatus.FAILED
         assert result.error_code == ErrorCode.DISK_FULL.value
         assert result.failure_stage == "prepare_runtime"
-        assert worker.is_busy is False
+        assert worker.active_count == 0
 
     def test_capacity_guard_estimate_includes_dynamic_extension_max(self, tmp_path):
         from recording.capacity_guard import RecordingCapacityGuard
@@ -864,7 +892,7 @@ class TestRecordingWorker:
         assert result.error_code == ErrorCode.INTERNAL_ERROR.value
         assert result.error_message == "constructor bug"
         assert result.failure_stage == "prepare_runtime"
-        assert worker.is_busy is False
+        assert worker.active_count == 0
 
 
 class TestFFmpegPipeline:

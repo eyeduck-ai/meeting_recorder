@@ -116,9 +116,11 @@ python -m scripts.dev_compose up --build -d
 ### 資料保留與清理
 
 - 本機錄影長期保存為 `.mp4`；系統錄製時會先產生 `.mkv`，成功 fast remux 成 validated `.mp4` 後刪除 `.mkv`。YouTube 上傳壓縮才會依設定使用臨時轉檔檔案，不改變本機 canonical MP4。
-- 每日 03:30 會自動執行 storage maintenance，也可在 Web UI `/settings` 的 Storage Management 手動預覽或執行。
+- 每日 03:30 會自動執行 storage maintenance，也可在 Web UI `/settings` 的 Storage Management 手動預覽或執行；手動按鈕與 API `POST /api/recordings/maintenance` 使用同一套清理機制。
+- 舊 API `POST /api/recordings/cleanup` 只保留為相容別名，實際也會執行 storage maintenance，不再依檔案修改時間直接刪除錄影檔。
 - 已成功上傳 YouTube 的本機錄影檔，若已保存 14 天以上會刪除本機檔案，但保留工作紀錄與 YouTube 連結。
-- `diagnostics/`、rotated app logs 與 detection logs 預設保留 14 天。
+- `diagnostics/`、rotated app logs 與 detection logs 預設保留 14 天；目前的 `logs/app.log` 與 `.gitkeep` 佔位檔不會被 maintenance 刪除。
+- Web UI `/recordings` 的 `Delete all` 是破壞性刪除錄影 job 與本機檔案，不是保留期限 maintenance。
 - Docker container log 已設定 `json-file` rotation：每個 container 最多 `20m x 5`。既有 container 需要 recreate 後才會套用新的 log rotation 設定。
 
 ### Secret 保存提醒

@@ -21,7 +21,9 @@
 - 拆 Web UI 子 router 時要保留 `api.routes.ui.router` 作為聚合入口；router-only tests 和 `api/main.py` 只 include 聚合 router，若子 router 沒有 include 回去會造成整組 HTML route 消失。
 - 移動像 `QueueScheduleResult` 這類已被 API、Telegram 或 tests import 的 internal-public 型別時，要先在舊模組保留 re-export，再逐步改呼叫端，避免一次性破壞相容 import。
 - 子 router 不應反向 import 聚合 router 來取 render/settings/helper；這會形成雙向依賴，應抽 `ui_common` 這類共用層讓依賴方向維持單向。
-- 錄影檔 list/cleanup/disk usage 不要各自重新掃描 filesystem 或重複 `stat()`；先建立帶 metadata 的 entry，再由排序、分頁與 response 組裝共用。
+- 錄影檔 list/disk usage 不要各自重新掃描 filesystem 或重複 `stat()`；先建立帶 metadata 的 entry，再由排序、分頁與 response 組裝共用。
+- 舊 cleanup API 若曾經直接按檔案年齡刪錄影，收斂 storage maintenance 後要改成相容 alias，而不是保留第二套刪檔路徑；否則會讓 DB job、YouTube link、本機檔案狀態互相漂移。
+- maintenance 清 rotated logs 時要排除 `.gitkeep` 這類 repo 佔位檔；dry-run 若顯示會刪 tracked placeholder，應先修 retention filter 再跑 destructive cleanup。
 - 刪除已上傳 YouTube 的本機錄影檔不等於刪除 recording job；應保留 DB job 與 YouTube link，並用 local cleanup 欄位標記本機檔案狀態，否則 UI/API 會把「雲端仍可看」誤變成「紀錄消失」。
 - 衍生 MP4 不可直接寫正式檔名後再驗證；remux/transcode 必須先寫 same-directory temporary file，ffprobe 驗證成功後才 atomic replace，失敗時刪 temp 並保留 MKV，否則 partial/corrupt MP4 可能在下次 maintenance 被誤認為 fresh。
 - 本機 canonical MP4 和 YouTube upload compression 是兩個不同決策；`FFMPEG_TRANSCODE_ON_UPLOAD` 只應影響 upload path，不應讓錄影完成或每日 maintenance 進行長時間 transcode、卡住單工錄製流程。
@@ -77,7 +79,7 @@
 - post-processing failure path 需要區分 primary `process` 與 fallback `settle`；若 settle 失敗後還自動重排，會形成無界背景任務。fallback terminal update 應 best-effort log-and-stop。
 - DetectionLog 是診斷資料，不是錄影成果的一部分；寫入失敗不能讓 raw recording success 回退或卡在 `finalizing`。
 - restart cleanup 不能把所有 stale `finalizing` 一律標 failed；若 raw/output 檔已存在，應優先保留錄影成功語意並記錄 post-processing interrupted。
-- 多路錄製下 `worker.is_busy` 只代表 active registry 有錄製 runtime，不代表容量已滿；UI/Telegram 是否提示排隊應看 `JobRuntimeStateService.available_slots`。
+- 多路錄製下不要保留 `worker.is_busy` / `current_status` 這類全域相容狀態；active state 應直接看 worker active registry 與 DB active status 的交集，UI/Telegram 是否提示排隊應看 `JobRuntimeStateService.available_slots`。
 - `worker._current_job` 是相容欄位，不是 runtime truth；API/Web UI/Telegram active state 都應來自 worker active registry 與 DB active status 的交集。
 - async stage notification 送出前要重新讀 DB status；否則延遲的 `recording` / `finalizing` 訊息可能在 job 已 `succeeded` / `failed` / `canceled` 後覆蓋使用者可見 Telegram 狀態。
 - partial runner/test double 缺少 `available_slots`、`queue_length` 或 `retry_waiting_count` 時，不應由 route 各自 fallback；應由 `JobRuntimeStateService` 依 active count 或 item list 統一推導，避免 UI/Telegram 誤判容量已滿或 queue count。
@@ -86,3 +88,43 @@
 - snapshot fallback 對負數或非數字 runner count 不能簡單 clamp 成 0；queue/retry count 應回到實際 item list 長度，capacity 應在 max 有效時用 active count 推導，避免 test double 或 partial runner 誤導 UI。
 - 多 chat Telegram fanout 若逐一等待，即使每個 call 有 timeout，總耗時仍會跟 chat 數線性放大；應使用 bounded concurrency，並讓單一 chat 失敗不影響其他 chat。
 - media subprocess helper 不應讓每個呼叫點各自管理 `communicate()`、timeout 與 stderr excerpt；抽成共用 bounded runner 後，remux、duration probe、ffprobe validation、thumbnail 才能一致地 terminate/kill、保留診斷 excerpt 並避免無界記憶體。
+- 盤點專案舊檔時不要只看 tracked diff；根目錄被 `.gitignore` 明確列出的平行 agent/TODO 檔也可能誤導後續維護。Windows 的 `nul` 保留名稱可能讓 `Test-Path` 失準，刪除前要用 `Get-ChildItem` 取得實際檔案物件並確認路徑仍在 workspace 內。
+- 移除舊手動 migration script 前，要先確認正式 schema migration 已接手同一欄位補齊責任並補測試；只刪 script 會讓舊部署失去升級路徑。
+- 聚合 router 應只負責 include child routers；測試若需要 private helper，應 import 真正 owner module，而不是逼聚合器維持 helper re-export 相容層。
+- 刪除 re-export 聚合器前先用 repo-wide search 確認只有內部呼叫端依賴；把呼叫端改到 owner module 並用測試保護依賴方向後，再刪聚合器檔案。
+- ORM model module 不應替 session 或 migration owner 做 lifecycle helper re-export；這會讓 schema 定義層反向依賴 runtime/session 邊界，後續應直接 import `database.session` 或 `database.migrations`。
+- 刪除 public-looking helper 前要區分「只剩定義」和「仍有單一入口使用」；例如 approval API 仍需要 `send_to_user`，但無引用的 fanout wrapper、keyboard factory 或 media alias 可移除，避免為舊行為保留假入口。
+- Package `__init__.py` 不應為了方便 re-export 具體 service 而 eager import 多個 owner module；若 repo 內沒有 `from package import ...` 依賴，改成 docstring-only 並補 import-boundary 測試，可降低循環依賴與 import side effect。
+- DTO owner 已明確時，不要讓 runtime/orchestrator 模組透過頂層 import 形成隱性 re-export；改用私有 alias 並補負向測試，可以避免新程式誤從 worker implementation 匯入資料型別。
+- Auth enforcement 若已由 middleware 集中處理，不要保留未被 route wiring 使用的 dependency helper；未接線 helper 只會讓維護者誤以為還有第二套 auth path。
+- Service accessor 若已被 app-state factory 取代，且 repo 內沒有任何呼叫者，就應移除；保留未使用 `get_*_service()` 會讓未來入口繞過正確 runtime wiring。
+- Pydantic request/response model 若沒有被 endpoint signature 或 `response_model` 使用，即使類別名稱看似描述現有 API，也應刪除；空 schema 會讓 API contract 看起來比實際更複雜。
+- Migration helper 若已有公開函式名稱，不要再保留 `_name = name` 形式的私有 compatibility alias；這會讓測試與維護者誤判還有舊入口需要支援。
+- Notification service 若實際只被 Web UI 測試按鈕當作 email/webhook channel holder 使用，不要保留未接線的 recording/disk event methods；正式錄影 lifecycle notification owner 應留在 Telegram notification flow。
+- Endpoint 若只是呼叫已載入設定的 service channel，不要為了沿用附近 route 形狀而注入未使用的 DB session；多餘 dependency 會增加 request 成本並誤導測試範圍。
+- Package root 不應為了方便 handler import 而 re-export DB session helper；把 helper 放到明確 owner module 後，可避免單純 import package 時 eager-load database layer。
+- Session owner module 若已有 FastAPI dependency 與 session factory，就不要保留無呼叫端的第二種 context-manager wrapper；多入口 session lifecycle 會讓 rollback/commit 責任不清。
+- ORM model 的通用 `to_dict()` 若沒有實際呼叫端，應移除並讓 API/Web UI 走明確 schema 或 mapper；閒置 serializer 很容易落後於真正 response contract。
+- 測試 model helper/property 時不要用 `Mock` 重新寫一份相同邏輯；直接 instantiate ORM model 呼叫實作，測試才會抓到 helper 本身的回歸。
+- App settings 若對外只有 batch update 入口，不要保留未使用的單 key getter/setter；batch upsert 應集中查詢並 commit 一次，避免隱性多 transaction。
+- Route package 不應為 service-owned helper 保留無呼叫端的 compatibility re-export；queued/retry payload helper 應直接從 `services.job_runtime_state` 使用，避免 route 層變成第二個 owner。
+- Scheduler 已將使用者排程的下一次執行時間同步到 DB `schedules.next_run_at`；若沒有呼叫端，不要再保留直接讀 APScheduler job 的 inspection wrapper，避免狀態來源分裂。
+- 只剩測試呼叫的狀態 probe/helper 仍是死碼；若正式路徑已用 structured result 或直接 observable state，應刪 helper 並改測正式行為或負向邊界。
+- queued cancel 已需要知道 FIFO / retry waiting 來源時，不要再保留只回傳 bool 的舊 wrapper 或 service-side retry 推論 fallback；structured result 應是唯一 contract，否則取消文案與 DB error_message 會再次分裂。
+- legacy 欄位仍需保留不代表 legacy enum/API 也要保留；若 `duration_mode` 只剩 persisted string 與 migration 用途，model 應用 literal default，不要讓 `DurationMode` enum 暗示 auto-detect 仍是支援概念。
+- provider registry 已是 provider validation 與 UI/Telegram 選項來源時，不要再用 ORM `ProviderType` enum 複製 provider 清單；model default 可用 literal，新增 provider 才不會出現 registry 與 enum drift。
+- Registry package 的 helper 應服務多個呼叫端或明確 shared contract；若 map 形狀只有單一 UI view 需要，讓該 view 由 list helper 組出 map，避免 provider package API 面膨脹。
+- 只在 owner module 內串接的 helper 不應維持 public 名稱；改成私有並以負向測試保護 public surface，可避免 upload path、secret sentinel、settings defaults 或 notification channel implementation 被誤當可重用 API。
+- 小型 parser 若在 runtime check、setup 與 hot path 各複製一份，也應收斂到單一 owner；像 `pactl list ... short` 解析這類 exact-name 規則要用共享 helper 與負向測試保護，避免三處各自修 bug。
+- 兩個 sibling UI router 若需要同一個 display-only mutation helper，應抽到 `ui_*` helper module；測試也應打 helper owner，而不是其中一個 route 的 private function。
+- UI route 若同時需要 template display flag 與 download path 判斷，應把 artifact state 放在同一個 helper owner；否則 list 頁與 download endpoint 會各自維護本機檔案存在規則。
+- 輕量 status route 不應為單一欄位在 module import 時快取 settings；直接在 endpoint 呼叫 `get_settings()`，測試 override 與 runtime reload 才不會被舊 module-level state 誤導。
+- Route 需要重置 service singleton 時，不要直接改 service module 的 private global；由 service owner 提供 reset 函式，route 只依賴公開 lifecycle contract。
+- 檔案 sibling 規則即使只有幾行，也不應在 UI delete 與 retention maintenance 各寫一次；MKV/MP4 variant 應由錄影 artifact owner 提供，避免未來新增 artifact 型態時漏改其中一邊。
+- 同一類錄影 artifact 刪除若同時出現在 manual route 與背景 runner，應抽成 best-effort helper 並讓 caller 保留自己的狀態更新或 logging；檔案規則集中，流程責任不混在一起。
+- Shared helper 已有明確 owner 後，caller service 不應再保留只轉呼叫的二次 wrapper；否則搜尋 helper 名稱時會誤判還有第二個規則來源。
+- 錄影 artifact delete helper 若已是刪除 owner，應由它展開 MKV/MP4 sibling variants；caller route 先展開再呼叫會讓 deletion policy 和 variant policy 分裂。
+- Lifespan shutdown 這類單一 owner flow 若只有一處使用的短 cleanup，不要額外抽成 private wrapper；保留在 flow 內可降低跳轉與假入口。
+- 若某個模組已是狀態常數 owner，也應承擔 enum/string normalization helper；UI/runtime/service 各自寫 `status.value if ... else ...` 會讓狀態邊界逐漸漂移。
+- 同一 owner module 內只被呼叫一次、且只是串接另一個 helper 與一個 await 的 async wrapper，通常不值得保留；讓唯一 flow 直接呈現條件可讀性更高。
+- 單次使用的 path derivation helper 若只是格式化一個 filename，且沒有跨呼叫端契約，應 inline 在 owner flow；否則 private helper 也會被誤認為可重用 API。

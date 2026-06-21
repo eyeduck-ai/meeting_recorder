@@ -19,7 +19,10 @@ async def test_runtime_resource_allocator_assigns_unique_displays_and_reuses_rel
     third = await allocator.acquire("job-c")
 
     assert third.display == ":200"
-    assert allocator.is_allocated(200) is True
+
+
+def test_runtime_resource_allocator_does_not_keep_unused_display_probe():
+    assert not hasattr(RuntimeResourceAllocator, "is_allocated")
 
 
 @pytest.mark.asyncio

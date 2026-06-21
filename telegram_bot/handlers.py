@@ -23,8 +23,11 @@ from database.models import (
 )
 from services.errors import NotFoundError
 from services.schedule_service import get_schedule_service
-from telegram_bot import get_db_session
+from telegram_bot.conversation_create_meeting import get_create_meeting_conversation
+from telegram_bot.conversation_create_schedule import get_create_schedule_conversation
+from telegram_bot.conversation_edit_schedule import get_edit_schedule_conversation
 from telegram_bot.keyboards import get_main_menu_keyboard, get_meetings_list_keyboard
+from telegram_bot.session import get_db_session
 from utils.timezone import ensure_utc, to_local, utc_now
 
 logger = logging.getLogger(__name__)
@@ -464,13 +467,6 @@ async def schedule_action_callback(update: Update, context: ContextTypes.DEFAULT
 
 def setup_handlers(application: Application):
     """Setup all command handlers."""
-    # Import conversation handler
-    from telegram_bot.conversations import (
-        get_create_meeting_conversation,
-        get_create_schedule_conversation,
-        get_edit_schedule_conversation,
-    )
-
     # Conversation handlers (must be added first for priority)
     application.add_handler(get_create_schedule_conversation())
     application.add_handler(get_edit_schedule_conversation())

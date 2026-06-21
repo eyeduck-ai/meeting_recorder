@@ -1,6 +1,5 @@
 """YouTube API routes for authorization and upload management."""
 
-from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 
@@ -9,6 +8,7 @@ from pydantic import BaseModel
 
 from config.settings import get_settings
 from recording.mp4_validation import discard_file
+from recording.remux import delete_recording_artifacts, recording_file_variants
 from services.storage_maintenance import prepare_upload_recording_file
 from uploading.youtube import (
     AuthorizationError,
@@ -18,41 +18,12 @@ from utils.timezone import utc_now
 
 router = APIRouter(prefix="/youtube", tags=["YouTube"])
 
-VIDEO_ARTIFACT_SUFFIXES = {".mkv", ".mp4"}
-
-
-def _same_recording_artifact(left: Path | None, right: Path | None) -> bool:
-    """Return true when two paths represent the same local recording artifact."""
-    if left is None or right is None:
-        return False
-    if left == right:
-        return True
-    if left.suffix.lower() in VIDEO_ARTIFACT_SUFFIXES and right.suffix.lower() in VIDEO_ARTIFACT_SUFFIXES:
-        return left.with_suffix(".mp4") == right.with_suffix(".mp4")
-    return False
-
-
-def _delete_trimmed_upload_artifacts(candidates: set[Path | None], raw_path: Path | None) -> None:
-    """Best-effort delete local artifacts for a trimmed upload while keeping raw."""
-    for candidate in {path for path in candidates if path is not None}:
-        if raw_path is not None and candidate == raw_path:
-            continue
-        with suppress(OSError):
-            if candidate.exists():
-                candidate.unlink()
-
 
 class AuthStatusResponse(BaseModel):
     """Authorization status response."""
 
     configured: bool
     authorized: bool
-
-
-class DeviceCodeRequest(BaseModel):
-    """Start device authorization request."""
-
-    pass
 
 
 class DeviceAuthResponse(BaseModel):
@@ -208,7 +179,7 @@ async def upload_video(request: UploadRequest):
 
         trimmed_path = Path(job.trimmed_output_path) if job.trimmed_output_path else None
         raw_path = Path(job.raw_output_path) if job.raw_output_path else None
-        using_trimmed_output = _same_recording_artifact(video_path, trimmed_path)
+        using_trimmed_output = trimmed_path is not None and trimmed_path in recording_file_variants(video_path)
 
         remux_log = None
         transcode_log = None
@@ -257,14 +228,14 @@ async def upload_video(request: UploadRequest):
             job.youtube_video_id = result.video_id
             job.youtube_uploaded_at = utc_now()
             if using_trimmed_output:
-                _delete_trimmed_upload_artifacts(
+                delete_recording_artifacts(
                     {
                         trimmed_path,
                         canonical.output_path,
                         upload_path,
                         canonical.temporary_upload_path,
                     },
-                    raw_path,
+                    preserve_path=raw_path,
                 )
                 if raw_path and raw_path.exists():
                     job.output_path = str(raw_path)

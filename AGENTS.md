@@ -60,7 +60,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 ### 受控並行錄製
 
 - `recording.worker.get_worker()` 是 singleton
-- `recording.job_types.py` 是 `RecordingJob` / `RecordingResult` DTO owner；`recording.worker` 只保留相容 re-export，新內部模組不要為了 DTO import worker implementation
+- `recording.job_types.py` 是 `RecordingJob` / `RecordingResult` DTO owner；`recording.worker` 不 re-export DTO，新內部模組不要為了 DTO import worker implementation
 - `scheduling.job_runner.JobRunner` 以 `MAX_CONCURRENT_RECORDINGS` 控制同時錄製數；不要恢復成單一長時間 global lock
 - `scheduling.schedule_queue.ScheduleRunQueue` 負責 unified FIFO run queue，統一管理 schedule/immediate queued item、pending、active schedule set、duplicate、queued cancellation 與 queue position 狀態；不要把第二條 direct queue 或 queue 容器狀態重新塞回 `JobRunner`
 - `scheduling.recording_executor.RecordingExecutor` 負責單次 recording attempt DB 更新、status callback 與 stage notification；retry wait 必須由 `JobRunner` delayed requeue 管理，不可在 active recording task 內 sleep 佔用 slot。stage notification 是 best-effort async task，送出前必須重讀 DB status 並 skip stale status，避免舊 `recording` / `finalizing` 訊息覆蓋已 `succeeded` / `failed` / `canceled` 的 job
@@ -74,15 +74,19 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `scheduling.job_runner.JobRunner` 負責 delayed retry、active recording、tracked post-processing 與 tracked upload task shutdown；新增後處理或 upload path 時不要回到 fire-and-forget 且無 interrupted cleanup 的 task
 - `recording.capacity_guard.RecordingCapacityGuard` 負責 process-local disk reservation，估算必須包含已啟用的 bounded `dynamic_extension_max_sec`；若 `dynamic_extension_max_sec=0`，用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限；不要只用單 job free-space check 判斷多路長錄製容量
 - `recording.runtime_resources.RuntimeResourceAllocator` 負責每個 active job 的 Xvfb display 與 PipeWire/Pulse sink lease；不要在 provider 或 runner 內硬編 `:99` 或共用 `virtual_speaker` 作為並行錄製資源
-- `RecordingWorker` 維護 active job registry；`is_busy` 只代表 `_active_jobs` 非空，cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象。`_current_job` 只保留作為 worker 內部/相容欄位，route、template、Telegram handler 不得用它推論 active recording 或容量
-- `services.job_actions.JobActionService` 是 job stop/finish/delete/cancel queued 的單一狀態決策層；`ACTIVE_RECORDING_STATUSES` 與 `TERMINAL_JOB_STATUSES` 也由同一模組提供，REST route、Web UI route 與 template 不要各自維護不同的 job status 操作表
+- `recording.pactl.short_names()` 是 `pactl list ... short` device name parsing owner；runtime checks、virtual audio setup 與 FFmpeg audio source checks 不要各自複製 parser
+- `RecordingWorker` 維護 active job registry，對外只用 `active_jobs` / `active_count` 表示 runtime active state；不要恢復舊 `is_busy` / `current_status` 全域狀態。cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象。`_current_job` 只保留作為 worker 內部/相容欄位，route、template、Telegram handler 不得用它推論 active recording 或容量
+- `services.job_actions.JobActionService` 是 job stop/finish/delete/cancel queued 的單一狀態決策層；queued cancel 必須使用 `JobRunner.cancel_queued_job_for_action()` 的 structured result 判斷 FIFO / retry waiting 來源，不要恢復 boolean `cancel_queued_job()` 或 route/service 自行推論 retry state。`ACTIVE_RECORDING_STATUSES` 與 `TERMINAL_JOB_STATUSES` 也由同一模組提供，REST route、Web UI route 與 template 不要各自維護不同的 job status 操作表
 - `services.job_runtime_state.JobRuntimeStateService` 是 API / Web UI / Telegram active、FIFO queued、retry waiting view 的單一組裝層；runner capacity/count fallback 與 invalid value normalization 也必須集中在這裡處理，不要在 route、template 或 Telegram handler 重新拼 active job ids、queue maps、capacity fallback 或 retry countdown maps
+- `services/__init__.py` 不 re-export 具體 service；新程式應直接 import service owner module，避免 package import eager-load unrelated service modules
+- legacy schedule `duration_mode` 只保留為 DB string column 與 migration target；不要恢復 `DurationMode` enum 或 provider-level auto-detect-end API
+- provider registry metadata 是 provider 名稱與選項的單一來源；不要在 ORM model 恢復 `ProviderType` enum 或其他第二份 provider 清單
 - queued immediate job 可由 job stop endpoint 取消；queued schedule run 要用 schedule cancel-queued 語意，不要把 queued schedule 當成已有 job row 的 recording job
 - delete job 只允許 `succeeded`、`failed`、`canceled` 終態；`uploading` 代表錄影已成功但正在處理/上傳，不可 stop/finish/delete，upload issue 應回到 `succeeded` 並記錄在既有 job 欄位
 - app restart 時 stale `finalizing` 若已有 `raw_output_path` 或 `output_path` 指向存在檔案，應恢復為 `succeeded` 並記錄 post-processing interrupted；只有沒有可用錄影檔的 stale finalizing/running job 才標 failed
 - Telegram `/list` 與無參數 `/stop` 必須以 worker active registry 與 DB active status 交集為準，避免 stale DB active row 誤導；Telegram `/stop` 必須走 `JobActionService`，多路錄製下無參數只停止最新 active recording，指定 `/stop <job_id>` 時只作用於該 job
 - Telegram notification API 呼叫不可無界等待；send/edit/fallback-send 必須走 bounded timeout helper，fanout 必須 bounded concurrent，timeout 只能記 log，不得阻斷 recording/post-processing/upload 主流程
-- Telegram 建立排程 wizard 的「現在會排隊」提示必須看 `JobRuntimeStateService` snapshot 的 `available_slots`，不可只用 `worker.is_busy`，因為多路錄製下有 active job 不代表容量已滿
+- Telegram 建立排程 wizard 的「現在會排隊」提示必須看 `JobRuntimeStateService` snapshot 的 `available_slots`，不可恢復 busy flag 判斷，因為多路錄製下有 active job 不代表容量已滿
 - 現況預設支援 2 個同時錄製工作，可由 `.env` 的 `MAX_CONCURRENT_RECORDINGS` 調整
 - `MAX_CONCURRENT_RECORDINGS` 必須小於等於 `RECORDING_DISPLAY_POOL_SIZE`，設定錯誤會在 settings validation 階段 fail fast
 - 若新 schedule 或 immediate job 進來時錄製 slot 已滿，會進 queue 等待
@@ -96,25 +100,29 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - jobs routes 已由 `api/routes/ui_jobs.py` 負責；recordings routes 已由 `api/routes/ui_recordings.py` 負責
 - 對外仍由 `api.routes.ui.router` 聚合，`api/main.py` 不需要逐一 include UI 子 router
 - UI 子 router 不得 import `api.routes.ui`，避免子模組反向依賴聚合模組
-- 若因相容性需要從 `api.routes.ui` 匯出 helper，實作仍應留在獨立 helper 模組
+- `api.routes.ui` 不再 re-export helper；需要 template/context/settings 時 import `ui_common`，需要 job log helper 時 import `ui_job_diagnostics`
+- jobs / recordings UI 需要標記 trimmed upload artifact 是否已移除、或 recordings UI 需要判斷本機下載是否可用 / preferred existing output 時，使用 `api.routes.ui_recording_artifacts`，不要在子 router 內複製 artifact display/download helper
 
 ### Telegram 模組邊界
 
-- `telegram_bot/conversations.py` 是相容 re-export 聚合器，不應再放新的 conversation handler 實作
-- create schedule、edit schedule、create meeting conversation 分別由 `telegram_bot/conversation_create_schedule.py`、`telegram_bot/conversation_edit_schedule.py`、`telegram_bot/conversation_create_meeting.py` 負責
+- create schedule、edit schedule、create meeting conversation 分別由 `telegram_bot/conversation_create_schedule.py`、`telegram_bot/conversation_edit_schedule.py`、`telegram_bot/conversation_create_meeting.py` 負責；不要重新新增 `telegram_bot/conversations.py` 這類 re-export 聚合器
 - 共用 cancel handler、時間與時長解析 helper 由 `telegram_bot/conversation_common.py` 負責
+- Telegram handler/conversation 需要直接 DB session 時，使用 `telegram_bot/session.py` 的 `get_db_session()`；`telegram_bot/__init__.py` 不應 re-export DB helper 或 eager import database layer
 - Conversation domain module 不應互相 import；若需要共用能力，先放到 `conversation_common.py`
 
 ### 儲存與保留策略
 
 - 本機長期錄影格式是 `.mp4`；錄製仍先輸出 `.mkv`，成功 fast remux 並驗證 `.mp4` 後刪除 `.mkv` 並更新 `recording_jobs.output_path/file_size/runtime_summary_json`。
+- MKV/MP4 sibling artifact 判斷使用 `recording.remux.recording_file_variants()`；trimmed/upload artifact best-effort 刪除使用 `recording.remux.delete_recording_artifacts()`。不要在 UI route、maintenance、YouTube route 或 upload runner 內各自複製這些檔案規則
 - 本機 MP4 canonicalization 不等於 YouTube upload compression；本機 canonical 固定用 fast remux，不讀 `FFMPEG_TRANSCODE_ON_UPLOAD`。只有 YouTube upload helper 可依該設定產生 temporary transcode upload file，且不可覆寫本機 canonical MP4。
 - MP4 canonicalization 失敗不可讓成功錄影改成 failed；保留 `.mkv` 並讓每日 maintenance 或後續上傳流程重試。remux/transcode 必須先寫 temporary MP4，驗證成功後才 replace 正式 MP4；不得因 partial/corrupt MP4 刪除 MKV。
 - `services.storage_maintenance.StorageMaintenanceService` 是本機錄影、diagnostics、rotated app logs、detection logs 與 SQLite `VACUUM` 清理邏輯 owner；不要把清理細節分散塞回 API route、Web UI 或 scheduler。
+- Web UI `/settings` Storage Management、`POST /api/recordings/maintenance` 與舊相容 `POST /api/recordings/cleanup` 都必須走 `StorageMaintenanceService`；舊 cleanup endpoint 不得恢復成 `RecordingManager` 依檔案修改時間或數量直接刪錄影，避免 DB/local recording state 不一致。
+- `GET /api/recordings/check-disk?auto_cleanup=true` 若觸發低空間清理，也必須走 `StorageMaintenanceService`，不可直接逐檔刪 `recordings/`。
 - Scheduler 會用 internal job id `storage_maintenance_daily` 每日 03:30 local time 執行 maintenance；它不是使用者 schedule，不應參與 schedule lifecycle 或 `next_run_at` 同步。
 - 已上傳 YouTube 的本機錄影檔保存 14 天後可刪除；DB job、YouTube video id 與歷史狀態仍保留，並以 `local_recording_deleted_at` / `local_recording_cleanup_reason` 標記。
 - `diagnostics/` 不分 provider 統一保留 14 天；刪除 diagnostics 後要同步清掉 DB diagnostic path/flags，但保留 `runtime_summary_json`。
-- `logs/app.log` 由 Python rotating handler 控制，maintenance 只清 rotated log，不刪目前的 `app.log`；Docker container log rotation 由 Compose `json-file` `20m x 5` 控制。
+- `logs/app.log` 由 Python rotating handler 控制，maintenance 只清 rotated log，不刪目前的 `app.log` 或 `.gitkeep` 佔位檔；Docker container log rotation 由 Compose `json-file` `20m x 5` 控制。
 
 ### 設定來源不是單一層
 
@@ -125,6 +133,9 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `.env` / `config.settings`：資料庫、認證、Telegram、YouTube、並行錄製上限、display pool、最低磁碟空間、FFmpeg 進階參數、路徑
 - `services.app_settings` + `app_settings` table：部分 UI 可調整設定，包括錄製解析度、lobby 等待、`recording_browser_mode`、`recording_crop_mode`、`recording_crop_top_px`、smart trim 與 dynamic extension/activity thresholds
 - `notification_config`：JSON 形式存於 `app_settings`
+
+Settings API / Web UI 應以 `get_all_settings()` 讀取完整 overlay，並以 `update_settings()` batch upsert 已知 key；不要恢復未接線的單 key getter/setter。
+只在 owner module 內使用的 helper 應維持私有，例如 upload MP4 path derivation、secret mask detection、settings defaults builder、notification channel implementation；不要為方便測試或單一呼叫端擴大 public surface。
 
 ### 錄製畫面與裁切
 

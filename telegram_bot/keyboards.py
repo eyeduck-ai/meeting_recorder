@@ -75,18 +75,6 @@ def get_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def get_schedule_actions_keyboard(schedule_id: int) -> InlineKeyboardMarkup:
-    """Get inline keyboard for schedule actions."""
-    buttons = [
-        [
-            InlineKeyboardButton("▶️ 立即執行", callback_data=f"trigger:{schedule_id}"),
-            InlineKeyboardButton("🔄 切換狀態", callback_data=f"toggle:{schedule_id}"),
-        ],
-        [InlineKeyboardButton("🔙 返回列表", callback_data="back_to_list")],
-    ]
-    return InlineKeyboardMarkup(buttons)
-
-
 def get_youtube_inline_keyboard() -> InlineKeyboardMarkup:
     """Get inline keyboard for YouTube upload option."""
     buttons = [

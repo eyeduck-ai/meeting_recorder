@@ -1,7 +1,6 @@
 import json
 import os
 from collections.abc import Generator
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine
@@ -60,21 +59,6 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-@contextmanager
-def get_db_session() -> Generator[Session, None, None]:
-    """Context manager for database sessions."""
-    SessionLocal = get_session_local()
-    session = SessionLocal()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
 class JobRepository:
     """Repository for RecordingJob operations."""
 
@@ -103,12 +87,6 @@ class JobRepository:
         return (
             self.session.query(RecordingJob).order_by(RecordingJob.created_at.desc()).offset(offset).limit(limit).all()
         )
-
-    def get_by_status(self, status: str) -> list["RecordingJob"]:
-        """Get jobs by status."""
-        from database.models import RecordingJob
-
-        return self.session.query(RecordingJob).filter(RecordingJob.status == status).all()
 
     def update_status(self, job_id: str, status: str, **kwargs) -> bool:
         """Update job status and optional fields."""

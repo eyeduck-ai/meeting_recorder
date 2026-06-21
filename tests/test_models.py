@@ -1,27 +1,33 @@
 """Tests for database models."""
 
-from unittest.mock import Mock
-
+import database.models as models_module
 from database.models import (
+    DetectionLog,
     ErrorCode,
     JobStatus,
-    ProviderType,
+    Meeting,
+    RecordingJob,
+    Schedule,
     ScheduleType,
+    TelegramUser,
 )
-from providers import list_providers
 
 
 class TestEnums:
     """Tests for model enums."""
 
-    def test_provider_type_values(self):
-        """ProviderType compatibility enum should match the provider registry."""
-        assert [provider.value for provider in ProviderType] == list_providers()
+    def test_provider_type_enum_is_not_kept(self):
+        """Provider registry is the single provider list, not a model enum."""
+        assert not hasattr(models_module, "ProviderType")
 
     def test_schedule_type_values(self):
         """ScheduleType should have expected values."""
         assert ScheduleType.ONCE.value == "once"
         assert ScheduleType.CRON.value == "cron"
+
+    def test_legacy_duration_mode_enum_is_not_kept(self):
+        """Legacy duration_mode values are persisted strings, not a supported enum API."""
+        assert not hasattr(models_module, "DurationMode")
 
     def test_job_status_values(self):
         """JobStatus should have all expected states."""
@@ -62,60 +68,55 @@ class TestEnums:
         assert ErrorCode.FFMPEG_ERROR.value == "FFMPEG_ERROR"
 
 
+class TestModelSerializationBoundary:
+    """Tests for ORM model serialization ownership."""
+
+    def test_api_models_do_not_expose_generic_to_dict_serializers(self):
+        """API responses should use explicit route schemas, not ORM-wide serializers."""
+        model_classes = [Meeting, Schedule, RecordingJob, TelegramUser, DetectionLog]
+
+        for model_class in model_classes:
+            assert not hasattr(model_class, "to_dict")
+
+
 class TestScheduleEffectiveMethods:
     """Tests for Schedule.get_effective_* methods."""
 
     def test_get_effective_meeting_code_with_override(self):
         """Should return override when set."""
-        meeting = Mock()
-        meeting.meeting_code = "default-room"
+        schedule = Schedule(
+            meeting=Meeting(meeting_code="default-room"),
+            override_meeting_code="override-room",
+        )
 
-        schedule = Mock()
-        schedule.meeting = meeting
-        schedule.override_meeting_code = "override-room"
-
-        # Simulate the method logic
-        result = schedule.override_meeting_code or meeting.meeting_code
-        assert result == "override-room"
+        assert schedule.get_effective_meeting_code() == "override-room"
 
     def test_get_effective_meeting_code_without_override(self):
         """Should return meeting default when no override."""
-        meeting = Mock()
-        meeting.meeting_code = "default-room"
+        schedule = Schedule(
+            meeting=Meeting(meeting_code="default-room"),
+            override_meeting_code=None,
+        )
 
-        schedule = Mock()
-        schedule.meeting = meeting
-        schedule.override_meeting_code = None
-
-        # Simulate the method logic
-        result = schedule.override_meeting_code or meeting.meeting_code
-        assert result == "default-room"
+        assert schedule.get_effective_meeting_code() == "default-room"
 
     def test_get_effective_display_name_with_override(self):
         """Should return override when set."""
-        meeting = Mock()
-        meeting.default_display_name = "Default Bot"
+        schedule = Schedule(
+            meeting=Meeting(default_display_name="Default Bot"),
+            override_display_name="Custom Bot",
+        )
 
-        schedule = Mock()
-        schedule.meeting = meeting
-        schedule.override_display_name = "Custom Bot"
-
-        # Simulate the method logic
-        result = schedule.override_display_name or meeting.default_display_name
-        assert result == "Custom Bot"
+        assert schedule.get_effective_display_name() == "Custom Bot"
 
     def test_get_effective_display_name_without_override(self):
         """Should return meeting default when no override."""
-        meeting = Mock()
-        meeting.default_display_name = "Default Bot"
+        schedule = Schedule(
+            meeting=Meeting(default_display_name="Default Bot"),
+            override_display_name=None,
+        )
 
-        schedule = Mock()
-        schedule.meeting = meeting
-        schedule.override_display_name = None
-
-        # Simulate the method logic
-        result = schedule.override_display_name or meeting.default_display_name
-        assert result == "Default Bot"
+        assert schedule.get_effective_display_name() == "Default Bot"
 
 
 class TestTelegramUserDisplayName:
@@ -123,72 +124,44 @@ class TestTelegramUserDisplayName:
 
     def test_display_name_with_username(self):
         """Should return @username when username is set."""
-        user = Mock()
-        user.username = "testuser"
-        user.first_name = "Test"
-        user.last_name = "User"
-        user.chat_id = 12345
+        user = TelegramUser(
+            username="testuser",
+            first_name="Test",
+            last_name="User",
+            chat_id=12345,
+        )
 
-        # Simulate the property logic
-        if user.username:
-            result = f"@{user.username}"
-        elif user.first_name:
-            result = user.first_name + (f" {user.last_name}" if user.last_name else "")
-        else:
-            result = f"User {user.chat_id}"
-
-        assert result == "@testuser"
+        assert user.display_name == "@testuser"
 
     def test_display_name_with_first_name_only(self):
         """Should return first_name when no username."""
-        user = Mock()
-        user.username = None
-        user.first_name = "John"
-        user.last_name = None
-        user.chat_id = 12345
+        user = TelegramUser(
+            username=None,
+            first_name="John",
+            last_name=None,
+            chat_id=12345,
+        )
 
-        # Simulate the property logic
-        if user.username:
-            result = f"@{user.username}"
-        elif user.first_name:
-            result = user.first_name + (f" {user.last_name}" if user.last_name else "")
-        else:
-            result = f"User {user.chat_id}"
-
-        assert result == "John"
+        assert user.display_name == "John"
 
     def test_display_name_with_full_name(self):
         """Should return first_name + last_name when available."""
-        user = Mock()
-        user.username = None
-        user.first_name = "John"
-        user.last_name = "Doe"
-        user.chat_id = 12345
+        user = TelegramUser(
+            username=None,
+            first_name="John",
+            last_name="Doe",
+            chat_id=12345,
+        )
 
-        # Simulate the property logic
-        if user.username:
-            result = f"@{user.username}"
-        elif user.first_name:
-            result = user.first_name + (f" {user.last_name}" if user.last_name else "")
-        else:
-            result = f"User {user.chat_id}"
-
-        assert result == "John Doe"
+        assert user.display_name == "John Doe"
 
     def test_display_name_fallback_to_chat_id(self):
         """Should return 'User {chat_id}' when no name info."""
-        user = Mock()
-        user.username = None
-        user.first_name = None
-        user.last_name = None
-        user.chat_id = 12345
+        user = TelegramUser(
+            username=None,
+            first_name=None,
+            last_name=None,
+            chat_id=12345,
+        )
 
-        # Simulate the property logic
-        if user.username:
-            result = f"@{user.username}"
-        elif user.first_name:
-            result = user.first_name + (f" {user.last_name}" if user.last_name else "")
-        else:
-            result = f"User {user.chat_id}"
-
-        assert result == "User 12345"
+        assert user.display_name == "User 12345"

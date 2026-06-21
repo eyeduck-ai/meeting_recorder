@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import auth
-from api.routes import ui, ui_common
+from api.routes import ui, ui_common, ui_job_diagnostics
 from database.models import JobStatus
 from database.session import get_db
 
@@ -72,13 +72,13 @@ def ui_client_factory(monkeypatch, mock_settings):
 def test_read_text_excerpt_returns_tail_when_file_is_large(tmp_path):
     """Large files should be truncated to the last 64 KiB."""
     log_path = tmp_path / "console.log"
-    content = ("A" * 1024) + ("B" * (ui.JOB_LOG_EXCERPT_BYTES + 128))
+    content = ("A" * 1024) + ("B" * (ui_job_diagnostics.JOB_LOG_EXCERPT_BYTES + 128))
     log_path.write_text(content, encoding="utf-8")
 
-    excerpt, truncated = ui._read_text_excerpt(log_path)
+    excerpt, truncated = ui_job_diagnostics._read_text_excerpt(log_path)
 
     assert truncated is True
-    assert excerpt == content[-ui.JOB_LOG_EXCERPT_BYTES :]
+    assert excerpt == content[-ui_job_diagnostics.JOB_LOG_EXCERPT_BYTES :]
 
 
 def test_resolve_job_log_path_rejects_unknown_or_escaped_names(tmp_path):
@@ -88,9 +88,9 @@ def test_resolve_job_log_path_rejects_unknown_or_escaped_names(tmp_path):
     (diagnostics_dir / "console.log").write_text("console output", encoding="utf-8")
     job = _make_job(JobStatus.FAILED.value, str(diagnostics_dir))
 
-    assert ui._resolve_job_log_path(job, "console.log") == (diagnostics_dir / "console.log").resolve()
-    assert ui._resolve_job_log_path(job, "app.log") is None
-    assert ui._resolve_job_log_path(job, "../console.log") is None
+    assert ui_job_diagnostics._resolve_job_log_path(job, "console.log") == (diagnostics_dir / "console.log").resolve()
+    assert ui_job_diagnostics._resolve_job_log_path(job, "app.log") is None
+    assert ui_job_diagnostics._resolve_job_log_path(job, "../console.log") is None
 
 
 def test_jobs_detail_renders_failure_summary_and_logs(ui_client_factory, mock_settings, tmp_path):

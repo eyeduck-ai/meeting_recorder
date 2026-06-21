@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 from config.settings import get_settings
@@ -18,9 +19,44 @@ def derive_mp4_path(input_path: Path) -> Path:
     return input_path.with_suffix(".mp4")
 
 
-def derive_upload_mp4_path(input_path: Path) -> Path:
-    """Derive a temporary upload-transcode MP4 path from a canonical recording."""
-    return input_path.with_name(f"{input_path.stem}.upload.mp4")
+def recording_file_variants(path: Path) -> tuple[Path, ...]:
+    """Return compatible local recording file variants for an MKV/MP4 artifact."""
+    variants = {path}
+    if path.suffix.lower() == ".mkv":
+        variants.add(path.with_suffix(".mp4"))
+    elif path.suffix.lower() == ".mp4":
+        variants.add(path.with_suffix(".mkv"))
+    return tuple(sorted(variants))
+
+
+def delete_recording_artifacts(
+    candidates: Iterable[Path | None],
+    *,
+    preserve_path: Path | None = None,
+) -> tuple[tuple[Path, ...], tuple[tuple[Path, OSError], ...]]:
+    """Best-effort delete recording artifacts while preserving optional raw MKV/MP4 variants."""
+    deleted: list[Path] = []
+    errors: list[tuple[Path, OSError]] = []
+    seen: set[Path] = set()
+    preserved = set(recording_file_variants(preserve_path)) if preserve_path is not None else set()
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        for artifact in recording_file_variants(candidate):
+            if artifact in seen:
+                continue
+            seen.add(artifact)
+            if artifact in preserved:
+                continue
+            try:
+                if artifact.exists():
+                    artifact.unlink()
+                    deleted.append(artifact)
+            except OSError as exc:
+                errors.append((artifact, exc))
+
+    return tuple(deleted), tuple(errors)
 
 
 def pick_preferred_video_path(input_path: Path) -> Path:
@@ -39,10 +75,6 @@ def _is_mp4_fresh(input_path: Path, mp4_path: Path) -> bool:
         return False
 
 
-async def _is_valid_fresh_mp4(input_path: Path, mp4_path: Path) -> bool:
-    return _is_mp4_fresh(input_path, mp4_path) and await validate_mp4_file(mp4_path)
-
-
 async def ensure_canonical_mp4(
     input_path: Path,
     remux_log_path: Path | None = None,
@@ -52,7 +84,7 @@ async def ensure_canonical_mp4(
         return input_path if await validate_mp4_file(input_path) else None
 
     mp4_path = derive_mp4_path(input_path)
-    if mp4_path.exists() and await _is_valid_fresh_mp4(input_path, mp4_path):
+    if mp4_path.exists() and _is_mp4_fresh(input_path, mp4_path) and await validate_mp4_file(mp4_path):
         return mp4_path
 
     return await remux_to_mp4(input_path, mp4_path, remux_log_path)
@@ -76,7 +108,7 @@ async def ensure_upload_mp4(
     if not settings.ffmpeg_transcode_on_upload:
         return source_path if await validate_mp4_file(source_path) else None
 
-    upload_path = derive_upload_mp4_path(source_path)
+    upload_path = source_path.with_name(f"{source_path.stem}.upload.mp4")
     return await transcode_to_mp4(
         input_path=source_path,
         output_path=upload_path,
@@ -85,21 +117,6 @@ async def ensure_upload_mp4(
         audio_bitrate=settings.ffmpeg_transcode_audio_bitrate,
         video_bitrate=settings.ffmpeg_transcode_video_bitrate,
         log_path=transcode_log_path or remux_log_path,
-        progress_callback=progress_callback,
-    )
-
-
-async def ensure_mp4(
-    input_path: Path,
-    remux_log_path: Path | None = None,
-    transcode_log_path: Path | None = None,
-    progress_callback=None,
-) -> Path | None:
-    """Backward-compatible upload MP4 helper."""
-    return await ensure_upload_mp4(
-        input_path,
-        remux_log_path=remux_log_path,
-        transcode_log_path=transcode_log_path,
         progress_callback=progress_callback,
     )
 

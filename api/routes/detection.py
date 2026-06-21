@@ -26,6 +26,21 @@ def _summary_count(condition):
     return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
 
 
+def _detection_log_dict(log: DetectionLog) -> dict:
+    """Build the detection log API/export payload."""
+    return {
+        "id": log.id,
+        "job_id": log.job_id,
+        "detector_type": log.detector_type,
+        "detected": log.detected,
+        "confidence": log.confidence,
+        "reason": log.reason,
+        "attempt_no": log.attempt_no,
+        "was_accurate": log.was_accurate,
+        "triggered_at": log.triggered_at.isoformat() if log.triggered_at else None,
+    }
+
+
 @router.get("/logs")
 async def get_detection_logs(
     db: Session = Depends(get_db),
@@ -65,7 +80,7 @@ async def get_detection_logs(
                 "accurate": int(summary_row.accurate or 0),
                 "inaccurate": int(summary_row.inaccurate or 0),
             },
-            "logs": [log.to_dict() for log in logs],
+            "logs": [_detection_log_dict(log) for log in logs],
         }
     )
 
@@ -89,7 +104,7 @@ async def export_detection_logs(
         .order_by(DetectionLog.triggered_at.desc())
         .all()
     )
-    data = [log.to_dict() for log in logs]
+    data = [_detection_log_dict(log) for log in logs]
 
     if format == "csv":
         # Generate CSV

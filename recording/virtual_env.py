@@ -5,17 +5,9 @@ import signal
 import subprocess
 from dataclasses import dataclass, field
 
+from recording import pactl
+
 logger = logging.getLogger(__name__)
-
-
-def _pactl_short_names(output: str) -> set[str]:
-    """Return exact device names from `pactl list ... short` output."""
-    names = set()
-    for line in output.splitlines():
-        columns = line.split("\t")
-        if len(columns) >= 2 and columns[1]:
-            names.add(columns[1])
-    return names
 
 
 @dataclass
@@ -402,7 +394,7 @@ class VirtualEnvironment:
                 timeout=5,
             )
 
-            if self.config.pulse_sink_name not in _pactl_short_names(sink_result.stdout):
+            if self.config.pulse_sink_name not in pactl.short_names(sink_result.stdout):
                 await self._create_pulse_sink()
                 sink_result = subprocess.run(
                     ["pactl", "list", "sinks", "short"],
@@ -410,7 +402,7 @@ class VirtualEnvironment:
                     text=True,
                     timeout=5,
                 )
-                if self.config.pulse_sink_name not in _pactl_short_names(sink_result.stdout):
+                if self.config.pulse_sink_name not in pactl.short_names(sink_result.stdout):
                     logger.warning(f"Virtual audio sink not ready: {self.config.pulse_sink_name}")
                     return
 
@@ -420,7 +412,7 @@ class VirtualEnvironment:
                 text=True,
                 timeout=5,
             )
-            if self.pulse_monitor not in _pactl_short_names(source_result.stdout):
+            if self.pulse_monitor not in pactl.short_names(source_result.stdout):
                 logger.warning(f"Virtual audio monitor source not ready: {self.pulse_monitor}")
                 return
 

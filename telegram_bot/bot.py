@@ -31,11 +31,6 @@ async def get_bot() -> Bot | None:
     return _bot
 
 
-def get_application() -> Application | None:
-    """Get the application instance."""
-    return _application
-
-
 async def _set_bot_commands(bot: Bot):
     """Set bot commands for the menu."""
     commands = [

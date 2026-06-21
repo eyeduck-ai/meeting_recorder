@@ -67,17 +67,9 @@ class TestJobRepository:
         mock_query.order_by.return_value.offset.assert_called_with(5)
         mock_query.order_by.return_value.offset.return_value.limit.assert_called_with(10)
 
-    def test_get_by_status(self):
-        """Should return jobs filtered by status."""
-        mock_session = Mock()
-        mock_jobs = [Mock(), Mock()]
-        mock_session.query.return_value.filter.return_value.all.return_value = mock_jobs
-
-        repo = JobRepository(mock_session)
-        result = repo.get_by_status("recording")
-
-        assert result == mock_jobs
-        mock_session.query.assert_called_once()
+    def test_repository_does_not_keep_unused_status_filter(self):
+        """Status filtering should stay at explicit query call sites."""
+        assert not hasattr(JobRepository, "get_by_status")
 
     def test_update_status_success(self):
         """Should update status and return True."""

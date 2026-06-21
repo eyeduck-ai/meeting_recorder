@@ -72,9 +72,6 @@ class RuntimeResourceAllocator:
             self._available_displays.append(lease.display_num)
             self._available_displays.sort()
 
-    def is_allocated(self, display_num: int) -> bool:
-        return any(lease.display_num == display_num for lease in self._leases.values())
-
     def _sanitize_job_id(self, job_id: str) -> str:
         value = re.sub(r"[^A-Za-z0-9_]", "_", str(job_id))
         return value[:40] or "job"

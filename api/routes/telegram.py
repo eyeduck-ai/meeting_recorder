@@ -1,7 +1,7 @@
 """Telegram API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from config.settings import get_settings
@@ -10,13 +10,10 @@ from database.session import get_db
 from utils.timezone import utc_now
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
-settings = get_settings()
 
 
 class TelegramUserResponse(BaseModel):
     """Telegram user response model."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     chat_id: int
@@ -32,6 +29,26 @@ class TelegramUserResponse(BaseModel):
     notify_on_upload: bool
     created_at: str | None
     last_interaction_at: str | None
+
+
+def _user_response(user: TelegramUser) -> TelegramUserResponse:
+    """Build the API response without depending on ORM-wide serialization."""
+    return TelegramUserResponse(
+        id=user.id,
+        chat_id=user.chat_id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        approved=user.approved,
+        approved_by=user.approved_by,
+        approved_at=user.approved_at.isoformat() if user.approved_at else None,
+        notify_on_start=user.notify_on_start,
+        notify_on_complete=user.notify_on_complete,
+        notify_on_failure=user.notify_on_failure,
+        notify_on_upload=user.notify_on_upload,
+        created_at=user.created_at.isoformat() if user.created_at else None,
+        last_interaction_at=user.last_interaction_at.isoformat() if user.last_interaction_at else None,
+    )
 
 
 class ApproveUserRequest(BaseModel):
@@ -52,6 +69,7 @@ class UpdateNotificationsRequest(BaseModel):
 @router.get("/status")
 async def get_telegram_status():
     """Get Telegram bot status."""
+    settings = get_settings()
     configured = bool(settings.telegram_bot_token)
 
     return {
@@ -70,14 +88,14 @@ async def list_users(
     if approved_only:
         query = query.filter(TelegramUser.approved == True)
     users = query.all()
-    return [TelegramUserResponse(**u.to_dict()) for u in users]
+    return [_user_response(user) for user in users]
 
 
 @router.get("/users/pending", response_model=list[TelegramUserResponse])
 async def list_pending_users(db: Session = Depends(get_db)):
     """List users pending approval."""
     users = db.query(TelegramUser).filter(TelegramUser.approved == False).order_by(TelegramUser.created_at.desc()).all()
-    return [TelegramUserResponse(**u.to_dict()) for u in users]
+    return [_user_response(user) for user in users]
 
 
 @router.post("/users/{user_id}/approve")

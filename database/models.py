@@ -6,20 +6,7 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, Str
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.base import Base
-from database.migrations import run_schema_migrations as _run_schema_migrations  # noqa: F401
-from database.session import get_db as get_db
-from database.session import get_engine as get_engine
-from database.session import get_session_local as get_session_local
-from database.session import init_db as init_db
 from utils.timezone import utc_now
-
-
-class ProviderType(StrEnum):
-    """Supported meeting providers."""
-
-    JITSI = "jitsi"
-    WEBEX = "webex"
-    ZOOM = "zoom"
 
 
 class ScheduleType(StrEnum):
@@ -27,13 +14,6 @@ class ScheduleType(StrEnum):
 
     ONCE = "once"
     CRON = "cron"
-
-
-class DurationMode(StrEnum):
-    """Legacy duration mode values retained for persisted schedule compatibility."""
-
-    FIXED = "fixed"  # Use fixed duration_sec
-    AUTO = "auto"  # Legacy provider auto-detect; migrated to fixed smart-boundary behavior
 
 
 class JobStatus(StrEnum):
@@ -94,7 +74,7 @@ class Meeting(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    provider: Mapped[str] = mapped_column(String(32), default=ProviderType.JITSI.value)
+    provider: Mapped[str] = mapped_column(String(32), default="jitsi")
 
     # Meeting details
     site_base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -116,22 +96,6 @@ class Meeting(Base):
         "Schedule", back_populates="meeting", cascade="all, delete-orphan"
     )
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "provider": self.provider,
-            "site_base_url": self.site_base_url,
-            "meeting_code": self.meeting_code,
-            "join_url": self.join_url,
-            "has_password": self.has_password,
-            "default_display_name": self.default_display_name,
-            "default_guest_name": self.default_guest_name,
-            "default_guest_email": self.default_guest_email,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-        }
-
     @property
     def has_password(self) -> bool:
         """Return whether the meeting has a stored password."""
@@ -150,7 +114,7 @@ class Schedule(Base):
     schedule_type: Mapped[str] = mapped_column(String(32), default=ScheduleType.ONCE.value)
     start_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_sec: Mapped[int] = mapped_column(Integer, default=4200)
-    duration_mode: Mapped[str] = mapped_column(String(32), default=DurationMode.FIXED.value)  # legacy; always fixed
+    duration_mode: Mapped[str] = mapped_column(String(32), default="fixed")  # legacy; always fixed
     cron_expression: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Recording settings
@@ -202,42 +166,6 @@ class Schedule(Base):
 
     # Relationships
     meeting: Mapped["Meeting"] = relationship("Meeting", back_populates="schedules")
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "meeting_id": self.meeting_id,
-            "schedule_type": self.schedule_type,
-            "start_time": self.start_time.isoformat() if self.start_time else None,
-            "duration_sec": self.duration_sec,
-            "duration_mode": self.duration_mode,
-            "cron_expression": self.cron_expression,
-            "lobby_wait_sec": self.lobby_wait_sec,
-            "layout_preset": self.layout_preset,
-            "resolution_w": self.resolution_w,
-            "resolution_h": self.resolution_h,
-            "override_meeting_code": self.override_meeting_code,
-            "override_display_name": self.override_display_name,
-            "youtube_enabled": self.youtube_enabled,
-            "youtube_privacy": self.youtube_privacy,
-            "early_join_sec": self.early_join_sec,
-            "min_duration_sec": self.min_duration_sec,
-            "stillness_timeout_sec": self.stillness_timeout_sec,
-            "auto_detect_mode": self.auto_detect_mode,
-            "dry_run": self.dry_run,
-            "smart_trim_enabled": self.smart_trim_enabled,
-            "dynamic_extension_enabled": self.dynamic_extension_enabled,
-            "dynamic_extension_idle_sec": self.dynamic_extension_idle_sec,
-            "dynamic_extension_max_sec": self.dynamic_extension_max_sec,
-            "enabled": self.enabled,
-            "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
-            "last_triggered_at": self.last_triggered_at.isoformat() if self.last_triggered_at else None,
-            "last_started_at": self.last_started_at.isoformat() if self.last_started_at else None,
-            "last_completed_at": self.last_completed_at.isoformat() if self.last_completed_at else None,
-            "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-        }
 
     def get_effective_meeting_code(self) -> str:
         """Get meeting code (override or default from meeting)."""
@@ -322,55 +250,6 @@ class RecordingJob(Base):
         String(32), nullable=True
     )  # 'completed' | 'auto_detected' | 'canceled' | 'failed' | 'timeout'
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        return {
-            "id": self.id,
-            "job_id": self.job_id,
-            "provider": self.provider,
-            "meeting_code": self.meeting_code,
-            "display_name": self.display_name,
-            "base_url": self.base_url,
-            "duration_sec": self.duration_sec,
-            "lobby_wait_sec": self.lobby_wait_sec,
-            "status": self.status,
-            "attempt_no": self.attempt_no,
-            "retry_count": self.retry_count,
-            "error_code": self.error_code,
-            "error_message": self.error_message,
-            "failure_stage": self.failure_stage,
-            "last_ffmpeg_exit_code": self.last_ffmpeg_exit_code,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "started_at": self.started_at.isoformat() if self.started_at else None,
-            "joined_at": self.joined_at.isoformat() if self.joined_at else None,
-            "recording_started_at": self.recording_started_at.isoformat() if self.recording_started_at else None,
-            "recording_stopped_at": self.recording_stopped_at.isoformat() if self.recording_stopped_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "youtube_uploaded_at": self.youtube_uploaded_at.isoformat() if self.youtube_uploaded_at else None,
-            "output_path": self.output_path,
-            "raw_output_path": self.raw_output_path,
-            "trimmed_output_path": self.trimmed_output_path,
-            "file_size": self.file_size,
-            "duration_actual_sec": self.duration_actual_sec,
-            "local_recording_deleted_at": self.local_recording_deleted_at.isoformat()
-            if self.local_recording_deleted_at
-            else None,
-            "local_recording_cleanup_reason": self.local_recording_cleanup_reason,
-            "trim_start_sec": self.trim_start_sec,
-            "trim_end_sec": self.trim_end_sec,
-            "trim_status": self.trim_status,
-            "trim_reason": self.trim_reason,
-            "dynamic_extension_stop_reason": self.dynamic_extension_stop_reason,
-            "diagnostic_dir": self.diagnostic_dir,
-            "has_screenshot": self.has_screenshot,
-            "has_html_dump": self.has_html_dump,
-            "has_console_log": self.has_console_log,
-            "youtube_enabled": self.youtube_enabled,
-            "youtube_video_id": self.youtube_video_id,
-            "end_reason": self.end_reason,
-            "runtime_summary": self.runtime_summary,
-        }
-
     @property
     def runtime_summary(self) -> dict | None:
         """Return the parsed runtime summary payload."""
@@ -408,24 +287,6 @@ class TelegramUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
     last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "chat_id": self.chat_id,
-            "username": self.username,
-            "first_name": self.first_name,
-            "last_name": self.last_name,
-            "approved": self.approved,
-            "approved_by": self.approved_by,
-            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
-            "notify_on_start": self.notify_on_start,
-            "notify_on_complete": self.notify_on_complete,
-            "notify_on_failure": self.notify_on_failure,
-            "notify_on_upload": self.notify_on_upload,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "last_interaction_at": self.last_interaction_at.isoformat() if self.last_interaction_at else None,
-        }
 
     @property
     def display_name(self) -> str:
@@ -466,16 +327,3 @@ class DetectionLog(Base):
     attempt_no: Mapped[int] = mapped_column(Integer, default=1)
     was_accurate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # For manual review
     triggered_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "job_id": self.job_id,
-            "detector_type": self.detector_type,
-            "detected": self.detected,
-            "confidence": self.confidence,
-            "reason": self.reason,
-            "attempt_no": self.attempt_no,
-            "was_accurate": self.was_accurate,
-            "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
-        }

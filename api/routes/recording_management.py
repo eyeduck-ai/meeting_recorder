@@ -67,14 +67,19 @@ async def cleanup_recordings(
     max_age_days: int = Query(30, ge=1),
     max_count: int | None = Query(None, ge=1),
     dry_run: bool = Query(True),
+    db: Session = Depends(get_db),
 ):
-    """Clean up old recordings."""
-    manager = get_recording_manager()
-    result = await manager.cleanup_old_recordings(
-        max_age_days=max_age_days,
-        max_count=max_count,
-        dry_run=dry_run,
-    )
+    """Deprecated compatibility alias for storage maintenance."""
+    result = await get_storage_maintenance_service().run(db, dry_run=dry_run)
+    result["deprecated_endpoint"] = {
+        "path": "/api/recordings/cleanup",
+        "replacement": "/api/recordings/maintenance",
+        "message": "Legacy max_age_days/max_count file-age cleanup is disabled; this endpoint now runs storage maintenance.",
+        "ignored_parameters": {
+            "max_age_days": max_age_days,
+            "max_count": max_count,
+        },
+    }
     return JSONResponse(content=result)
 
 
@@ -92,13 +97,29 @@ async def run_storage_maintenance(
 async def check_disk_space(
     threshold_gb: float = Query(10.0, ge=1.0),
     auto_cleanup: bool = Query(False),
+    db: Session = Depends(get_db),
 ):
     """Check disk space and optionally trigger cleanup."""
     manager = get_recording_manager()
-    result = await manager.check_disk_space(
-        threshold_gb=threshold_gb,
-        auto_cleanup=auto_cleanup,
-    )
+    usage = manager.get_disk_usage()
+    result = {
+        "status": "ok",
+        "usage": usage,
+        "cleanup_performed": False,
+        "cleanup_result": None,
+    }
+
+    if usage["free_gb"] < threshold_gb:
+        result["status"] = "low"
+        if auto_cleanup:
+            cleanup_result = await get_storage_maintenance_service().run(db, dry_run=False)
+            result["cleanup_performed"] = True
+            result["cleanup_result"] = cleanup_result
+            result["cleanup_endpoint"] = "/api/recordings/maintenance"
+            result["usage_after_cleanup"] = manager.get_disk_usage()
+            if result["usage_after_cleanup"]["free_gb"] >= threshold_gb:
+                result["status"] = "ok"
+
     return JSONResponse(content=result)
 
 
@@ -177,16 +198,16 @@ async def save_notification_config(
 
     db.commit()
 
-    # Reload notification service by resetting the global instance
-    import services.notification as notification_module
+    # Reload notification service after saving config.
+    from services.notification import reset_notification_service
 
-    notification_module._notification_service = None
+    reset_notification_service()
 
     return JSONResponse(content={"status": "ok", "message": "Configuration saved"})
 
 
 @router.post("/test-email")
-async def test_email_notification(db: Session = Depends(get_db)):
+async def test_email_notification():
     """Send a test email notification."""
     from services.notification import get_notification_service
 
@@ -213,7 +234,7 @@ async def test_email_notification(db: Session = Depends(get_db)):
 
 
 @router.post("/test-webhook")
-async def test_webhook_notification(db: Session = Depends(get_db)):
+async def test_webhook_notification():
     """Send a test webhook notification."""
     from services.notification import get_notification_service
 

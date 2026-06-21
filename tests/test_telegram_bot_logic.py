@@ -1,4 +1,3 @@
-import ast
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -134,14 +133,13 @@ def test_validate_duration_minutes_respects_bounds(monkeypatch):
     assert _validate_duration_minutes(120) is None
 
 
-def test_conversations_module_is_compatibility_reexport_only():
-    source = Path("telegram_bot/conversations.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+def test_handlers_import_conversation_owner_modules_directly():
+    source = Path("telegram_bot/handlers.py").read_text(encoding="utf-8")
 
-    forbidden = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-    assert not any(isinstance(node, forbidden) for node in tree.body)
-    assert "get_create_schedule_conversation" in source
-    assert "_parse_duration_minutes" in source
+    assert "telegram_bot.conversations" not in source
+    assert "telegram_bot.conversation_create_schedule" in source
+    assert "telegram_bot.conversation_edit_schedule" in source
+    assert "telegram_bot.conversation_create_meeting" in source
 
 
 def test_conversation_modules_only_share_common_helpers():
@@ -438,7 +436,7 @@ async def test_stop_handler_with_job_id_cancels_queued_or_retry_job(
 
 @pytest.mark.asyncio
 async def test_list_handler_reports_queue_and_retry_waiting_counts(monkeypatch, telegram_session_local):
-    worker = SimpleNamespace(is_busy=False, active_jobs=[])
+    worker = SimpleNamespace(active_jobs=[])
     runner = SimpleNamespace(queue_length=2, retry_waiting_count=1)
     monkeypatch.setattr("recording.worker.get_worker", lambda: worker)
     monkeypatch.setattr("scheduling.job_runner.get_job_runner", lambda: runner)

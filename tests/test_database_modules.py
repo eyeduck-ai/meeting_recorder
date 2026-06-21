@@ -79,7 +79,9 @@ def test_run_schema_migrations_adds_existing_compat_columns(tmp_path):
         assert {"attempt_no", "retry_count", "failure_stage", "last_ffmpeg_exit_code", "runtime_summary_json"} <= (
             job_columns
         )
-        assert {"last_triggered_at", "last_started_at", "last_completed_at"} <= schedule_columns
+        assert {"duration_mode", "dry_run", "last_triggered_at", "last_started_at", "last_completed_at"} <= (
+            schedule_columns
+        )
         assert "attempt_no" in detection_columns
     finally:
         engine.dispose()
@@ -215,8 +217,34 @@ def test_run_schema_migrations_migrates_legacy_auto_detect_schedules_once(tmp_pa
         engine.dispose()
 
 
-def test_models_run_schema_migrations_alias_remains_available():
-    from database.migrations import run_schema_migrations
-    from database.models import _run_schema_migrations
+def test_models_do_not_reexport_database_lifecycle_helpers():
+    import database.models as models
 
-    assert _run_schema_migrations is run_schema_migrations
+    for helper_name in (
+        "get_engine",
+        "get_session_local",
+        "get_db",
+        "init_db",
+        "_run_schema_migrations",
+    ):
+        assert not hasattr(models, helper_name)
+
+
+def test_migrations_do_not_keep_private_compat_aliases():
+    import database.migrations as migrations
+
+    for helper_name in (
+        "_has_column",
+        "_has_table",
+        "_ensure_column",
+        "_ensure_index",
+        "_migrate_legacy_auto_detect_schedules",
+        "_run_schema_migrations",
+    ):
+        assert not hasattr(migrations, helper_name)
+
+
+def test_session_module_does_not_keep_unused_context_manager():
+    import database.session as session_module
+
+    assert not hasattr(session_module, "get_db_session")

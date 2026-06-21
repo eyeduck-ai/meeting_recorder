@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from config.settings import Settings, get_settings
 from database.models import DetectionLog, JobStatus, RecordingJob
 from recording.mp4_validation import validate_mp4_file
-from recording.remux import derive_mp4_path, ensure_canonical_mp4, ensure_upload_mp4
+from recording.remux import derive_mp4_path, ensure_canonical_mp4, ensure_upload_mp4, recording_file_variants
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,10 @@ class StorageMaintenanceService:
         mutated = False
         vacuum_needed = False
 
-        mutated |= self._cleanup_uploaded_recordings(db, result, now=now, dry_run=dry_run)
+        uploaded_mutated = self._cleanup_uploaded_recordings(db, result, now=now, dry_run=dry_run)
+        mutated |= uploaded_mutated
+        if uploaded_mutated and not dry_run:
+            db.flush()
         mutated |= await self._canonicalize_legacy_recordings(db, result, dry_run=dry_run)
         mutated |= self._cleanup_diagnostics(db, result, now=now, dry_run=dry_run)
         self._cleanup_rotated_logs(result, now=now, dry_run=dry_run)
@@ -233,14 +236,6 @@ class StorageMaintenanceService:
 
     def _job_age_at(self, job: RecordingJob, path: Path) -> datetime | None:
         return ensure_utc(job.completed_at) or ensure_utc(job.created_at) or _file_mtime(path)
-
-    def _recording_variants(self, path: Path) -> list[Path]:
-        variants = {path}
-        if path.suffix.lower() == ".mkv":
-            variants.add(path.with_suffix(".mp4"))
-        elif path.suffix.lower() == ".mp4":
-            variants.add(path.with_suffix(".mkv"))
-        return sorted(variants)
 
     def _thumbnail_candidates(self, path: Path) -> list[Path]:
         thumbnails_dir = self.recordings_dir / "thumbnails"
@@ -289,7 +284,7 @@ class StorageMaintenanceService:
             if not age_at or age_at > cutoff:
                 continue
 
-            candidate_paths = self._recording_variants(output_path) + self._thumbnail_candidates(output_path)
+            candidate_paths = [*recording_file_variants(output_path), *self._thumbnail_candidates(output_path)]
             deleted_files, freed_bytes = self._delete_paths(candidate_paths, dry_run=dry_run)
             if not deleted_files:
                 continue
@@ -422,7 +417,7 @@ class StorageMaintenanceService:
             return
 
         for path in self.logs_dir.iterdir():
-            if not path.is_file() or path.name == "app.log":
+            if not path.is_file() or path.name in {"app.log", ".gitkeep"}:
                 continue
             mtime = _file_mtime(path)
             if not mtime or mtime > cutoff:

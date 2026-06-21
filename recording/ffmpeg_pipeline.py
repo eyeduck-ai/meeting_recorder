@@ -8,19 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import get_settings
+from recording import pactl
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
-
-
-def _pactl_short_names(output: str) -> set[str]:
-    """Return exact device names from `pactl list ... short` output."""
-    names = set()
-    for line in output.splitlines():
-        columns = line.split("\t")
-        if len(columns) >= 2 and columns[1]:
-            names.add(columns[1])
-    return names
 
 
 def _check_pulseaudio_available(audio_source: str) -> bool:
@@ -40,7 +31,7 @@ def _check_pulseaudio_available(audio_source: str) -> bool:
             capture_output=True,
             timeout=5,
         )
-        return audio_source in _pactl_short_names(result.stdout.decode())
+        return audio_source in pactl.short_names(result.stdout)
     except Exception as e:
         logger.debug(f"PulseAudio check failed: {e}")
         return False

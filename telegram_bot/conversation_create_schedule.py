@@ -18,7 +18,6 @@ from database.models import Meeting, ScheduleType
 from services.errors import NotFoundError, ValidationError
 from services.runtime_config import RuntimeConfigError
 from services.schedule_service import ScheduleCreateData, get_schedule_service
-from telegram_bot import get_db_session
 from telegram_bot.conversation_common import (
     _parse_duration_minutes,
     _parse_time_text,
@@ -33,6 +32,7 @@ from telegram_bot.keyboards import (
     get_time_inline_keyboard,
     get_youtube_inline_keyboard,
 )
+from telegram_bot.session import get_db_session
 from utils.timezone import from_local
 
 logger = logging.getLogger(__name__)

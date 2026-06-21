@@ -44,6 +44,10 @@ def storage_settings(tmp_path):
     )
 
 
+def test_storage_maintenance_does_not_redefine_recording_variants():
+    assert not hasattr(StorageMaintenanceService, "_recording_variants")
+
+
 def _create_job(db_session, **kwargs) -> RecordingJob:
     job = RecordingJob(
         job_id=kwargs.pop("job_id", "job123"),
@@ -159,6 +163,32 @@ async def test_cleanup_uploaded_recordings_requires_youtube_and_age(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_cleanup_uploaded_legacy_mkv_does_not_recanonicalize_deleted_source(db_session, storage_settings):
+    old_time = utc_now() - timedelta(days=15)
+    mkv_path = storage_settings.recordings_dir / "uploaded_old.mkv"
+    mp4_path = storage_settings.recordings_dir / "uploaded_old.mp4"
+    mkv_path.write_bytes(b"mkv-data")
+    mp4_path.write_bytes(b"mp4-data")
+    _create_job(
+        db_session,
+        output_path=str(mkv_path),
+        file_size=mkv_path.stat().st_size,
+        completed_at=old_time,
+        youtube_video_id="yt-old",
+    )
+
+    result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+
+    job = db_session.query(RecordingJob).filter(RecordingJob.job_id == "job123").first()
+    assert len(result["deleted_recordings"]) == 1
+    assert result["canonicalized"] == []
+    assert result["errors"] == []
+    assert not mkv_path.exists()
+    assert not mp4_path.exists()
+    assert job.local_recording_deleted_at is not None
+
+
+@pytest.mark.asyncio
 async def test_cleanup_diagnostics_deletes_old_dirs_and_clears_job_flags(db_session, storage_settings):
     old_time = utc_now() - timedelta(days=15)
     diagnostic_dir = storage_settings.diagnostics_dir / "job123"
@@ -189,17 +219,21 @@ async def test_cleanup_diagnostics_deletes_old_dirs_and_clears_job_flags(db_sess
 async def test_cleanup_rotated_logs_keeps_current_app_log(db_session, storage_settings):
     old_log = storage_settings.logs_dir / "app.log.1"
     current_log = storage_settings.logs_dir / "app.log"
+    keep_marker = storage_settings.logs_dir / ".gitkeep"
     old_log.write_text("old", encoding="utf-8")
     current_log.write_text("current", encoding="utf-8")
+    keep_marker.write_text("", encoding="utf-8")
     old_timestamp = (utc_now() - timedelta(days=15)).timestamp()
     os.utime(old_log, (old_timestamp, old_timestamp))
     os.utime(current_log, (old_timestamp, old_timestamp))
+    os.utime(keep_marker, (old_timestamp, old_timestamp))
 
     result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
 
     assert len(result["deleted_logs"]) == 1
     assert not old_log.exists()
     assert current_log.exists()
+    assert keep_marker.exists()
 
 
 @pytest.mark.asyncio

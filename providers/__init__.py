@@ -98,11 +98,6 @@ def list_provider_metadata() -> list[ProviderMetadata]:
     return [_metadata[name] for name in _registry.keys()]
 
 
-def provider_metadata_map() -> dict[str, ProviderMetadata]:
-    """Return provider metadata keyed by provider name."""
-    return {name: _metadata[name] for name in _registry.keys()}
-
-
 def provider_form_config_map() -> dict[str, dict]:
     """Return browser form config keyed by provider name."""
     return {metadata.name: metadata.form_config() for metadata in list_provider_metadata()}
@@ -184,6 +179,5 @@ __all__ = [
     "list_providers",
     "list_provider_metadata",
     "provider_form_config_map",
-    "provider_metadata_map",
     "validate_provider_name",
 ]

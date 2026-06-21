@@ -278,11 +278,6 @@ async def notify_recording_status(job: RecordingJob, status: str | JobStatus) ->
     return message_id
 
 
-async def notify_recording_started(job: RecordingJob) -> int | None:
-    """Backward-compatible wrapper for recording-stage notification."""
-    return await notify_recording_status(job, JobStatus.RECORDING)
-
-
 async def notify_recording_completed(job: RecordingJob) -> None:
     """Update notification to show recording completed."""
     phase = "uploading" if job.youtube_enabled else "completed"
@@ -342,28 +337,6 @@ async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> 
     await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated YouTube upload notification for job {job.job_id}")
-
-
-# Legacy functions for backward compatibility
-async def send_to_approved_users(message: str, notification_type: str = "all") -> None:
-    """Send a message to all approved users (legacy)."""
-    bot = await get_bot()
-    if bot is None:
-        return
-
-    chat_ids = await _get_approved_chat_ids(notification_type)
-    semaphore = asyncio.Semaphore(TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY)
-
-    async def send_one(chat_id: int) -> None:
-        async with semaphore:
-            await _telegram_call_with_timeout(
-                bot.send_message,
-                chat_id=chat_id,
-                text=message,
-                operation="send",
-            )
-
-    await asyncio.gather(*(send_one(chat_id) for chat_id in chat_ids), return_exceptions=True)
 
 
 async def send_to_user(chat_id: int, message: str) -> bool:

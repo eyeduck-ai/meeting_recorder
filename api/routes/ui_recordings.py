@@ -1,5 +1,6 @@
 """Web UI routes for completed recordings."""
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,66 +8,24 @@ from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from api.routes import ui_common
+from api.routes import ui_common, ui_recording_artifacts
 from database.models import JobStatus, RecordingJob
 from database.session import get_db
-from recording.remux import pick_preferred_video_path
+from recording.remux import delete_recording_artifacts
 
 router = APIRouter(tags=["ui"])
-
-
-def _recording_file_candidates(path: Path) -> set[Path]:
-    """Return compatible recording file variants for cleanup."""
-    candidates = {path}
-    if path.suffix.lower() == ".mkv":
-        candidates.add(path.with_suffix(".mp4"))
-    elif path.suffix.lower() == ".mp4":
-        candidates.add(path.with_suffix(".mkv"))
-    return candidates
-
-
-def _delete_recording_files(output_path: str) -> None:
-    """Best-effort delete for the primary recording file and remuxed sibling."""
-    file_path = Path(output_path)
-    for candidate in _recording_file_candidates(file_path):
-        if candidate.exists():
-            candidate.unlink()
+logger = logging.getLogger(__name__)
 
 
 def _delete_job_recording_files(job: RecordingJob) -> None:
     """Best-effort delete all local files for a completed job."""
-    for output_path in {job.output_path, job.raw_output_path, job.trimmed_output_path}:
-        if output_path:
-            _delete_recording_files(output_path)
-
-
-def _preferred_existing_output(job: RecordingJob) -> Path | None:
-    """Return the best local playback/download path for a job."""
-    if job.local_recording_deleted_at:
-        return None
-
-    for output_path in (job.output_path, job.trimmed_output_path, job.raw_output_path):
-        if not output_path:
-            continue
-        file_path = Path(output_path)
-        if file_path.exists():
-            preferred = pick_preferred_video_path(file_path)
-            return preferred if preferred.exists() else file_path
-        preferred = pick_preferred_video_path(file_path)
-        if preferred.exists():
-            return preferred
-    return None
-
-
-def _resolve_local_download_path(job: RecordingJob) -> Path | None:
-    """Return the downloadable local recording path if it still exists."""
-    return _preferred_existing_output(job)
-
-
-def _mark_trimmed_artifact_state(job: RecordingJob) -> None:
-    """Attach a display flag for trimmed files deleted after upload."""
-    trimmed_output_path = getattr(job, "trimmed_output_path", None)
-    job.trimmed_artifact_removed = bool(trimmed_output_path and not Path(trimmed_output_path).exists())
+    candidates = [
+        Path(output_path) if output_path else None
+        for output_path in (job.output_path, job.raw_output_path, job.trimmed_output_path)
+    ]
+    _deleted, errors = delete_recording_artifacts(candidates)
+    for candidate, exc in errors:
+        logger.warning("Error deleting file %s for %s: %s", candidate, job.job_id, exc)
 
 
 @router.get("/recordings", response_class=HTMLResponse)
@@ -84,10 +43,7 @@ async def recordings_list(request: Request, db: Session = Depends(get_db)):
         .all()
     )
     for job in jobs:
-        _mark_trimmed_artifact_state(job)
-
-    for job in jobs:
-        job.local_download_available = _resolve_local_download_path(job) is not None
+        ui_recording_artifacts.mark_recording_artifact_state(job)
 
     # Get YouTube status for upload button visibility
     uploader = get_youtube_uploader()
@@ -116,13 +72,7 @@ async def recordings_delete_all(db: Session = Depends(get_db)):
     )
 
     for job in jobs:
-        # Try to delete file from disk if it exists
-        try:
-            _delete_job_recording_files(job)
-        except Exception as e:
-            print(f"Error deleting files for {job.job_id}: {e}")
-
-        # Delete job from database
+        _delete_job_recording_files(job)
         db.delete(job)
 
     db.commit()
@@ -136,7 +86,7 @@ async def recordings_download(job_id: str, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Recording not found")
 
-    file_path = _resolve_local_download_path(job)
+    file_path = ui_recording_artifacts.preferred_existing_output(job)
     if not file_path:
         raise HTTPException(status_code=404, detail="Recording file not found")
 
@@ -154,13 +104,7 @@ async def recordings_delete(job_id: str, db: Session = Depends(get_db)):
     """Delete recording file and job."""
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     if job:
-        # Try to delete file from disk if it exists
-        try:
-            _delete_job_recording_files(job)
-        except Exception as e:
-            print(f"Error deleting files for {job.job_id}: {e}")
-
-        # Delete job from database
+        _delete_job_recording_files(job)
         db.delete(job)
         db.commit()
 

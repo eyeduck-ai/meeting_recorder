@@ -474,45 +474,6 @@ class SchedulerService:
         finally:
             session.close()
 
-    def get_next_run_time(self, schedule_id: int) -> datetime | None:
-        """Get next run time for a schedule.
-
-        Args:
-            schedule_id: Schedule ID
-
-        Returns:
-            Next run time or None
-        """
-        if not self._scheduler:
-            return None
-
-        job_id = f"schedule_{schedule_id}"
-        job = self._scheduler.get_job(job_id)
-        return job.next_run_time if job else None
-
-    def get_all_jobs(self) -> list[dict]:
-        """Get all scheduled jobs.
-
-        Returns:
-            List of job info dictionaries
-        """
-        if not self._scheduler:
-            return []
-
-        jobs = []
-        for job in self._scheduler.get_jobs():
-            if not job.id.startswith("schedule_") or job.id == "schedule_sync":
-                continue
-            jobs.append(
-                {
-                    "id": job.id,
-                    "name": job.name,
-                    "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
-                    "trigger": str(job.trigger),
-                }
-            )
-        return jobs
-
     async def trigger_schedule(self, schedule_id: int):
         """Manually trigger a schedule immediately.
 

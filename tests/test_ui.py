@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from api import auth
-from api.routes import health, ui, ui_common, ui_recordings, ui_schedules
+from api.routes import health, ui, ui_common, ui_jobs, ui_recording_artifacts, ui_recordings, ui_schedules
 from database.models import AppSettings, Base, Meeting, Schedule
 from database.session import get_db
 from scheduling.job_runner import QueueScheduleResult
@@ -28,6 +28,7 @@ def test_ui_child_routes_do_not_import_parent_ui_module():
         "api/routes/ui_schedules.py",
         "api/routes/ui_settings.py",
         "api/routes/ui_jobs.py",
+        "api/routes/ui_recording_artifacts.py",
         "api/routes/ui_recordings.py",
     ):
         source = (repo_root / route_file).read_text(encoding="utf-8")
@@ -141,16 +142,53 @@ def test_schedule_templates_do_not_render_legacy_auto_detect_controls():
 def test_trimmed_artifact_removed_flag_tracks_missing_trimmed_file(tmp_path):
     job = SimpleNamespace(trimmed_output_path=str(tmp_path / "recording.trimmed.mkv"))
 
-    ui_recordings._mark_trimmed_artifact_state(job)
+    ui_recording_artifacts.mark_trimmed_artifact_state(job)
 
     assert job.trimmed_artifact_removed is True
 
     existing = tmp_path / "existing.trimmed.mkv"
     existing.write_bytes(b"trimmed")
     job.trimmed_output_path = str(existing)
-    ui_recordings._mark_trimmed_artifact_state(job)
+    ui_recording_artifacts.mark_trimmed_artifact_state(job)
 
     assert job.trimmed_artifact_removed is False
+
+
+def test_recording_artifact_state_tracks_preferred_local_download(tmp_path):
+    mkv_path = tmp_path / "recording.mkv"
+    mp4_path = tmp_path / "recording.mp4"
+    mp4_path.write_bytes(b"mp4")
+    job = SimpleNamespace(
+        output_path=str(mkv_path),
+        trimmed_output_path=None,
+        raw_output_path=None,
+        local_recording_deleted_at=None,
+    )
+
+    assert ui_recording_artifacts.preferred_existing_output(job) == mp4_path
+
+    ui_recording_artifacts.mark_recording_artifact_state(job)
+
+    assert job.local_download_available is True
+    assert job.trimmed_artifact_removed is False
+
+    job.local_recording_deleted_at = object()
+    ui_recording_artifacts.mark_recording_artifact_state(job)
+
+    assert ui_recording_artifacts.preferred_existing_output(job) is None
+    assert job.local_download_available is False
+
+
+def test_trimmed_artifact_state_has_single_ui_owner():
+    assert not hasattr(ui_jobs, "_mark_trimmed_artifact_state")
+    assert not hasattr(ui_recordings, "_mark_trimmed_artifact_state")
+
+
+def test_recordings_route_does_not_keep_download_path_wrapper():
+    assert not hasattr(ui_recordings, "_resolve_local_download_path")
+    assert not hasattr(ui_recordings, "_preferred_existing_output")
+    assert not hasattr(ui_recordings, "_delete_recording_files")
+    assert not hasattr(ui_recordings, "recording_file_variants")
 
 
 @pytest.fixture

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from api.routes import ui_common
 from database.models import Meeting
 from database.session import get_db
-from providers import list_provider_metadata, provider_form_config_map, provider_metadata_map, validate_provider_name
+from providers import list_provider_metadata, provider_form_config_map, validate_provider_name
 from services.errors import NotFoundError
 from services.meeting_service import MeetingCreateData, get_meeting_service
 
@@ -24,7 +24,7 @@ async def meetings_list(request: Request, db: Session = Depends(get_db)):
         request,
         "meetings/list.html",
         meetings=meetings,
-        providers=provider_metadata_map(),
+        providers={provider.name: provider for provider in list_provider_metadata()},
     )
 
 

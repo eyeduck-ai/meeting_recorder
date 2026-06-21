@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from api.routes import ui_common, ui_job_diagnostics
+from api.routes import ui_common, ui_job_diagnostics, ui_recording_artifacts
 from api.runtime import (
     get_app_job_action_service,
     get_app_job_runner,
@@ -16,7 +16,7 @@ from api.runtime import (
 from database.models import JobStatus, RecordingJob
 from database.session import get_db
 from services.errors import NotFoundError, ServiceError, ValidationError
-from services.job_actions import ACTIVE_RECORDING_STATUSES, TERMINAL_JOB_STATUSES
+from services.job_actions import ACTIVE_RECORDING_STATUSES, TERMINAL_JOB_STATUSES, job_status_value
 
 router = APIRouter(tags=["ui"])
 
@@ -27,10 +27,6 @@ ACTIVE_FILTER_STATUSES = {
 }
 
 
-def _job_status_value(job: RecordingJob) -> str:
-    return job.status.value if hasattr(job.status, "value") else job.status
-
-
 def _raise_http_error(exc: Exception) -> None:
     if isinstance(exc, NotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -39,12 +35,6 @@ def _raise_http_error(exc: Exception) -> None:
     if isinstance(exc, ServiceError):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     raise exc
-
-
-def _mark_trimmed_artifact_state(job: RecordingJob) -> None:
-    """Attach a display flag for trimmed files deleted after upload."""
-    trimmed_output_path = getattr(job, "trimmed_output_path", None)
-    job.trimmed_artifact_removed = bool(trimmed_output_path and not Path(trimmed_output_path).exists())
 
 
 @router.get("/jobs", response_class=HTMLResponse)
@@ -97,8 +87,8 @@ async def jobs_detail(request: Request, job_id: str, db: Session = Depends(get_d
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    _mark_trimmed_artifact_state(job)
-    status_value = job.status.value if hasattr(job.status, "value") else job.status
+    ui_recording_artifacts.mark_trimmed_artifact_state(job)
+    status_value = job_status_value(job)
     failure_context = None
     job_logs: list[ui_job_diagnostics.JobLogView] = []
     if status_value in {JobStatus.FAILED.value, JobStatus.CANCELED.value}:
@@ -118,7 +108,7 @@ async def jobs_detail(request: Request, job_id: str, db: Session = Depends(get_d
         is_queued_job=job_id in runtime_snapshot.queued_job_ids,
         is_retry_waiting_job=job_id in runtime_snapshot.retry_after_by_job_id,
         retry_after_sec=runtime_snapshot.retry_after_by_job_id.get(job_id),
-        can_delete_job=_job_status_value(job) in TERMINAL_JOB_STATUSES,
+        can_delete_job=status_value in TERMINAL_JOB_STATUSES,
     )
 
 

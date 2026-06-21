@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 import api.routes.ui_dashboard as ui_dashboard_module
 import api.routes.ui_jobs as ui_jobs_module
+import services.job_runtime_state as job_runtime_state_module
 from api.routes.jobs import finish_job, get_active_recordings, get_current_recording, stop_job
 from api.routes.ui_jobs import (
     jobs_delete as ui_jobs_delete,
@@ -23,6 +24,7 @@ from api.routes.ui_jobs import (
 from database.migrations import run_schema_migrations
 from database.models import Base, ErrorCode, JobStatus
 from database.models import RecordingJob as RecordingJobModel
+from services.job_actions import JobActionService, job_status_value
 from utils.timezone import utc_now
 
 
@@ -84,6 +86,15 @@ def _capture_render_template(_request, name: str, **kwargs):
     return {"template": name, **kwargs}
 
 
+def test_job_status_value_has_single_owner():
+    job = _job("job-status", JobStatus.RECORDING.value, "room-status")
+
+    assert job_status_value(job) == JobStatus.RECORDING.value
+    assert not hasattr(ui_jobs_module, "_job_status_value")
+    assert not hasattr(job_runtime_state_module, "_status_value")
+    assert not hasattr(JobActionService, "_status_value")
+
+
 @pytest.mark.asyncio
 async def test_jobs_active_returns_all_worker_active_jobs_and_capacity(db_session):
     db_session.add(_job("job-a", JobStatus.RECORDING.value, "room-a"))
@@ -91,7 +102,6 @@ async def test_jobs_active_returns_all_worker_active_jobs_and_capacity(db_sessio
     db_session.commit()
     worker = SimpleNamespace(
         active_jobs=[SimpleNamespace(job_id="job-a"), SimpleNamespace(job_id="job-b")],
-        is_busy=True,
     )
     runner = SimpleNamespace(queue_length=3, max_concurrent_recordings=2, available_slots=0)
 
@@ -120,7 +130,6 @@ async def test_jobs_active_and_current_filter_worker_registry_to_active_statuses
             SimpleNamespace(job_id="job-uploading"),
             SimpleNamespace(job_id="job-succeeded"),
         ],
-        is_busy=True,
     )
     runner = SimpleNamespace(queue_length=0, max_concurrent_recordings=2, available_slots=1)
 
@@ -139,7 +148,7 @@ async def test_jobs_active_and_current_filter_worker_registry_to_active_statuses
 async def test_jobs_active_returns_queued_items(db_session):
     db_session.add(_job("job-q", JobStatus.QUEUED.value, "room-q"))
     db_session.commit()
-    worker = SimpleNamespace(active_jobs=[], is_busy=False)
+    worker = SimpleNamespace(active_jobs=[])
     runner = SimpleNamespace(
         queue_length=1,
         max_concurrent_recordings=2,
@@ -170,7 +179,7 @@ async def test_jobs_active_returns_queued_items(db_session):
 async def test_jobs_active_returns_retry_waiting_items_without_changing_queue_length(db_session):
     db_session.add(_job("job-r", JobStatus.QUEUED.value, "room-r"))
     db_session.commit()
-    worker = SimpleNamespace(active_jobs=[], is_busy=False)
+    worker = SimpleNamespace(active_jobs=[])
     runner = SimpleNamespace(
         queue_length=0,
         max_concurrent_recordings=2,
@@ -203,7 +212,6 @@ async def test_jobs_current_keeps_compat_shape_with_active_count(db_session):
     db_session.commit()
     worker = SimpleNamespace(
         active_jobs=[SimpleNamespace(job_id="job-a"), SimpleNamespace(job_id="job-b")],
-        is_busy=True,
     )
     runner = SimpleNamespace(queue_length=0, max_concurrent_recordings=2, available_slots=0)
 
@@ -218,7 +226,7 @@ async def test_jobs_current_keeps_compat_shape_with_active_count(db_session):
 async def test_jobs_current_ignores_finalizing_job_outside_worker_registry(db_session):
     db_session.add(_job("job-finalizing", JobStatus.FINALIZING.value, "room-finalizing"))
     db_session.commit()
-    worker = SimpleNamespace(active_jobs=[], is_busy=False)
+    worker = SimpleNamespace(active_jobs=[])
     runner = SimpleNamespace(queue_length=0, max_concurrent_recordings=2, available_slots=2)
 
     active_response = await get_active_recordings(_request(worker, runner), db_session)
@@ -236,7 +244,6 @@ async def test_jobs_current_ignores_stale_private_current_job_fallback(db_sessio
     db_session.commit()
     worker = SimpleNamespace(
         active_jobs=[],
-        is_busy=True,
         _current_job=SimpleNamespace(job_id="job-stale"),
     )
     runner = SimpleNamespace(queue_length=0, max_concurrent_recordings=2, available_slots=2)
@@ -259,8 +266,8 @@ async def test_stop_job_cancels_queued_immediate_job(db_session):
         max_concurrent_recordings = 2
         available_slots = 0
 
-        def cancel_queued_job(self, job_id: str) -> bool:
-            return job_id == "job-q"
+        def cancel_queued_job_for_action(self, job_id: str):
+            return SimpleNamespace(removed=job_id == "job-q", source="fifo", schedule_id=None)
 
     response = await stop_job("job-q", _request(worker, FakeRunner()), db_session)
 
@@ -282,9 +289,6 @@ async def test_stop_job_cancels_retry_waiting_job(db_session):
     class FakeRunner:
         def cancel_queued_job_for_action(self, job_id: str):
             return SimpleNamespace(removed=job_id == "job-r", source="retry_waiting", schedule_id=None)
-
-        def is_retry_waiting_job(self, job_id: str) -> bool:
-            raise AssertionError("structured cancel should not pre-check retry state")
 
     response = await stop_job("job-r", _request(worker, FakeRunner()), db_session)
 
@@ -319,9 +323,9 @@ async def test_ui_stop_cancels_queued_immediate_job(db_session):
         def __init__(self):
             self.canceled = []
 
-        def cancel_queued_job(self, job_id: str) -> bool:
+        def cancel_queued_job_for_action(self, job_id: str):
             self.canceled.append(job_id)
-            return job_id == "job-q"
+            return SimpleNamespace(removed=job_id == "job-q", source="fifo", schedule_id=None)
 
     runner = FakeRunner()
     response = await ui_jobs_stop(_request(worker, runner), "job-q", db_session)

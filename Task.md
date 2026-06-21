@@ -8,6 +8,7 @@
 - [x] P1：讓 worker/session 使用解析後的 runtime config，套用 schedule resolution 與 lobby wait。
 - [x] P1：修 recording manager 使用 `settings.recordings_dir`，並能處理 job 子目錄。
 - [x] P1：新增 storage maintenance，讓本機錄影 canonical MP4、YouTube 後 14 天刪本機檔、diagnostics/log/detection log retention 與 Docker log rotation 一致。
+- [x] P1：收斂舊 `/api/recordings/cleanup` 與低空間 auto cleanup，統一改走 `StorageMaintenanceService`，避免檔案刪除與 DB 狀態不同步。
 - [x] P1：強化 MP4 canonicalization，使用 temporary output、ffprobe validation、remux-only 本機 canonical 與 upload-only transcode，避免 partial MP4 造成 MKV 資料遺失。
 - [x] P1：修正 storage retention canonical MP4 與 smart trim path metadata 合併後不一致，確保 DB、YouTube upload request 與裁剪檔清理都使用目前存在的 canonical path。
 - [x] P1：重整 schedule/job 狀態欄位與 catch-up 判斷。
@@ -23,7 +24,7 @@
 - [x] P3：拆出 `ui_common`，移除 UI 子 router 對 `api.routes.ui` 聚合模組的反向依賴。
 - [x] P3：拆出 `ScheduleRunQueue`，集中 schedule queue、pending、duplicate 與 queue position 狀態。
 - [x] P3：拆出 `RecordingExecutor`，集中 recording retry、attempt DB 更新、status callback 與 stage notification。
-- [x] P3：最佳化 `RecordingManager`，讓 list、cleanup、disk usage 共用單次 scan/stat entry。
+- [x] P3：最佳化 `RecordingManager`，讓 list、disk usage 共用單次 scan/stat entry，並移除舊逐檔 destructive cleanup 責任。
 - [x] P3：最佳化 scheduler `next_run_at` 同步，改成單一 DB session batch update 並跳過 unchanged 值。
 - [x] P3：拆出 `RecordingMonitor`，集中 duration、finish/cancel、FFmpeg stall 與 auto-detect 判斷。
 - [x] P3：在 FastAPI shutdown 關閉既有 YouTube uploader HTTP client，並將 upload chunk read 改成 non-blocking helper。
@@ -57,6 +58,47 @@
 - [x] P3：收斂錄製 slot 與後處理責任邊界，讓 raw capture 完成後立即釋放 `MAX_CONCURRENT_RECORDINGS` 容量，smart trim / 本機 MP4 canonicalization 改由 tracked post-processing task 收斂。
 - [x] P3：補強 post-processing robustness，包含 process/settle task state、settle failure 不遞迴、DetectionLog best-effort、stale finalizing restart cleanup 與 DTO owner 收斂。
 - [x] P3：收斂多路錄製狀態邊界，移除 API `_current_job` fallback、Telegram `worker.is_busy` queue warning 與 worker 舊全域 cancel/finish flags。
-- [x] P3：補強 runtime state 與 notification robustness，包含 Telegram stage notification stale guard、`is_busy` active-registry-only 與 snapshot capacity/count fallback。
+- [x] P3：補強 runtime state 與 notification robustness，包含 Telegram stage notification stale guard、移除 worker/runner 舊 `is_busy` 與 worker `current_status` 相容 surface、snapshot capacity/count fallback。
 - [x] P3：補強 runtime notification 與 snapshot fallback，包含 Telegram send/edit timeout、finalizing stage notification 與 invalid runner count normalization。
 - [x] P3：補強 notification fanout 與 media subprocess robustness，包含 Telegram bounded concurrent fanout、callable timeout helper、duration probe 收斂與 bounded FFmpeg/ffprobe subprocess runner。
+- [x] P3：清理根目錄未追蹤舊 agent/TODO 本機檔與 `RecordingManager` 未使用 helper，避免平行指南或死碼誤導後續維護。
+- [x] P3：移除舊手動 schedule migration scripts，將 `duration_mode` / `dry_run` 欄位補齊收斂到 `database/migrations.py`。
+- [x] P3：移除未引用的 `web/static/images/logo_temp.png` 暫存資產，保留實際 UI 使用的 `logo.png`。
+- [x] P3：移除 `api.routes.ui` helper re-export 相容層，讓 Web UI 聚合器只負責 include child routers。
+- [x] P3：移除 `telegram_bot/conversations.py` re-export 聚合器，讓 Telegram handler 直接 import conversation owner modules。
+- [x] P3：移除 `database.models` 的 DB lifecycle helper re-export，讓 ORM model module 不再反向依賴 session/migration owner。
+- [x] P3：移除未引用的 app settings、Telegram notification/bot/keyboard 與 MP4 remux compatibility helper，降低舊 API 入口誤導。
+- [x] P3：移除 `services/__init__.py` service re-export 聚合層，讓 service package import 不再 eager-load 具體 service 模組。
+- [x] P3：移除 `recording.worker` 的 `RecordingJob` / `RecordingResult` DTO re-export，統一由 `recording.job_types` 作為 DTO owner。
+- [x] P3：移除未接線的 `api.auth.require_auth` dependency helper，保留 middleware 作為 auth enforcement owner。
+- [x] P3：移除未使用的 `services.job_service.get_job_service()` accessor，讓 FastAPI 入口透過 `api/runtime.py` 直接建構 app-state-backed service。
+- [x] P3：移除未使用的 YouTube device auth request schema，避免空 request model 誤導 API 契約。
+- [x] P3：移除 `database.migrations` 私有 compatibility alias，保留公開 migration helper 作為唯一入口。
+- [x] P3：移除 `NotificationService` 未接線的 recording/disk event methods，保留目前 Web UI 實際使用的 email/webhook channel。
+- [x] P3：將 notification service cache reset 收斂到 `services.notification.reset_notification_service()`，route 不再直接操作 private global。
+- [x] P3：移除通知測試 endpoint 未使用的 DB dependency，避免按 Test Email/Webhook 時建立多餘 session。
+- [x] P3：將 Telegram DB session helper 從 package root 移到 `telegram_bot/session.py`，避免 `telegram_bot/__init__.py` 形成隱性 database import/re-export。
+- [x] P3：移除 `database.session.get_db_session()` 未使用 context-manager wrapper，保留 `get_db()` / `get_session_local()` 作為實際 session 入口。
+- [x] P3：移除 ORM model 的通用 `to_dict()` response serializer，讓 API response/export contract 回到 route-local schema/explicit mapper。
+- [x] P3：修正 model helper 測試不再用 `Mock` 複製實作邏輯，改直接驗證 ORM model method/property。
+- [x] P3：移除未使用的 app settings 單 key getter/setter，將 settings 更新收斂為一次 batch upsert 與單次 commit。
+- [x] P3：移除未使用的 `api.routes.job_queue_payloads` runtime-state helper re-export，統一由 `services.job_runtime_state` 作為 payload helper owner。
+- [x] P3：移除 `SchedulerService` 未使用的 APScheduler job inspection wrappers，避免與 DB `next_run_at` 同步狀態形成第二讀取入口。
+- [x] P3：移除未使用的 repository/runtime/job-runner probe helper，避免只剩測試依賴的狀態查詢 API 擴大維護面。
+- [x] P3：移除 `JobRunner` 舊 queue processor 與 boolean queued cancel wrapper，queued cancel 統一走 structured `cancel_queued_job_for_action()` result。
+- [x] P3：移除只剩 legacy 欄位 default 用途的 `DurationMode` enum，`duration_mode` 保留為 persisted string column / migration target。
+- [x] P3：移除只剩 model default 用途的 `ProviderType` enum，provider 名稱與選項維持 provider registry 單一來源。
+- [x] P3：移除 single-use `provider_metadata_map()` helper，meeting UI 直接由 `list_provider_metadata()` 組所需 map。
+- [x] P3：將 upload path derivation、secret mask detection、settings defaults builder 與 notification channel implementation 收斂為 owner module 私有 helper。
+- [x] P3：將重複的 `pactl list ... short` device name parser 收斂到 `recording.pactl.short_names()`，避免 runtime checks、virtual env 與 FFmpeg pipeline 三處漂移。
+- [x] P3：將 jobs / recordings UI 重複的 trimmed artifact display flag helper 收斂到 `api.routes.ui_recording_artifacts`。
+- [x] P3：將 recordings UI 的 local download availability 與 preferred existing output 判斷收斂到 `api.routes.ui_recording_artifacts`。
+- [x] P3：移除 Telegram status route 的 import-time settings cache，讓 endpoint 直接讀取目前 `get_settings()`。
+- [x] P3：將 recordings UI、storage maintenance 與 YouTube route 重複的 MKV/MP4 sibling variant 規則收斂到 `recording.remux.recording_file_variants()`，並移除 recordings UI 無意義 download/delete helper wrapper。
+- [x] P3：將 manual YouTube route 與 background upload runner 的 trimmed/upload artifact best-effort 刪除收斂到 `recording.remux.delete_recording_artifacts()`。
+- [x] P3：移除 `StorageMaintenanceService._recording_variants()` 二次 wrapper，storage retention 直接使用 `recording.remux.recording_file_variants()` 作為 artifact sibling 規則來源。
+- [x] P3：讓 `recording.remux.delete_recording_artifacts()` 自行展開 MKV/MP4 sibling variants，recordings UI delete 不再持有 artifact sibling 刪除規則。
+- [x] P3：移除 FastAPI lifespan shutdown 內單次使用的 `_clear_runtime_state()` wrapper，讓 runtime state cleanup 直接留在 owner flow。
+- [x] P3：將 job status enum/string normalization 收斂到 `services.job_actions.job_status_value()`，移除 UI/runtime state/service 內重複 private helper。
+- [x] P3：移除 `recording.remux._is_valid_fresh_mp4()` 單次 async wrapper，fresh MP4 檢查直接留在 canonicalization owner flow。
+- [x] P3：移除 `recording.remux._derive_upload_mp4_path()` 單次 private wrapper，upload transcode temporary path 直接留在 upload preparation flow。
