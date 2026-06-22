@@ -2,14 +2,15 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from telegram.error import BadRequest
 
 from config.settings import get_settings
-from database.models import JobStatus, RecordingJob, TelegramUser
+from database.models import JobStatus, RecordingJob, Schedule, TelegramUser
 from database.session import get_session_local
+from providers import get_provider_metadata
 from telegram_bot.bot import get_bot
 
 logger = logging.getLogger(__name__)
@@ -17,26 +18,43 @@ logger = logging.getLogger(__name__)
 TELEGRAM_NOTIFICATION_TIMEOUT_SEC = 10.0
 TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY = 3
 
-# Map error codes to user-friendly descriptions (in Chinese)
+# Map error codes to concise user-facing English descriptions.
 _ERROR_DESCRIPTIONS = {
-    "JOIN_TIMEOUT": "無法在時限內加入會議",
-    "JOIN_FAILED": "加入會議失敗",
-    "INVALID_URL": "無效的會議連結",
-    "MEETING_NOT_FOUND": "會議不存在",
-    "PASSWORD_REQUIRED": "需要密碼",
-    "PASSWORD_INCORRECT": "密碼錯誤",
-    "LOBBY_TIMEOUT": "等候室等待逾時 (未被准入)",
-    "LOBBY_REJECTED": "被主持人拒絕進入",
-    "NEVER_JOINED": "始終未能加入會議",
-    "RECORDING_START_FAILED": "錄製啟動失敗",
-    "RECORDING_INTERRUPTED": "錄製中斷",
-    "FFMPEG_ERROR": "FFmpeg 錯誤",
-    "BROWSER_CRASHED": "瀏覽器當機",
-    "VIRTUAL_ENV_ERROR": "虛擬環境錯誤",
-    "DISK_FULL": "磁碟空間不足",
-    "CANCELED": "已取消",
-    "INTERNAL_ERROR": "內部錯誤",
-    "NETWORK_ERROR": "網路連線錯誤",
+    "JOIN_TIMEOUT": "Timed out while joining the meeting",
+    "JOIN_FAILED": "Failed to join meeting",
+    "INVALID_URL": "Invalid meeting link",
+    "MEETING_NOT_FOUND": "Meeting was not found",
+    "PASSWORD_REQUIRED": "Meeting password is required",
+    "PASSWORD_INCORRECT": "Meeting password is incorrect",
+    "LOBBY_TIMEOUT": "Timed out waiting in the lobby",
+    "LOBBY_REJECTED": "Rejected from the lobby by the host",
+    "NEVER_JOINED": "Never joined the meeting",
+    "RECORDING_START_FAILED": "Failed to start recording",
+    "RECORDING_INTERRUPTED": "Recording was interrupted",
+    "FFMPEG_ERROR": "FFmpeg failed",
+    "BROWSER_CRASHED": "Browser crashed",
+    "VIRTUAL_ENV_ERROR": "Virtual recording environment failed",
+    "DISK_FULL": "Disk space is full",
+    "CANCELED": "Recording was canceled",
+    "INTERNAL_ERROR": "Internal error",
+    "NETWORK_ERROR": "Network error",
+}
+
+_GENERIC_DISPLAY_LABELS = {
+    "recorder bot",
+}
+
+_PHASE_LABELS = {
+    "started": "🔄 Starting",
+    "starting": "🔄 Starting",
+    "joining": "🚪 Joining meeting",
+    "waiting_lobby": "⏳ Waiting in lobby",
+    "recording": "🔴 Recording",
+    "finalizing": "💾 Finalizing",
+    "completed": "✅ Recording completed",
+    "failed": "❌ Recording failed",
+    "uploading": "⏳ Uploading",
+    "uploaded": "📺 Uploaded",
 }
 
 _STATUS_TO_PHASE = {
@@ -58,8 +76,21 @@ def _normalize_phase(phase_or_status: str | JobStatus) -> str:
     return _STATUS_TO_PHASE.get(value, value)
 
 
-def _format_time(dt: datetime | None) -> str:
-    """Format datetime to local time string.
+def _format_provider(provider: str | None) -> str:
+    """Format provider for user-facing Telegram messages."""
+    if not provider:
+        return "Unknown"
+    normalized = str(provider).strip()
+    if not normalized:
+        return "Unknown"
+    try:
+        return get_provider_metadata(normalized).label
+    except ValueError:
+        return normalized.replace("_", " ").title()
+
+
+def _format_datetime(dt: datetime | None) -> str:
+    """Format datetime to local date/time string.
 
     Note: DB stores naive UTC datetimes. This function converts them to local time.
     """
@@ -68,13 +99,11 @@ def _format_time(dt: datetime | None) -> str:
     try:
         settings = get_settings()
         tz = ZoneInfo(settings.timezone)
-        # Strip any tzinfo (treat as UTC), then convert to local
-        if dt.tzinfo is not None:
-            dt = dt.replace(tzinfo=None)
-        local_dt = dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
-        return local_dt.strftime("%H:%M")
+        utc_dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+        local_dt = utc_dt.astimezone(tz)
+        return local_dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
-        return dt.strftime("%H:%M") if dt else "-"
+        return dt.strftime("%Y-%m-%d %H:%M") if dt else "-"
 
 
 def _shorten_text(text: str, limit: int = 60) -> str:
@@ -94,13 +123,79 @@ def _get_error_reason(job: RecordingJob) -> str:
     if job.error_message:
         return _shorten_text(str(job.error_message), limit=50)
 
-    return "未知錯誤"
+    return "Unknown error"
+
+
+def _valid_user_label(value: object) -> str | None:
+    """Return a safe user-facing label or None when the source is unusable."""
+    if value is None:
+        return None
+    label = str(value).strip()
+    if not label or "�" in label:
+        return None
+    return label
+
+
+def _valid_display_fallback_label(value: object) -> str | None:
+    """Return a display-name label only when it is specific enough for a meeting title."""
+    label = _valid_user_label(value)
+    if not label:
+        return None
+    normalized = " ".join(label.casefold().split())
+    if normalized in _GENERIC_DISPLAY_LABELS:
+        return None
+    return label
+
+
+def _meeting_name_from_loaded_schedule(job: RecordingJob) -> str | None:
+    """Read a meeting name from an already attached schedule relationship."""
+    try:
+        schedule = getattr(job, "schedule", None)
+        meeting = getattr(schedule, "meeting", None) if schedule is not None else None
+        name = getattr(meeting, "name", None) if meeting is not None else None
+    except Exception as exc:
+        logger.debug("Could not read loaded meeting relationship for job %s: %s", getattr(job, "job_id", None), exc)
+        return None
+    return _valid_user_label(name)
+
+
+def _resolve_meeting_label(job: RecordingJob) -> str:
+    """Resolve the user-facing meeting label for a recording job."""
+    loaded_name = _meeting_name_from_loaded_schedule(job)
+    if loaded_name:
+        return loaded_name
+
+    schedule_id = getattr(job, "schedule_id", None)
+    if schedule_id:
+        SessionLocal = get_session_local()
+        db = SessionLocal()
+        try:
+            schedule = db.query(Schedule).filter(Schedule.id == schedule_id).first()
+            name = getattr(getattr(schedule, "meeting", None), "name", None) if schedule is not None else None
+            label = _valid_user_label(name)
+            if label:
+                return label
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve meeting name for Telegram notification job %s: %s",
+                getattr(job, "job_id", None),
+                exc,
+            )
+        finally:
+            db.close()
+
+    return (
+        _valid_display_fallback_label(getattr(job, "display_name", None))
+        or _valid_user_label(getattr(job, "meeting_code", None))
+        or "Unknown meeting"
+    )
 
 
 def _build_status_message(
     job: RecordingJob,
     phase: str = "started",
     video_url: str | None = None,
+    meeting_label: str | None = None,
 ) -> str:
     """Build a unified status message for a recording job.
 
@@ -108,51 +203,42 @@ def _build_status_message(
         job: The recording job
         phase: Status phase for display
         video_url: YouTube video URL (for uploaded phase)
+        meeting_label: Resolved meeting display label
     """
     phase = _normalize_phase(phase)
+    resolved_meeting_label = _valid_user_label(meeting_label) or _resolve_meeting_label(job)
 
-    lines = [f"🎬 {job.meeting_code}"]
-
-    # Status line
-    status_icons = {
-        "started": "🔄 啟動中",
-        "starting": "🔄 啟動中",
-        "joining": "🚪 加入會議中",
-        "waiting_lobby": "⏳ 等候室等待中",
-        "recording": "🔴 錄製中",
-        "finalizing": "💾 收尾中",
-        "completed": "✅ 錄製完成",
-        "failed": "❌ 錄製失敗",
-        "uploading": "⏳ 上傳中",
-        "uploaded": "📺 已上傳",
-    }
-    lines.append(f"狀態：{status_icons.get(phase, phase)}")
+    lines = [
+        f"🎬 Meeting: {resolved_meeting_label}",
+        f"Provider: {_format_provider(getattr(job, 'provider', None))}",
+        f"Status: {_PHASE_LABELS.get(phase, phase)}",
+    ]
 
     # Timeline
     if job.started_at:
-        lines.append(f"開始：{_format_time(job.started_at)}")
+        lines.append(f"Started: {_format_datetime(job.started_at)}")
     if phase in ("completed", "failed", "uploading", "uploaded") and job.completed_at:
-        lines.append(f"結束：{_format_time(job.completed_at)}")
+        lines.append(f"Ended: {_format_datetime(job.completed_at)}")
 
     # Recording info (for completed/uploaded)
     if phase in ("completed", "uploading", "uploaded"):
         if job.duration_actual_sec:
-            lines.append(f"時長：{job.duration_actual_sec / 60:.1f} 分")
+            lines.append(f"Duration: {job.duration_actual_sec / 60:.1f} minutes")
 
     # Error info (for failed)
     if phase == "failed":
-        lines.append(f"原因：{_get_error_reason(job)}")
+        lines.append(f"Error: {_get_error_reason(job)}")
         if job.has_screenshot or job.has_html_dump:
-            lines.append("診斷：Web UI")
+            lines.append("Diagnostics: Web UI")
 
     # YouTube section
     if job.youtube_enabled:
         if phase == "uploading":
-            lines.append("YouTube：上傳中")
+            lines.append("YouTube: Uploading")
         elif phase == "uploaded" and video_url:
-            lines.append(f"YouTube：{video_url}")
+            lines.append(f"YouTube: {video_url}")
         elif phase == "completed":
-            lines.append("YouTube：等待上傳")
+            lines.append("YouTube: Pending upload")
 
     return "\n".join(lines)
 
@@ -275,7 +361,8 @@ async def _send_or_edit_status_message(
 async def notify_recording_status(job: RecordingJob, status: str | JobStatus) -> int | None:
     """Send or update stage notification for active recording statuses."""
     phase = _normalize_phase(status)
-    message = _build_status_message(job, phase)
+    meeting_label = _resolve_meeting_label(job)
+    message = _build_status_message(job, phase, meeting_label=meeting_label)
     message_id = await _send_or_edit_status_message(
         job=job,
         message=message,
@@ -289,7 +376,8 @@ async def notify_recording_completed(job: RecordingJob) -> None:
     """Update notification to show recording completed."""
     phase = "uploading" if job.youtube_enabled else "completed"
 
-    message = _build_status_message(job, phase)
+    meeting_label = _resolve_meeting_label(job)
+    message = _build_status_message(job, phase, meeting_label=meeting_label)
     await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated recording complete notification for job {job.job_id}")
@@ -297,7 +385,8 @@ async def notify_recording_completed(job: RecordingJob) -> None:
 
 async def notify_recording_failed(job: RecordingJob) -> None:
     """Update notification to show recording failed."""
-    message = _build_status_message(job, "failed")
+    meeting_label = _resolve_meeting_label(job)
+    message = _build_status_message(job, "failed", meeting_label=meeting_label)
     await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated recording failure notification for job {job.job_id}")
@@ -320,12 +409,13 @@ async def notify_recording_retry(
     Returns:
         Message ID if sent successfully, None otherwise
     """
-    # Build retry notification message
+    meeting_label = _resolve_meeting_label(job)
     lines = [
-        f"🔄 {job.meeting_code}",
-        f"狀態：重試第 {attempt} 次",
-        f"{next_retry_sec} 秒後重試",
-        f"原因：{_shorten_text(error_message, limit=50)}",
+        f"🔄 Meeting: {meeting_label}",
+        f"Provider: {_format_provider(getattr(job, 'provider', None))}",
+        f"Status: Retrying attempt {attempt}",
+        f"Retry in: {next_retry_sec} seconds",
+        f"Reason: {_shorten_text(error_message, limit=50)}",
     ]
     message = "\n".join(lines)
     first_message_id = await _send_or_edit_status_message(
@@ -340,7 +430,8 @@ async def notify_recording_retry(
 
 async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> None:
     """Update notification to show YouTube upload completed."""
-    message = _build_status_message(job, "uploaded", video_url)
+    meeting_label = _resolve_meeting_label(job)
+    message = _build_status_message(job, "uploaded", video_url, meeting_label=meeting_label)
     await _send_or_edit_status_message(job=job, message=message, notification_type="start")
 
     logger.info(f"Updated YouTube upload notification for job {job.job_id}")

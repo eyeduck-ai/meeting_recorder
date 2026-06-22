@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -181,6 +181,7 @@ def test_is_schedule_visible_for_upcoming_and_ongoing_once():
 
 def test_failed_notification_includes_mapped_error_reason():
     job = SimpleNamespace(
+        provider="jitsi",
         meeting_code="room-a",
         started_at=None,
         completed_at=None,
@@ -192,12 +193,16 @@ def test_failed_notification_includes_mapped_error_reason():
         has_screenshot=False,
         has_html_dump=False,
     )
-    message = _build_status_message(job, "failed")
-    assert "原因：加入會議失敗" in message
+    message = _build_status_message(job, "failed", meeting_label="Team Sync")
+    assert "Meeting: Team Sync" in message
+    assert "Provider: Jitsi" in message
+    assert "Status: ❌ Recording failed" in message
+    assert "Error: Failed to join meeting" in message
 
 
 def test_failed_notification_falls_back_to_error_message():
     job = SimpleNamespace(
+        provider="jitsi",
         meeting_code="room-b",
         started_at=None,
         completed_at=None,
@@ -209,9 +214,46 @@ def test_failed_notification_falls_back_to_error_message():
         has_screenshot=False,
         has_html_dump=False,
     )
-    message = _build_status_message(job, "failed")
-    assert "原因：" in message
+    message = _build_status_message(job, "failed", meeting_label="Team Sync")
+    assert "Error:" in message
     assert "very long internal failure message for debug" in message
+
+
+def test_uploaded_notification_uses_meeting_name_and_local_datetime(monkeypatch):
+    monkeypatch.setattr(
+        "telegram_bot.notifications.get_settings",
+        lambda: SimpleNamespace(timezone="Asia/Taipei"),
+    )
+    job = SimpleNamespace(
+        provider="jitsi",
+        meeting_code="ophvgh",
+        started_at=datetime(2026, 6, 21, 23, 30),
+        completed_at=datetime(2026, 6, 22, 0, 46),
+        duration_actual_sec=3320,
+        youtube_enabled=True,
+        error_code=None,
+        error_message=None,
+        has_screenshot=False,
+        has_html_dump=False,
+    )
+
+    message = _build_status_message(
+        job,
+        "uploaded",
+        "https://youtu.be/J83HS7f1A9w",
+        meeting_label="HCH",
+    )
+
+    assert "🎬 Meeting: HCH" in message
+    assert "ophvgh" not in message
+    assert "Provider: Jitsi" in message
+    assert "Status: 📺 Uploaded" in message
+    assert "Started: 2026-06-22 07:30" in message
+    assert "Ended: 2026-06-22 08:46" in message
+    assert "Duration: 55.3 minutes" in message
+    assert "YouTube: https://youtu.be/J83HS7f1A9w" in message
+    assert "狀態" not in message
+    assert "時長" not in message
 
 
 @pytest.mark.asyncio

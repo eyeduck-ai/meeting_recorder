@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 import providers as providers_module
+import telegram_bot.notifications as telegram_notifications
 from api.routes.jobs import RecordRequest
 from api.routes.meetings import MeetingCreate, MeetingUpdate
 from providers import get_provider_metadata, list_provider_metadata, list_providers, provider_form_config_map
@@ -45,3 +46,7 @@ def test_telegram_provider_keyboard_uses_registry_metadata():
     assert [button.callback_data for button in provider_buttons] == [
         f"provider:{provider.name}" for provider in list_provider_metadata()
     ]
+
+
+def test_telegram_notifications_do_not_keep_provider_label_map():
+    assert not hasattr(telegram_notifications, "_PROVIDER_LABELS")

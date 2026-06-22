@@ -1,11 +1,217 @@
 import asyncio
 import time
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from telegram.error import BadRequest
 
 import telegram_bot.notifications as notifications
+from database.migrations import run_schema_migrations
+from database.models import Base, Meeting, Schedule
+
+
+@pytest.fixture
+def notification_session_local(tmp_path, monkeypatch):
+    db_path = tmp_path / "notifications.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    run_schema_migrations(engine)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    monkeypatch.setattr(notifications, "get_session_local", lambda: SessionLocal)
+    return SessionLocal
+
+
+def test_resolve_meeting_label_uses_schedule_meeting_name(notification_session_local):
+    session = notification_session_local()
+    try:
+        meeting = Meeting(
+            name="Glaucoma Review",
+            provider="jitsi",
+            meeting_code="ophvgh",
+            default_display_name="Recorder Bot",
+        )
+        session.add(meeting)
+        session.flush()
+        schedule = Schedule(meeting_id=meeting.id)
+        session.add(schedule)
+        session.commit()
+        schedule_id = schedule.id
+    finally:
+        session.close()
+
+    job = SimpleNamespace(job_id="job-1", schedule_id=schedule_id, meeting_code="ophvgh", display_name="HCH")
+
+    assert notifications._resolve_meeting_label(job) == "Glaucoma Review"
+
+
+def test_resolve_meeting_label_skips_corrupted_meeting_name(notification_session_local):
+    session = notification_session_local()
+    try:
+        meeting = Meeting(
+            name="��|",
+            provider="jitsi",
+            meeting_code="ophvgh",
+            default_display_name="HCH",
+        )
+        session.add(meeting)
+        session.flush()
+        schedule = Schedule(meeting_id=meeting.id)
+        session.add(schedule)
+        session.commit()
+        schedule_id = schedule.id
+    finally:
+        session.close()
+
+    job = SimpleNamespace(job_id="job-1", schedule_id=schedule_id, meeting_code="ophvgh", display_name="HCH")
+
+    assert notifications._resolve_meeting_label(job) == "HCH"
+
+
+def test_resolve_meeting_label_falls_back_to_meeting_code():
+    job = SimpleNamespace(job_id="job-1", schedule_id=None, meeting_code="manual-room", display_name=None)
+
+    assert notifications._resolve_meeting_label(job) == "manual-room"
+
+
+def test_resolve_meeting_label_skips_generic_display_name():
+    job = SimpleNamespace(
+        job_id="job-1",
+        schedule_id=None,
+        meeting_code="manual-room",
+        display_name="Recorder Bot",
+    )
+
+    assert notifications._resolve_meeting_label(job) == "manual-room"
+
+
+def test_status_message_sanitizes_explicit_meeting_label():
+    job = SimpleNamespace(
+        job_id="job-1",
+        schedule_id=None,
+        provider="jitsi",
+        meeting_code="manual-room",
+        display_name="Recorder Bot",
+        started_at=None,
+        completed_at=None,
+        duration_actual_sec=None,
+        youtube_enabled=False,
+        error_code=None,
+        error_message=None,
+        has_screenshot=False,
+        has_html_dump=False,
+    )
+
+    message = notifications._build_status_message(job, "recording", meeting_label="��|")
+
+    assert "🎬 Meeting: manual-room" in message
+    assert "��|" not in message
+
+
+def test_status_message_uses_provider_registry_label():
+    job = SimpleNamespace(
+        job_id="job-1",
+        schedule_id=None,
+        provider="zoom",
+        meeting_code="https://zoom.us/j/123",
+        display_name="Recorder Bot",
+        started_at=None,
+        completed_at=None,
+        duration_actual_sec=None,
+        youtube_enabled=False,
+        error_code=None,
+        error_message=None,
+        has_screenshot=False,
+        has_html_dump=False,
+    )
+
+    message = notifications._build_status_message(job, "recording", meeting_label="Zoom Standup")
+
+    assert "Provider: Zoom" in message
+
+
+def test_status_message_falls_back_for_unknown_provider():
+    job = SimpleNamespace(
+        job_id="job-1",
+        schedule_id=None,
+        provider="custom_provider",
+        meeting_code="manual-room",
+        display_name="Recorder Bot",
+        started_at=None,
+        completed_at=None,
+        duration_actual_sec=None,
+        youtube_enabled=False,
+        error_code=None,
+        error_message=None,
+        has_screenshot=False,
+        has_html_dump=False,
+    )
+
+    message = notifications._build_status_message(job, "recording", meeting_label="Manual")
+
+    assert "Provider: Custom Provider" in message
+
+
+def test_finalizing_notification_omits_end_and_duration(monkeypatch):
+    monkeypatch.setattr(
+        "telegram_bot.notifications.get_settings",
+        lambda: SimpleNamespace(timezone="Asia/Taipei"),
+    )
+    job = SimpleNamespace(
+        provider="jitsi",
+        meeting_code="ophvgh",
+        display_name="HCH",
+        started_at=datetime(2026, 6, 21, 23, 30),
+        completed_at=datetime(2026, 6, 22, 0, 46),
+        duration_actual_sec=3320,
+        youtube_enabled=True,
+        error_code=None,
+        error_message=None,
+        has_screenshot=False,
+        has_html_dump=False,
+    )
+
+    message = notifications._build_status_message(job, "finalizing", meeting_label="HCH")
+
+    assert "🎬 Meeting: HCH" in message
+    assert "Status: 💾 Finalizing" in message
+    assert "Started: 2026-06-22 07:30" in message
+    assert "Ended:" not in message
+    assert "Duration:" not in message
+
+
+@pytest.mark.asyncio
+async def test_retry_notification_uses_label_fallback_and_english(monkeypatch):
+    sent_messages = []
+
+    async def fake_send_or_edit_status_message(*, job, message, notification_type):
+        sent_messages.append((job, message, notification_type))
+        return 123
+
+    monkeypatch.setattr(notifications, "_send_or_edit_status_message", fake_send_or_edit_status_message)
+
+    job = SimpleNamespace(
+        job_id="job-1",
+        schedule_id=None,
+        provider="jitsi",
+        meeting_code="ophvgh",
+        display_name="HCH",
+        telegram_message_id=None,
+    )
+
+    message_id = await notifications.notify_recording_retry(job, 2, 30, "network timeout")
+
+    assert message_id == 123
+    assert sent_messages[0][2] == "failure"
+    message = sent_messages[0][1]
+    assert "🔄 Meeting: HCH" in message
+    assert "Provider: Jitsi" in message
+    assert "Status: Retrying attempt 2" in message
+    assert "Retry in: 30 seconds" in message
+    assert "Reason: network timeout" in message
+    assert "狀態" not in message
 
 
 @pytest.mark.asyncio

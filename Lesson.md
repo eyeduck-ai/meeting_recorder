@@ -86,6 +86,7 @@
 - Telegram API call 不可在 notification lock 裡無界等待；send/edit/fallback-send 都要有 timeout，否則網路 hang 會讓後續 stage/completion/upload notification 全部排隊卡住。
 - `FINALIZING` 若被列為使用者可見 stage，就必須由成功 raw capture 轉入 post-processing 時明確送出；只把它放在 status set 裡但沒有 callback 來源，會造成文件與實際通知行為不一致。
 - `FINALIZING` 通知只能有單一 owner；worker callback 可更新 DB 狀態，但不要和 raw capture success path 都送 Telegram stage notification。Telegram `Message is not modified` 也不是真正失敗，應視為 edit no-op success，否則 fallback-send 會製造重複「收尾中」訊息。
+- Telegram recording lifecycle notification 是使用者會直接判讀的狀態介面，不應以 meeting code 當標題；應優先解析 schedule 對應的有效 meeting name，遇到空白或含 replacement character 的壞 label 要 fallback 非 generic display name，避免把 `Recorder Bot` 這類錄影身份當 meeting title，再用測試固定英文欄位、完整本地日期時間與 minutes 單位，避免格式回退。
 - snapshot fallback 對負數或非數字 runner count 不能簡單 clamp 成 0；queue/retry count 應回到實際 item list 長度，capacity 應在 max 有效時用 active count 推導，避免 test double 或 partial runner 誤導 UI。
 - 多 chat Telegram fanout 若逐一等待，即使每個 call 有 timeout，總耗時仍會跟 chat 數線性放大；應使用 bounded concurrency，並讓單一 chat 失敗不影響其他 chat。
 - media subprocess helper 不應讓每個呼叫點各自管理 `communicate()`、timeout 與 stderr excerpt；抽成共用 bounded runner 後，remux、duration probe、ffprobe validation、thumbnail 才能一致地 terminate/kill、保留診斷 excerpt 並避免無界記憶體。
