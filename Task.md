@@ -60,6 +60,7 @@
 - [x] P3：收斂多路錄製狀態邊界，移除 API `_current_job` fallback、Telegram `worker.is_busy` queue warning 與 worker 舊全域 cancel/finish flags。
 - [x] P3：補強 runtime state 與 notification robustness，包含 Telegram stage notification stale guard、移除 worker/runner 舊 `is_busy` 與 worker `current_status` 相容 surface、snapshot capacity/count fallback。
 - [x] P3：補強 runtime notification 與 snapshot fallback，包含 Telegram send/edit timeout、finalizing stage notification 與 invalid runner count normalization。
+- [x] P3：修正 Telegram finalizing stage notification 冪等性，讓 worker callback 不重複送出 `finalizing`，並將 Telegram `Message is not modified` 視為 edit no-op success。
 - [x] P3：補強 notification fanout 與 media subprocess robustness，包含 Telegram bounded concurrent fanout、callable timeout helper、duration probe 收斂與 bounded FFmpeg/ffprobe subprocess runner。
 - [x] P3：清理根目錄未追蹤舊 agent/TODO 本機檔與 `RecordingManager` 未使用 helper，避免平行指南或死碼誤導後續維護。
 - [x] P3：移除舊手動 schedule migration scripts，將 `duration_mode` / `dry_run` 欄位補齊收斂到 `database/migrations.py`。

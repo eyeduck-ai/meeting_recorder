@@ -37,7 +37,6 @@ ACTIVE_NOTIFICATION_STATUSES = {
     JobStatus.JOINING,
     JobStatus.WAITING_LOBBY,
     JobStatus.RECORDING,
-    JobStatus.FINALIZING,
 }
 
 

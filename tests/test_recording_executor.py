@@ -126,6 +126,34 @@ async def test_stage_notification_skips_stale_finalizing_db_status(executor_sess
     notify.assert_not_awaited()
 
 
+def test_status_callback_persists_finalizing_without_stage_notification(executor_session_local, monkeypatch):
+    """Worker finalizing callbacks update DB state but do not duplicate finalizing notifications."""
+    _create_db_job_with_status(executor_session_local, job_id="stage-finalizing-callback", status=JobStatus.RECORDING)
+    monkeypatch.setattr(
+        executor_module,
+        "ACTIVE_NOTIFICATION_STATUSES",
+        {
+            JobStatus.STARTING,
+            JobStatus.JOINING,
+            JobStatus.WAITING_LOBBY,
+            JobStatus.RECORDING,
+        },
+    )
+    executor = RecordingExecutor(worker_provider=lambda: FakeWorker([]))
+    schedule_stage_notification = Mock()
+    executor._schedule_stage_notification = schedule_stage_notification
+
+    executor._on_status_change("stage-finalizing-callback", JobStatus.FINALIZING)
+
+    schedule_stage_notification.assert_not_called()
+    session = executor_session_local()
+    try:
+        db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "stage-finalizing-callback").one()
+        assert db_job.status == JobStatus.FINALIZING.value
+    finally:
+        session.close()
+
+
 @pytest.mark.asyncio
 async def test_stage_notification_sends_when_db_status_still_matches(executor_session_local, monkeypatch):
     """A current stage notification should be sent and persist the Telegram message id."""

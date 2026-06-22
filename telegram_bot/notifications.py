@@ -5,6 +5,8 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from telegram.error import BadRequest
+
 from config.settings import get_settings
 from database.models import JobStatus, RecordingJob, TelegramUser
 from database.session import get_session_local
@@ -190,6 +192,11 @@ async def _telegram_call_with_timeout(
         awaitable = call(*args, chat_id=chat_id, **kwargs)
         result = await asyncio.wait_for(awaitable, timeout=TELEGRAM_NOTIFICATION_TIMEOUT_SEC)
         return True, result
+    except BadRequest as e:
+        if operation == "edit" and "message is not modified" in str(e).lower():
+            logger.debug("Telegram edit for chat %s was already up to date", chat_id)
+            return True, None
+        logger.error("Telegram %s failed for chat %s: %s", operation, chat_id, e)
     except TimeoutError:
         logger.warning(
             "Telegram %s timed out for chat %s after %.1fs",

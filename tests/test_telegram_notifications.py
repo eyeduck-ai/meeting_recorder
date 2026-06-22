@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from telegram.error import BadRequest
 
 import telegram_bot.notifications as notifications
 
@@ -82,6 +83,43 @@ async def test_status_message_fallback_send_timeout_is_best_effort(monkeypatch, 
     assert message_id == 99
     assert [call[:2] for call in fake_bot.calls] == [("edit", 1), ("send", 1)]
     assert "Telegram fallback-send timed out for chat 1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_status_message_noop_edit_does_not_fallback_send(monkeypatch, caplog):
+    class FakeBot:
+        def __init__(self):
+            self.calls = []
+
+        async def edit_message_text(self, chat_id, message_id, text):
+            self.calls.append(("edit", chat_id, message_id, text))
+            raise BadRequest("Message is not modified: specified new message content is exactly the same")
+
+        async def send_message(self, chat_id, text):
+            self.calls.append(("send", chat_id, text))
+            return SimpleNamespace(message_id=123)
+
+    fake_bot = FakeBot()
+
+    async def fake_get_bot():
+        return fake_bot
+
+    async def fake_chat_ids(_notification_type):
+        return [1]
+
+    monkeypatch.setattr(notifications, "get_bot", fake_get_bot)
+    monkeypatch.setattr(notifications, "_get_approved_chat_ids", fake_chat_ids)
+
+    with caplog.at_level("ERROR"):
+        message_id = await notifications._send_or_edit_status_message(
+            job=SimpleNamespace(telegram_message_id=99),
+            message="status",
+            notification_type="start",
+        )
+
+    assert message_id == 99
+    assert [call[:2] for call in fake_bot.calls] == [("edit", 1)]
+    assert "Telegram edit failed" not in caplog.text
 
 
 @pytest.mark.asyncio
