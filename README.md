@@ -56,6 +56,8 @@ mkdir -p data recordings diagnostics logs
 
 多路錄製會對每個 active job 做保守磁碟預留，估算會包含已啟用的最長 dynamic extension；若 `dynamic_extension_max_sec=0`，則用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿。若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊；retry attempt 受原本 fixed baseline + bounded dynamic extension 的 hard deadline 限制，不會重複加算延長時間。多場同時完成時，錄製 runtime 會在 FFmpeg finalize 後先釋放，smart trim / activity analysis 再受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；後處理中的 job 可能仍顯示 Processing/Finalizing，但不再佔用 `MAX_CONCURRENT_RECORDINGS` 錄製 slot，避免後處理 FFmpeg probe 互相搶 CPU/IO 或阻塞下一場錄製。若服務在後處理期間重啟，已有 raw/output 檔的 `finalizing` job 會恢復為 `succeeded` 並記錄 post-processing interrupted；若服務在 YouTube upload 中重啟，job 也會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在非終態。
 
+預設 app browser mode 若在開始錄影前遇到 browser/app-window 技術性失敗，會用 normal mode + crop fallback 重試一次；若 provider 已明確回報 join timeout、lobby timeout、會議未開始、會議不存在或其他加入錯誤，系統會直接視為加入失敗，不再用 normal mode 重試同一場。
+
 ### 4. 啟動服務
 
 使用已發布映像：

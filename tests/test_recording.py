@@ -457,6 +457,60 @@ class TestRecordingWorker:
 
         assert worker._can_fallback_to_normal_browser(job, result) is False
 
+    def test_join_stage_technical_failure_without_error_code_can_fallback(self, tmp_path):
+        """Join-stage technical failures should still use the app-to-normal fallback."""
+        worker = RecordingWorker()
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+        )
+        result = RecordingResult(
+            job_id="job123",
+            status=JobStatus.FAILED,
+            failure_stage="join_meeting",
+            error_code=None,
+            recording_started_at=None,
+        )
+
+        assert worker._can_fallback_to_normal_browser(job, result) is True
+
+    @pytest.mark.parametrize(
+        ("failure_stage", "error_code"),
+        [
+            ("join_meeting", ErrorCode.JOIN_TIMEOUT.value),
+            ("admit_or_fail", ErrorCode.LOBBY_TIMEOUT.value),
+            ("admit_or_fail", ErrorCode.NEVER_JOINED.value),
+            ("join_meeting", "MEETING_NOT_STARTED"),
+        ],
+    )
+    def test_provider_join_failure_before_capture_does_not_fallback(self, tmp_path, failure_stage, error_code):
+        """Provider join/admit results should fail directly instead of trying normal browser mode."""
+        worker = RecordingWorker()
+        job = RecordingJob(
+            job_id="job123",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+        )
+        result = RecordingResult(
+            job_id="job123",
+            status=JobStatus.FAILED,
+            failure_stage=failure_stage,
+            error_code=error_code,
+        )
+
+        assert worker._can_fallback_to_normal_browser(job, result) is False
+
     @pytest.mark.asyncio
     async def test_record_cleans_runtime_before_returning_success(self, monkeypatch, tmp_path):
         cleanup_reached = asyncio.Event()
@@ -730,6 +784,83 @@ class TestRecordingWorker:
         assert result.runtime_summary["fallback_used"] is True
         assert result.runtime_summary["fallback_attempts"] == 1
         assert result.failure_stage is None
+        assert worker.active_count == 0
+
+    @pytest.mark.asyncio
+    async def test_record_does_not_fallback_after_join_timeout(self, monkeypatch, tmp_path):
+        """A provider join timeout is a terminal join result, not an app-window technical failure."""
+        sessions = []
+
+        class FakeSession:
+            def __init__(self, job, runtime_resources=None):
+                self.job = job
+                self.runtime_resources = runtime_resources
+                self.stage = None
+                self.cleaned = False
+                self.diagnostics_dir = tmp_path
+                sessions.append(self)
+
+            def begin_stage(self, stage):
+                self.stage = stage
+
+            def end_stage(self, stage, status="ok"):
+                if self.stage == stage:
+                    self.stage = None
+
+            def current_stage(self):
+                return self.stage
+
+            async def prepare_runtime(self):
+                return None
+
+            async def join_meeting(self):
+                return JoinResult(
+                    success=False,
+                    error_code=ErrorCode.JOIN_TIMEOUT.value,
+                    error_message="Timeout after 60 seconds",
+                )
+
+            def process_returncode(self):
+                return None
+
+            def build_runtime_summary(self, **kwargs):
+                return {
+                    **kwargs,
+                    "resolved_browser_mode": self.job.resolved_browser_mode or self.job.recording_browser_mode,
+                    "fallback_used": self.job.browser_fallback_used,
+                    "fallback_attempts": self.job.browser_fallback_attempts,
+                }
+
+            async def collect_diagnostics(self, **_kwargs):
+                return None
+
+            async def cleanup(self):
+                self.cleaned = True
+
+        worker = RecordingWorker()
+        monkeypatch.setattr("recording.worker.RecordingSession", FakeSession)
+
+        job = RecordingJob(
+            job_id="job-join-timeout",
+            provider="jitsi",
+            meeting_code="room",
+            display_name="Bot",
+            duration_sec=60,
+            output_dir=tmp_path,
+            recording_browser_mode="app",
+            recording_crop_mode="off",
+        )
+
+        result = await worker.record(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.failure_stage == "join_meeting"
+        assert result.error_code == ErrorCode.JOIN_TIMEOUT.value
+        assert len(sessions) == 1
+        assert sessions[0].cleaned is True
+        assert result.runtime_summary["resolved_browser_mode"] == "app"
+        assert result.runtime_summary["fallback_used"] is False
+        assert result.runtime_summary["fallback_attempts"] == 0
         assert worker.active_count == 0
 
     @pytest.mark.asyncio

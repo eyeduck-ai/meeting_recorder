@@ -145,7 +145,8 @@ Settings API / Web UI 應以 `get_all_settings()` 讀取完整 overlay，並以 
 - `recording_browser_mode` 是全域 UI/API 設定，合法值為 `app`、`normal`；它不是 schedule 欄位，既有 schedule 下次執行也會使用當下解析出的全域值。
 - `recording_crop_mode` 是全域 UI/API 設定，合法值為 `auto`、`manual`、`off`，預設 `off`；它不是 schedule 欄位，既有 schedule 下次執行也會使用當下解析出的全域值。
 - `recording_crop_top_px` 是 manual offset 與 auto fallback，合法範圍為 `0 <= value < resolution_h`；它不是 schedule 欄位。
-- 若 app mode 在 FFmpeg capture 前失敗，worker 會對同一 job fallback 一次到 normal mode；若原 crop mode 是 `off`，fallback 的有效 crop mode 會改成 `auto`。
+- 若 app mode 在 FFmpeg capture 前發生 browser/app-window 技術失敗，worker 會對同一 job fallback 一次到 normal mode；若原 crop mode 是 `off`，fallback 的有效 crop mode 會改成 `auto`。
+- provider join/admit 階段已有 `result.failure_stage` + `result.error_code` 時代表明確會議加入結果，不得再 fallback 到 normal mode 重試。
 - `auto` 模式會使用額外 Xvfb 高度並在 capture 前以 browser `outerHeight - innerHeight` 解析實際 offset；`manual` 模式直接使用 `recording_crop_top_px`；`off` 模式從 X11 `y=0` 擷取。
 - FFmpeg 輸出仍是 `resolution_w x resolution_h`，top crop 只改變 X11 capture offset。
 - `runtime.json` 與 failure `metadata.json` 的 URL/meeting code 必須 redacted query/fragment；Zoom/Webex invite token、`pwd` 或 meeting secret 不應寫入 diagnostics。

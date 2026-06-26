@@ -130,3 +130,4 @@
 - 若某個模組已是狀態常數 owner，也應承擔 enum/string normalization helper；UI/runtime/service 各自寫 `status.value if ... else ...` 會讓狀態邊界逐漸漂移。
 - 同一 owner module 內只被呼叫一次、且只是串接另一個 helper 與一個 await 的 async wrapper，通常不值得保留；讓唯一 flow 直接呈現條件可讀性更高。
 - 單次使用的 path derivation helper 若只是格式化一個 filename，且沒有跨呼叫端契約，應 inline 在 owner flow；否則 private helper 也會被誤認為可重用 API。
+- app browser fallback 不應以「capture 前失敗」作為唯一條件；provider join/admit 階段已產生 `failure_stage` 與 `error_code` 時，代表會議不存在、尚未開始、lobby timeout 或 provider 明確拒絕，應直接收斂為 join failure，而不是再用 normal mode 延長等待。

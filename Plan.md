@@ -52,7 +52,7 @@
 - 已移除 `recording.worker` 的 DTO re-export，讓 `RecordingJob` / `RecordingResult` 只由 `recording.job_types` 提供。
 - 已將 Zoom join/prejoin 改為 provider 專用狀態推進，處理 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支，避免假設固定頁面順序。
 - 已新增 provider transient overlay dismissal，讓 Zoom 進入會議後能在錄製前清除 hardware acceleration 等遮擋提示。
-- 已新增 Chromium app window 主錄製路徑、`recording_browser_mode` 與 `recording_crop_mode` fallback；app mode 失敗於 capture 前會以同一 logical job/result 自動 fallback 一次到 normal browser + crop，runtime diagnostics 會 redacted URL query/fragment。
+- 已新增 Chromium app window 主錄製路徑、`recording_browser_mode` 與 `recording_crop_mode` fallback；app mode 的 browser/app-window 技術失敗於 capture 前會以同一 logical job/result 自動 fallback 一次到 normal browser + crop，但 provider join/admit 明確失敗不再 fallback，runtime diagnostics 會 redacted URL query/fragment。
 
 ## P3：運作效率
 

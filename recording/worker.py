@@ -16,6 +16,8 @@ from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_JOIN_FAILURE_STAGES = {"join_meeting", "admit_or_fail"}
+
 
 @dataclass
 class ActiveRecordingState:
@@ -100,12 +102,16 @@ class RecordingWorker:
     def _set_current_job(self, job: _RecordingJob | None) -> None:
         self._current_job = job
 
+    def _is_provider_join_failure(self, result: _RecordingResult) -> bool:
+        return bool(result.error_code and result.failure_stage in _PROVIDER_JOIN_FAILURE_STAGES)
+
     def _can_fallback_to_normal_browser(self, job: _RecordingJob, result: _RecordingResult) -> bool:
         return (
             job.recording_browser_mode == "app"
             and (job.resolved_browser_mode in (None, "app"))
             and not job.browser_fallback_used
             and result.recording_started_at is None
+            and not self._is_provider_join_failure(result)
         )
 
     def _build_normal_browser_fallback_job(self, job: _RecordingJob, reason: str) -> _RecordingJob:
