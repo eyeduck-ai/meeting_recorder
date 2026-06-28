@@ -1,5 +1,6 @@
 """Tests for provider modules."""
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -278,6 +279,8 @@ class FakeLocator:
         self.pressed_key = key
 
     async def get_attribute(self, _name: str):
+        if self._page is not None and self._selector is not None:
+            return self._page._attributes.get((self._selector, _name))
         return None
 
 
@@ -292,6 +295,8 @@ class FakePage:
         title: str = "",
         click_handlers: dict | None = None,
         fill_handlers: dict | None = None,
+        attributes: dict[tuple[str, str], str] | None = None,
+        goto_handler=None,
     ):
         self._counts = counts or {}
         self._locators = {}
@@ -299,6 +304,8 @@ class FakePage:
         self._title = title
         self._click_handlers = click_handlers or {}
         self._fill_handlers = fill_handlers or {}
+        self._attributes = attributes or {}
+        self._goto_handler = goto_handler
         self.goto_calls = []
         self.wait_for_load_state_calls = []
 
@@ -316,6 +323,8 @@ class FakePage:
     async def goto(self, url: str, wait_until: str = "domcontentloaded"):
         self.goto_calls.append({"url": url, "wait_until": wait_until})
         self.url = url
+        if self._goto_handler:
+            self._goto_handler(self, url)
 
 
 class FakeFrame:
@@ -324,10 +333,13 @@ class FakeFrame:
     def __init__(self, counts: dict[str, int] | None = None):
         self._counts = counts or {}
         self._locators = {}
+        self._click_handlers = {}
+        self._fill_handlers = {}
+        self._attributes = {}
 
     def locator(self, selector: str) -> FakeLocator:
         if selector not in self._locators:
-            self._locators[selector] = FakeLocator(self._counts.get(selector, 0))
+            self._locators[selector] = FakeLocator(self._counts.get(selector, 0), page=self, selector=selector)
         return self._locators[selector]
 
 
@@ -385,6 +397,18 @@ class TestProviderStateMachine:
 
         assert result == JoinResult(success=True)
         assert provider.password_attempts == 1
+
+    @pytest.mark.asyncio
+    async def test_wait_in_lobby_honors_cancel_callback(self):
+        """Active job cancellation should break out of provider lobby waits immediately."""
+        provider = SequenceProvider([MeetingStateSnapshot(state=MeetingState.LOBBY)])
+
+        with pytest.raises(asyncio.CancelledError):
+            await provider.wait_in_lobby(
+                FakePage(),
+                max_wait_sec=30,
+                cancel_callback=lambda: True,
+            )
 
     @pytest.mark.asyncio
     async def test_wait_for_page_idle_uses_bounded_playwright_wait(self):
@@ -479,15 +503,180 @@ class TestProviderBoundedWaitRegressions:
         iframe = FakeFrame(
             {
                 'input[type="password"]': 1,
-                '[data-test="submit-button"], button:has-text("OK"), button:has-text("Submit")': 1,
+                '[data-test="submit-button"]': 1,
             }
         )
         monkeypatch.setattr(provider, "_get_webex_iframe", lambda _page: iframe)
 
-        result = await provider.apply_password(FakePage(), "secret")
+        result = await provider.apply_password(FakePage({"#unified-webclient-iframe": 1}), "secret")
 
         assert result is True
         assert iframe.locator('input[type="password"]').filled_value == "secret"
+
+    @pytest.mark.asyncio
+    async def test_webex_prejoin_advances_visible_timing_modal_before_filling_name(self, monkeypatch):
+        provider = WebexProvider()
+        iframe = FakeFrame({'[data-test="join-button"]': 0})
+
+        def open_web_client(_page):
+            iframe._counts['[data-test="Name (required)"]'] = 1
+            iframe._counts['[data-test="join-button"]'] = 1
+
+        page = FakePage(
+            {
+                "#unified-webclient-iframe": 1,
+                "#fallBkJoinByBrowser:visible": 1,
+            },
+            click_handlers={"#fallBkJoinByBrowser:visible": open_web_client},
+        )
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _page: iframe)
+
+        await provider.prejoin(page, "Recorder")
+
+        assert page.locator("#fallBkJoinByBrowser:visible").clicked is True
+        assert iframe.locator('[data-test="Name (required)"]').filled_value == "Recorder"
+
+    @pytest.mark.asyncio
+    async def test_webex_prejoin_fills_localized_mdc_name_input(self, monkeypatch):
+        provider = WebexProvider()
+        iframe = FakeFrame(
+            {
+                'mdc-input[data-test="名稱"]': 1,
+                'mdc-button:has-text("關閉"):visible': 1,
+                '[data-test="join-button"]:not([disabled]):not([aria-disabled="true"])': 1,
+            }
+        )
+        page = FakePage({"#unified-webclient-iframe": 1})
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _page: iframe)
+
+        await provider.prejoin(page, "Recorder")
+
+        assert iframe.locator('mdc-input[data-test="名稱"]').filled_value == "Recorder"
+        assert iframe.locator('mdc-button:has-text("關閉"):visible').clicked is True
+
+    @pytest.mark.asyncio
+    async def test_webex_browser_join_prefers_visible_timing_modal_button(self):
+        provider = WebexProvider()
+        page = FakePage(
+            {
+                "#fallBkJoinByBrowser:visible": 1,
+                'button:has-text("Join from browser"):visible': 1,
+            }
+        )
+
+        clicked = await provider._click_visible_browser_join(page)
+
+        assert clicked is True
+        assert page.locator("#fallBkJoinByBrowser:visible").clicked is True
+
+    @pytest.mark.asyncio
+    async def test_webex_prejoin_opens_preloaded_web_client_when_timing_modal_stalls(self, monkeypatch):
+        provider = WebexProvider()
+        iframe = FakeFrame({})
+
+        browser_prompt_selector = '[role="dialog"]:visible #fallBkJoinByBrowser:has-text("Join from browser")'
+
+        def open_direct_web_client(page, _url):
+            page._counts[browser_prompt_selector] = 0
+            page._counts["#fallBkJoinByBrowser:visible"] = 0
+            page._counts["#broadcom-center-right:visible"] = 0
+            page._counts['[data-test="Name (required)"]'] = 1
+            page._counts['[data-test="join-button"]'] = 1
+
+        page = FakePage(
+            {
+                "#unified-webclient-iframe": 1,
+                browser_prompt_selector: 1,
+                "#fallBkJoinByBrowser:visible": 1,
+                "#broadcom-center-right:visible": 1,
+            },
+            attributes={
+                (
+                    "#unified-webclient-iframe",
+                    "src",
+                ): "https://web.webex.com/meeting?mtuuid=abc&preload=true&darkMode=false"
+            },
+            goto_handler=open_direct_web_client,
+        )
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _page: iframe)
+
+        await provider.prejoin(page, "Recorder")
+
+        assert page.goto_calls
+        assert page.goto_calls[0]["url"] == "https://web.webex.com/meeting?mtuuid=abc&darkMode=false&preload=false"
+        assert page.locator('[data-test="Name (required)"]').filled_value == "Recorder"
+
+    @pytest.mark.asyncio
+    async def test_webex_click_join_rejects_still_visible_browser_prompt(self):
+        provider = WebexProvider()
+        page = FakePage({'[role="dialog"]:visible #fallBkJoinByBrowser:has-text("Join from browser")': 1})
+
+        with pytest.raises(RuntimeError, match="browser join prompt still visible"):
+            await provider.click_join(page)
+
+    @pytest.mark.asyncio
+    async def test_webex_prejoin_dialog_dismissal_does_not_click_cookie_reject(self):
+        provider = WebexProvider()
+        page = FakePage({'button:has-text("Reject"):visible': 1})
+
+        dismissed = await provider._dismiss_prejoin_dialogs(page)
+
+        assert dismissed is False
+        assert page.locator('button:has-text("Reject"):visible').clicked is False
+
+    @pytest.mark.asyncio
+    async def test_webex_accepts_cookie_banner_inside_iframe(self):
+        provider = WebexProvider()
+        iframe = FakeFrame({'mdc-button:has-text("Accept"):visible': 1})
+
+        accepted = await provider._accept_cookie_banner(iframe)
+
+        assert accepted is True
+        assert iframe.locator('mdc-button:has-text("Accept"):visible').clicked is True
+
+    @pytest.mark.asyncio
+    async def test_webex_mutes_currently_unmuted_microphone(self):
+        provider = WebexProvider()
+        iframe = FakeFrame({'[data-test="microphone-button"]': 1})
+        iframe._attributes[('[data-test="microphone-button"]', "aria-label")] = (
+            "Microphone is currently unmuted - click to mute"
+        )
+
+        muted = await provider._mute_microphone_if_needed(iframe)
+
+        assert muted is True
+        assert iframe.locator('[data-test="microphone-button"]').clicked is True
+
+    @pytest.mark.asyncio
+    async def test_webex_leaves_currently_muted_microphone_alone(self):
+        provider = WebexProvider()
+        iframe = FakeFrame({'[data-test="microphone-button"]': 1})
+        iframe._attributes[('[data-test="microphone-button"]', "aria-label")] = (
+            "Microphone is currently muted - click to unmute"
+        )
+
+        muted = await provider._mute_microphone_if_needed(iframe)
+
+        assert muted is False
+        assert iframe.locator('[data-test="microphone-button"]').clicked is False
+
+    @pytest.mark.asyncio
+    async def test_webex_wait_until_joined_reclicks_when_back_on_prejoin(self):
+        provider = WebexProvider()
+        page = FakePage()
+        provider.probe_state = AsyncMock(
+            side_effect=[
+                MeetingStateSnapshot(state=MeetingState.PREJOIN),
+                MeetingStateSnapshot(state=MeetingState.IN_MEETING),
+            ]
+        )
+        provider.click_join = AsyncMock()
+        provider.short_ui_settle = AsyncMock()
+
+        result = await provider.wait_until_joined(page, timeout_sec=5)
+
+        assert result == JoinResult(success=True)
+        provider.click_join.assert_awaited_once_with(page)
 
     @pytest.mark.asyncio
     async def test_zoom_display_name_waits_for_selector_before_fill(self):
@@ -624,13 +813,65 @@ class TestProviderProbeState:
     @pytest.mark.asyncio
     async def test_webex_probe_state_detects_in_meeting_from_iframe(self, monkeypatch):
         provider = WebexProvider()
-        page = FakePage(url="https://company.webex.com/meet/test", title="")
+        page = FakePage({"#unified-webclient-iframe": 1}, url="https://company.webex.com/meet/test", title="")
         monkeypatch.setattr(provider, "_get_webex_iframe", lambda _: FakeFrame({'[data-test="grid-layout"]': 1}))
 
         snapshot = await provider.probe_state(page)
 
         assert snapshot.state == MeetingState.IN_MEETING
         assert '[data-test="grid-layout"]' in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_webex_probe_state_does_not_treat_prejoin_local_stream_as_lobby(self, monkeypatch):
+        provider = WebexProvider()
+        page = FakePage({"#unified-webclient-iframe": 1}, url="https://company.webex.com/meet/test", title="Webex")
+        monkeypatch.setattr(
+            provider,
+            "_get_webex_iframe",
+            lambda _: FakeFrame(
+                {
+                    '[data-test="local_stream"]': 1,
+                    '[data-test="join-button"]': 1,
+                    'mdc-input[data-test*="name" i]': 1,
+                }
+            ),
+        )
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.PREJOIN
+        assert '[data-test="join-button"]' in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_webex_probe_state_keeps_connecting_ui_as_joining(self, monkeypatch):
+        provider = WebexProvider()
+        page = FakePage({"#unified-webclient-iframe": 1}, url="https://company.webex.com/meet/test", title="準備加入")
+        monkeypatch.setattr(provider, "_get_webex_iframe", lambda _: FakeFrame({':text("正在連線")': 1}))
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.JOINING
+        assert ':text("正在連線")' in snapshot.evidence["matched_selectors"]
+
+    @pytest.mark.asyncio
+    async def test_webex_probe_state_does_not_treat_connecting_controls_as_joined(self, monkeypatch):
+        provider = WebexProvider()
+        page = FakePage({"#unified-webclient-iframe": 1}, url="https://company.webex.com/meet/test", title="Webex")
+        monkeypatch.setattr(
+            provider,
+            "_get_webex_iframe",
+            lambda _: FakeFrame(
+                {
+                    ':text("正在連線")': 1,
+                    '[data-test="participants-toggle-button"]': 1,
+                }
+            ),
+        )
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.JOINING
+        assert ':text("正在連線")' in snapshot.evidence["matched_selectors"]
 
     @pytest.mark.asyncio
     async def test_zoom_probe_state_detects_meeting_end(self):

@@ -19,6 +19,7 @@ class VirtualEnvironmentConfig:
     depth: int = 24
     display_num: int = 99
     pulse_sink_name: str = "virtual_speaker"
+    pulse_source_name: str | None = None
 
 
 @dataclass
@@ -33,6 +34,7 @@ class VirtualEnvironment:
     _xvfb_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _audio_keepalive_process: subprocess.Popen | None = field(default=None, init=False, repr=False)
     _audio_module_id: str | None = field(default=None, init=False, repr=False)
+    _audio_source_module_id: str | None = field(default=None, init=False, repr=False)
     _started: bool = field(default=False, init=False)
     _xvfb_owned: bool = field(default=False, init=False)
 
@@ -52,6 +54,11 @@ class VirtualEnvironment:
         return f"{self.config.pulse_sink_name}.monitor"
 
     @property
+    def pulse_source(self) -> str | None:
+        """Return optional PulseAudio source exposed to the browser."""
+        return self.config.pulse_source_name
+
+    @property
     def env_vars(self) -> dict[str, str]:
         """Return environment variables for subprocess.
 
@@ -65,6 +72,8 @@ class VirtualEnvironment:
         env["PULSE_SERVER"] = f"unix:{xdg_runtime}/pulse/native"
         env["XDG_RUNTIME_DIR"] = xdg_runtime
         env["PULSE_SINK"] = self.config.pulse_sink_name
+        if self.config.pulse_source_name:
+            env["PULSE_SOURCE"] = self.config.pulse_source_name
         return env
 
     async def start(self) -> dict[str, str]:
@@ -100,6 +109,7 @@ class VirtualEnvironment:
                 self._started,
                 self._audio_keepalive_process is not None,
                 self._audio_module_id is not None,
+                self._audio_source_module_id is not None,
                 self._xvfb_process is not None,
                 self._xvfb_owned,
             ]
@@ -123,6 +133,7 @@ class VirtualEnvironment:
             finally:
                 self._audio_keepalive_process = None
 
+        self._unload_owned_audio_source()
         self._unload_owned_audio_sink()
 
         if self._xvfb_process:
@@ -416,6 +427,20 @@ class VirtualEnvironment:
                 logger.warning(f"Virtual audio monitor source not ready: {self.pulse_monitor}")
                 return
 
+            if self.config.pulse_source_name:
+                source_names = pactl.short_names(source_result.stdout)
+                if self.config.pulse_source_name not in source_names:
+                    await self._create_pulse_source()
+                    source_result = subprocess.run(
+                        ["pactl", "list", "sources", "short"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    source_names = pactl.short_names(source_result.stdout)
+                if self.config.pulse_source_name not in source_names:
+                    logger.warning(f"Virtual browser audio source not ready: {self.config.pulse_source_name}")
+
             # Start audio keepalive process to prevent PipeWire from suspending the sink
             # PipeWire suspends idle sinks which causes FFmpeg to stall
             await self._start_audio_keepalive()
@@ -457,6 +482,61 @@ class VirtualEnvironment:
         module_id = result.stdout.strip()
         self._audio_module_id = module_id or None
         logger.info("Created virtual audio sink %s (module %s)", self.config.pulse_sink_name, module_id or "?")
+
+    async def _create_pulse_source(self) -> None:
+        """Create a browser-visible source mapped from the per-recording sink monitor."""
+        if not self.config.pulse_source_name:
+            return
+
+        cmd = [
+            "pactl",
+            "load-module",
+            "module-remap-source",
+            f"master={self.pulse_monitor}",
+            f"source_name={self.config.pulse_source_name}",
+            f"source_properties=device.description={self.config.pulse_source_name}",
+            "channels=1",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Failed to create browser audio source %s from %s: %s",
+                self.config.pulse_source_name,
+                self.pulse_monitor,
+                result.stderr.strip(),
+            )
+            return
+
+        module_id = result.stdout.strip()
+        self._audio_source_module_id = module_id or None
+        logger.info(
+            "Created browser audio source %s from %s (module %s)",
+            self.config.pulse_source_name,
+            self.pulse_monitor,
+            module_id or "?",
+        )
+
+    def _unload_owned_audio_source(self) -> None:
+        """Unload a browser source module created by this runtime, if any."""
+        if not self._audio_source_module_id:
+            return
+        try:
+            subprocess.run(
+                ["pactl", "unload-module", self._audio_source_module_id],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            logger.info("Unloaded browser audio source module %s", self._audio_source_module_id)
+        except Exception as e:
+            logger.debug(f"Failed to unload browser audio source module {self._audio_source_module_id}: {e}")
+        finally:
+            self._audio_source_module_id = None
 
     def _unload_owned_audio_sink(self) -> None:
         """Unload a sink module created by this runtime, if any."""

@@ -1,6 +1,7 @@
 import json
 import logging
 import shutil
+from collections.abc import Callable
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -72,6 +73,7 @@ class RecordingSession:
         self._browser_context_type: str | None = None
         self._last_display: str | None = None
         self._last_audio_source: str | None = None
+        self._last_browser_audio_source: str | None = None
 
     def _normalize_browser_mode(self, value: object) -> str:
         mode = str(value).strip().lower()
@@ -109,6 +111,13 @@ class RecordingSession:
         if self.configured_crop_top_px > 0:
             return "fallback_configured"
         return "auto_pending"
+
+    def _browser_audio_source_name(self) -> str | None:
+        """Return an optional per-provider Pulse source name for the browser."""
+        if str(self.job.provider).lower() != "webex":
+            return None
+        sink_name = self.runtime_resources.pulse_sink_name if self.runtime_resources else "virtual_speaker"
+        return f"{sink_name}_mic"
 
     @property
     def console_messages(self) -> list[dict]:
@@ -156,11 +165,13 @@ class RecordingSession:
                 pulse_sink_name=(
                     self.runtime_resources.pulse_sink_name if self.runtime_resources else "virtual_speaker"
                 ),
+                pulse_source_name=self._browser_audio_source_name(),
             )
         )
         env_vars = await self.virtual_env.start()
         self._last_display = self.virtual_env.display
         self._last_audio_source = self.virtual_env.pulse_monitor
+        self._last_browser_audio_source = getattr(self.virtual_env, "pulse_source", None)
 
         self.playwright = await async_playwright().start()
         if self.resolved_browser_mode == "app":
@@ -265,7 +276,7 @@ class RecordingSession:
             probe_callback=lambda snapshot: self.record_provider_state(snapshot, "join_meeting"),
         )
 
-    async def wait_for_lobby_admission(self) -> bool:
+    async def wait_for_lobby_admission(self, cancel_callback: Callable[[], bool] | None = None) -> bool:
         """Wait until admitted from the lobby."""
         if not self.page or not self.provider:
             raise RuntimeError("Runtime not prepared")
@@ -274,6 +285,7 @@ class RecordingSession:
             self.page,
             max_wait_sec=self.job.lobby_wait_sec,
             probe_callback=lambda snapshot: self.record_provider_state(snapshot, "admit_or_fail"),
+            cancel_callback=cancel_callback,
         )
 
     async def ensure_joined(self) -> JoinResult:
@@ -316,6 +328,8 @@ class RecordingSession:
             await self.page.bring_to_front()
         except Exception as e:
             logger.debug(f"Could not bring page to front before capture: {e}")
+
+        await self._dismiss_browser_modal_prompts()
 
         fullscreen_request_allowed = getattr(self, "resolved_browser_mode", "normal") != "app"
         script = """
@@ -361,6 +375,23 @@ class RecordingSession:
             self._capture_surface = {"error": str(e)}
             self._resolve_crop_top_px()
             logger.warning(f"Could not prepare capture surface: {e}")
+
+    async def _dismiss_browser_modal_prompts(self) -> None:
+        """Best-effort dismissal for browser chrome prompts such as external protocol dialogs."""
+        if not self.page:
+            return
+
+        keyboard = getattr(self.page, "keyboard", None)
+        press = getattr(keyboard, "press", None)
+        if not press:
+            return
+
+        for _ in range(2):
+            try:
+                await press("Escape")
+            except Exception as e:
+                logger.debug(f"Could not dismiss browser modal prompt: {e}")
+                return
 
     def _resolve_crop_top_px(self) -> None:
         if self.recording_crop_mode == "off":
@@ -474,6 +505,9 @@ class RecordingSession:
             },
             "browser_surface": self._capture_surface,
             "audio_source": self.virtual_env.pulse_monitor if self.virtual_env else self._last_audio_source,
+            "browser_audio_source": (
+                getattr(self.virtual_env, "pulse_source", None) if self.virtual_env else self._last_browser_audio_source
+            ),
             "output_file": str(self.output_file),
             "provider_state_log": str(self.provider_state_path) if self.provider_state_path.exists() else None,
             "stages": self._stage_timings,

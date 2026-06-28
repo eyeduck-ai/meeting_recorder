@@ -369,6 +369,7 @@ class BaseProvider(ABC):
         page: Page,
         max_wait_sec: int = 900,
         probe_callback: Callable[[MeetingStateSnapshot], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> bool:
         """Wait in the lobby until admitted or timeout."""
         logger.info(f"Waiting in lobby (max={max_wait_sec}s)")
@@ -376,9 +377,15 @@ class BaseProvider(ABC):
         check_interval = 5
 
         while (asyncio.get_event_loop().time() - start_time) < max_wait_sec:
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError("Job cancelled")
+
             snapshot = await self.probe_state(page)
             if probe_callback:
                 probe_callback(snapshot)
+
+            if cancel_callback and cancel_callback():
+                raise asyncio.CancelledError("Job cancelled")
 
             if snapshot.state == MeetingState.IN_MEETING:
                 return True

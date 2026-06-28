@@ -1118,6 +1118,22 @@ class TestRecordingSession:
     def _fake_provider(self, join_url: str = "https://meet.test/room"):
         return SimpleNamespace(build_join_url=lambda _code, _base_url=None: join_url)
 
+    def test_webex_browser_audio_source_uses_runtime_sink(self):
+        """Webex browser sessions should get a per-job microphone source."""
+        session = RecordingSession.__new__(RecordingSession)
+        session.job = SimpleNamespace(provider="webex")
+        session.runtime_resources = SimpleNamespace(pulse_sink_name="mr_sink_job123")
+
+        assert session._browser_audio_source_name() == "mr_sink_job123_mic"
+
+    def test_non_webex_browser_audio_source_is_not_overridden(self):
+        """Other providers should keep the browser default source behavior."""
+        session = RecordingSession.__new__(RecordingSession)
+        session.job = SimpleNamespace(provider="jitsi")
+        session.runtime_resources = SimpleNamespace(pulse_sink_name="mr_sink_job123")
+
+        assert session._browser_audio_source_name() is None
+
     @pytest.mark.asyncio
     async def test_dismiss_provider_overlays_delegates_to_provider(self):
         """RecordingSession should keep provider-specific overlay logic inside the provider."""
@@ -1137,6 +1153,26 @@ class TestRecordingSession:
         provider.dismiss_transient_overlays.assert_awaited_once_with(page)
         provider.probe_state.assert_awaited_once_with(page)
         session.record_provider_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_lobby_admission_forwards_cancel_callback(self):
+        """Stop requests should be visible while a provider waits in lobby."""
+        page = object()
+        provider = Mock()
+        provider.wait_in_lobby = AsyncMock(return_value=False)
+        cancel_callback = Mock(return_value=False)
+
+        session = RecordingSession.__new__(RecordingSession)
+        session.page = page
+        session.provider = provider
+        session.job = SimpleNamespace(lobby_wait_sec=300)
+        session.record_provider_state = Mock()
+
+        result = await session.wait_for_lobby_admission(cancel_callback=cancel_callback)
+
+        assert result is False
+        provider.wait_in_lobby.assert_awaited_once()
+        assert provider.wait_in_lobby.await_args.kwargs["cancel_callback"] is cancel_callback
 
     @pytest.mark.asyncio
     async def test_uses_job_resolution_for_runtime_and_capture(self, monkeypatch, tmp_path):
@@ -1525,7 +1561,17 @@ class TestRecordingSession:
     async def test_prepare_capture_surface_records_browser_dimensions(self):
         """Capture preparation should persist browser surface diagnostics."""
 
+        class FakeKeyboard:
+            def __init__(self):
+                self.pressed = []
+
+            async def press(self, key):
+                self.pressed.append(key)
+
         class FakePage:
+            def __init__(self):
+                self.keyboard = FakeKeyboard()
+
             async def bring_to_front(self):
                 self.brought_to_front = True
 
@@ -1551,6 +1597,7 @@ class TestRecordingSession:
 
         await session.prepare_capture_surface()
 
+        assert session.page.keyboard.pressed == ["Escape", "Escape"]
         assert session._capture_surface["innerWidth"] == 1280
         assert session._capture_surface["outerHeight"] == 800
         assert session._capture_surface["fullscreenRequestAllowed"] is True
@@ -1744,6 +1791,15 @@ class TestRecordingSession:
 class TestVirtualEnvironment:
     """Tests for virtual environment lifecycle behavior."""
 
+    def test_env_vars_expose_configured_browser_audio_source(self):
+        """PULSE_SOURCE should be set only when a browser source is configured."""
+        env = VirtualEnvironment(
+            config=VirtualEnvironmentConfig(pulse_sink_name="mr_sink_job1", pulse_source_name="mr_sink_job1_mic")
+        )
+
+        assert env.env_vars["PULSE_SINK"] == "mr_sink_job1"
+        assert env.env_vars["PULSE_SOURCE"] == "mr_sink_job1_mic"
+
     @pytest.mark.asyncio
     async def test_cleanup_xvfb_only_targets_owned_process_and_display_lock(self, monkeypatch):
         """Cleanup should stay scoped to the owned Xvfb process and the current display lock pid."""
@@ -1794,6 +1850,55 @@ class TestVirtualEnvironment:
         start_keepalive.assert_awaited_once_with()
         assert ["pactl", "load-module", "module-null-sink"] not in [cmd[:3] for cmd in commands if len(cmd) >= 3]
         assert ["pactl", "set-default-sink", "virtual_speaker"] not in commands
+
+    @pytest.mark.asyncio
+    async def test_setup_pulse_audio_creates_remap_source_when_configured(self, monkeypatch):
+        """Webex browser mic source should be remapped from the per-job monitor source."""
+        env = VirtualEnvironment(
+            config=VirtualEnvironmentConfig(
+                pulse_sink_name="virtual_speaker",
+                pulse_source_name="virtual_speaker_mic",
+            )
+        )
+        commands = []
+        source_list_calls = 0
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal source_list_calls
+            commands.append(cmd)
+            if cmd == ["pactl", "info"]:
+                return Mock(returncode=0, stdout="Server Name: PulseAudio")
+            if cmd == ["pactl", "list", "sinks", "short"]:
+                return Mock(returncode=0, stdout="0\tvirtual_speaker\tmodule-null-sink.c")
+            if cmd == ["pactl", "list", "sources", "short"]:
+                source_list_calls += 1
+                if source_list_calls == 1:
+                    return Mock(returncode=0, stdout="0\tvirtual_speaker.monitor\tmodule-null-sink.c")
+                return Mock(
+                    returncode=0,
+                    stdout=(
+                        "0\tvirtual_speaker.monitor\tmodule-null-sink.c\n1\tvirtual_speaker_mic\tmodule-remap-source.c"
+                    ),
+                )
+            if cmd[:3] == ["pactl", "load-module", "module-remap-source"]:
+                return Mock(returncode=0, stdout="88\n", stderr="")
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        start_keepalive = AsyncMock()
+
+        monkeypatch.setattr("recording.virtual_env.subprocess.run", fake_run)
+        monkeypatch.setattr(env, "_start_audio_keepalive", start_keepalive)
+
+        await env._setup_pulse_audio()
+
+        start_keepalive.assert_awaited_once_with()
+        assert env._audio_source_module_id == "88"
+        assert any(
+            cmd[:3] == ["pactl", "load-module", "module-remap-source"]
+            and "master=virtual_speaker.monitor" in cmd
+            and "source_name=virtual_speaker_mic" in cmd
+            for cmd in commands
+        )
 
     @pytest.mark.asyncio
     async def test_setup_pulse_audio_requires_exact_sink_match(self, monkeypatch):

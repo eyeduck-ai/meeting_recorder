@@ -42,6 +42,14 @@
 - Chromium `--app` 只有作用在實際錄製用的 app window；`--app=about:blank` 後再 `browser.new_context()` / `context.new_page()` 會產生普通 Chrome page，仍可能錄到 address bar。可行模式是 `launch_persistent_context(..., --app=<join_url>)` 後使用 `context.pages[0]`，再把同一個 page 交給 provider join flow。
 - Chromium app window hardening 時不要只依賴 `context.pages[0]` 立即存在；Playwright persistent context 啟動後應 bounded wait initial page，且 app mode 不需要再 request DOM fullscreen。`runtime.json` / `metadata.json` 也不能保存完整 join URL query/hash，否則 Zoom/Webex 的 `pwd` 或 token 會被 diagnostics 留下。
 - app window 已以 Jitsi live smoke 驗證；Webex/Zoom 因本輪沒有可加入的測試會議連結，只能先用單元測試保護啟動/diagnostics/fallback 行為。拿到有效 Webex/Zoom 測試連結後，要補抽幀確認 redirect、browser join 或 popup 不會脫離 app window。
+- Webex live join 可能先顯示「on time for your meeting」timing modal，且 `#unified-webclient-iframe` 會先以 `display:none` 出現在 DOM；provider 不可只等 iframe attached，也不可點 hidden `#joinFromWebapp` 或把 timing modal 的 `Join from browser` 當成最終 join。應先推進可見 dialog 內的 browser-join control，確認 iframe prejoin controls 出現後才填姓名與送出 join。
+- Webex live UI 可能使用 `mdc-input` / `mdc-button` web component 與中文 `data-test="名稱"`，且 helper dialog 的「關閉」會遮住 join button；provider 要能填 web component shadow/input fallback、處理本地化 close control，但不要把 cookie banner 的 `Reject` 當作一般 prejoin dialog 按掉。
+- Webex 的「正在連線 / Connecting」畫面可能已出現底部控制列，不能只靠 more menu、video pane 或部分 toolbar selector 判斷已加入；connecting text 應優先回報 `JOINING`，避免 live validation 把尚未進會議誤判為 pass。
+- Webex provider-only 在 Windows/本機瀏覽器可進入空會議室，不代表 Docker/Linux/Xvfb 錄製 runtime 也能完成 join；若 API job 反覆 `Joining -> PREJOIN` 且沒有 selector/password/FFmpeg/runtime 錯誤，要用 container 內 `scripts.test_provider` 分離「app job orchestration」與「Webex 對 Linux guest web client 的行為差異」。
+- Webex prejoin 會在正式加入前建立 self preview，`[data-test="local_stream"]` / pin-self-view control 不等於 lobby 或 in-meeting；lobby 判斷必須要求明確 lobby container、title 或「Waiting for host」類文案，否則短驗證會得到假陽性。
+- Docker/Xvfb 下 Webex 可能因看不到 browser microphone source 而停在 prejoin；用 Chromium fake media flag 可能只產生假的 local preview 與假陽性，不代表 FFmpeg 會錄到真實會議音訊。較穩定做法是把 per-job sink monitor remap 成 browser 可見 microphone source，入會前再由 provider 明確靜音。
+- Webex 成功進會議後仍可能留下 Chrome「Open xdg-open?」外部協定提示；它不是 DOM overlay，provider selector 看不到。FFmpeg 前要在 session 層 dismiss browser chrome modal，否則錄影成功但畫面會被系統提示污染。
+- Webex/live validation 也要測 lobby blocker 的 stop path；若 provider lobby wait 沒有接 worker cancel flag，`waiting_lobby` job 會卡到 `lobby_wait_sec` timeout，導致驗證腳本或使用者 stop 看似無效。
 - smart trim 與 dynamic extension 不應依賴 provider DOM；起訖邊界要用媒體活動層判斷。若混用 provider overlay、會議結束文字與內容活動，容易形成不可測責任。
 - YouTube 上傳若使用裁剪檔，上傳成功後刪檔前要先保留 raw path，並把 DB `output_path` 回退到 raw；否則 Web UI 會指向已刪除的 preferred output。
 - schedule nullable 覆寫不只要在 job runner 執行時解析，也要在 create/update 當下用 effective config 驗證；否則使用者會得到「儲存成功但排程執行才失敗」的延遲錯誤。

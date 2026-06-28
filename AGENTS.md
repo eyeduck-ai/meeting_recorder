@@ -74,10 +74,13 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `scheduling.job_runner.JobRunner` 負責 delayed retry、active recording、tracked post-processing 與 tracked upload task shutdown；新增後處理或 upload path 時不要回到 fire-and-forget 且無 interrupted cleanup 的 task
 - `recording.capacity_guard.RecordingCapacityGuard` 負責 process-local disk reservation，估算必須包含已啟用的 bounded `dynamic_extension_max_sec`；若 `dynamic_extension_max_sec=0`，用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限；不要只用單 job free-space check 判斷多路長錄製容量
 - `recording.runtime_resources.RuntimeResourceAllocator` 負責每個 active job 的 Xvfb display 與 PipeWire/Pulse sink lease；不要在 provider 或 runner 內硬編 `:99` 或共用 `virtual_speaker` 作為並行錄製資源
+- Webex browser runtime 會把 per-job sink monitor 額外 remap 成 per-job browser microphone source；FFmpeg 錄音來源仍是 sink monitor，不要用 fake media device 取代此路徑，避免 Webex prejoin false positive 或靜音錄影
 - `recording.pactl.short_names()` 是 `pactl list ... short` device name parsing owner；runtime checks、virtual audio setup 與 FFmpeg audio source checks 不要各自複製 parser
+- Webex 可能觸發 Chrome 外部協定提示（例如 `webex://` / `xdg-open`），這是 browser chrome modal 不是 provider DOM overlay；capture 前由 `RecordingSession.prepare_capture_surface()` best-effort dismiss，不要把它塞進 provider selector 邏輯
 - `RecordingWorker` 維護 active job registry，對外只用 `active_jobs` / `active_count` 表示 runtime active state；不要恢復舊 `is_busy` / `current_status` 全域狀態。cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象。`_current_job` 只保留作為 worker 內部/相容欄位，route、template、Telegram handler 不得用它推論 active recording 或容量
 - `services.job_actions.JobActionService` 是 job stop/finish/delete/cancel queued 的單一狀態決策層；queued cancel 必須使用 `JobRunner.cancel_queued_job_for_action()` 的 structured result 判斷 FIFO / retry waiting 來源，不要恢復 boolean `cancel_queued_job()` 或 route/service 自行推論 retry state。`ACTIVE_RECORDING_STATUSES` 與 `TERMINAL_JOB_STATUSES` 也由同一模組提供，REST route、Web UI route 與 template 不要各自維護不同的 job status 操作表
 - `services.job_runtime_state.JobRuntimeStateService` 是 API / Web UI / Telegram active、FIFO queued、retry waiting view 的單一組裝層；runner capacity/count fallback 與 invalid value normalization 也必須集中在這裡處理，不要在 route、template 或 Telegram handler 重新拼 active job ids、queue maps、capacity fallback 或 retry countdown maps
+- provider lobby wait 必須可被 worker per-job cancel flag 中斷；`waiting_lobby` stop 不可等到 `lobby_wait_sec` timeout 才收斂為 canceled
 - `services/__init__.py` 不 re-export 具體 service；新程式應直接 import service owner module，避免 package import eager-load unrelated service modules
 - legacy schedule `duration_mode` 只保留為 DB string column 與 migration target；不要恢復 `DurationMode` enum 或 provider-level auto-detect-end API
 - provider registry metadata 是 provider 名稱與選項的單一來源；不要在 ORM model 恢復 `ProviderType` enum 或其他第二份 provider 清單

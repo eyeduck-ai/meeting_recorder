@@ -249,7 +249,9 @@ class RecordingWorker:
             if join_result.in_lobby:
                 self._update_status(JobStatus.WAITING_LOBBY, job.job_id)
                 session.begin_stage("admit_or_fail")
-                admitted = await session.wait_for_lobby_admission()
+                admitted = await session.wait_for_lobby_admission(
+                    cancel_callback=lambda: self._is_cancel_requested(job.job_id)
+                )
                 if not admitted:
                     session.end_stage("admit_or_fail", status="error")
                     result.failure_stage = "admit_or_fail"

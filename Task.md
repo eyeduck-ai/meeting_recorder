@@ -33,6 +33,7 @@
 - [x] P3：拆分 `telegram_bot/conversations.py` 的 create schedule、edit schedule、create meeting conversation 群組。
 - [x] P3：持續將 Jitsi/Webex/Zoom 剩餘固定 sleep 改成 selector/state/function bounded wait，僅保留必要 debounce/fallback。
 - [x] P3：將 Zoom join/prejoin 改成狀態推進流程，覆蓋 cookie banner、Join from browser、name/password form、lobby 與 in-meeting 分支。
+- [x] P3：補強 Webex live join 與 Docker 錄製 runtime，包含 iframe cookie/name/join 控制、prejoin media 靜音、lobby false-positive 防護、per-job browser microphone source 與 lobby stop cancel 收斂。
 - [x] P3：新增 provider transient overlay dismissal，讓 Zoom 錄製前清掉 hardware acceleration 等遮擋提示。
 - [x] P3：新增錄製畫面準備與 `recording_crop_top_px` 上方裁切 fallback；後續已移除 kiosk/fullscreen launch flags 依賴。
 - [x] P3：新增 `recording_crop_mode` auto/manual/off，依 Chromium inner/outer dimensions 動態解析上方裁切 offset，並保留 manual fallback。
