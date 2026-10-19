@@ -8,6 +8,7 @@
 
 本檔是可執行任務清單。完成任務後，請把 `[ ]` 改成 `[x]`；若過程中有踩坑、誤判或可避免的耗時模式，請同步更新 `Lesson.md`。
 
+- [x] P1：校正 YouTube Device Flow 為支援上傳的 youtube scope，同步 OAuth client 類型、Telegram Chat ID 註冊與首次部署文件，並補 HTTP 授權請求回歸測試。
 - [x] P0：修 API auth bypass，補 middleware integration tests。
 - [x] P0：收斂 CORS 設定與 API public path 清單。
 - [x] P1：建立 `RuntimeConfigService`，定義 env / DB / schedule override precedence。

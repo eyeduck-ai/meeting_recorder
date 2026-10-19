@@ -114,6 +114,8 @@ uv run uvicorn api.main:app --reload
 
 目前程式碼中的預設時區是 `Asia/Taipei`，不是 `UTC`。
 
+Telegram 使用 polling，Chat ID 由 `/start` 註冊並寫入 `telegram_users`，之後由管理員核准；沒有 `TELEGRAM_CHAT_ID` 設定。YouTube 使用 Device Flow，OAuth client 必須選擇 TVs and Limited Input devices；`uploading/youtube.py` 使用 Device Flow 支援且可上傳的 `https://www.googleapis.com/auth/youtube` scope，不可改回不受支援的 `youtube.upload`。該 scope 也涵蓋 channel lookup，不需重複要求 `youtube.readonly`。OAuth client JSON 的 `client_id` / `client_secret` 放入 `.env`，使用者授權後的 refresh/access token 由 `TokenStorage` 保存於 `data/youtube_token.json`。External / Testing refresh token 通常 7 天失效；首次設定流程與官方文件連結請見 README。
+
 ### 2. `app_settings` 資料表
 
 `services/app_settings.py` 目前管理一組可透過 UI/API 調整的設定鍵：

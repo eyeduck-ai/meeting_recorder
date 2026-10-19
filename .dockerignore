@@ -2,6 +2,14 @@
 .git
 .gitignore
 
+# Machine-local agent and deployment configuration
+.agents
+.aws
+.codex
+docker-compose.local.yml
+client_secret*.json
+credentials*.json
+
 # Python
 __pycache__
 *.py[cod]

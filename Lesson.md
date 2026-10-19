@@ -8,6 +8,7 @@
 
 本檔記錄開發與盤點過程中的錯誤判斷、耗時痛點與避免方式。新增 Lesson 時，請寫成可被未來 agent 或 contributor 直接套用的判斷規則。
 
+- OAuth scope 必須和 grant type 一起核對官方支援清單：YouTube `youtube.upload` 可用於一般 OAuth，卻不在 Google Device Flow allowed scopes 內；Device Flow 需要 TVs and Limited Input devices client，並使用可上傳的 `youtube` scope。文件不能只寫泛用的 Desktop App 憑證或 API key。
 - 不要在未確認 middleware public path prefix 行為前假設 API 已受保護。
 - 不要只看資料表欄位或 UI 表單就認定設定已實際套用到 worker/session。
 - 不要把 process-local singleton 誤描述成跨 process/跨 container 的並發保護。
