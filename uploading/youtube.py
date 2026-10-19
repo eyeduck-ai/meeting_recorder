@@ -30,10 +30,11 @@ YOUTUBE_DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
 YOUTUBE_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_API_URL = "https://www.googleapis.com/youtube/v3"
 
-# Required scopes for YouTube upload
+# Device Flow supports youtube/youtube.readonly, but not youtube.upload.
+# The youtube scope permits uploads and the channel lookup used by this client.
+# https://developers.google.com/identity/protocols/oauth2/limited-input-device#allowedscopes
 YOUTUBE_SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube",
 ]
 
 

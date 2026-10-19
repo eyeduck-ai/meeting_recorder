@@ -11,6 +11,7 @@
 
 ## P1：設定、狀態與儲存一致性
 
+- 已校正 YouTube Device Flow 的 OAuth client 類型與可用 scope，避免首次部署照文件建立 Desktop App，或要求不受支援的 `youtube.upload` 而無法授權。
 - 已修正 smart trim 跨窗口借用活動造成的誤剪：兩端獨立 refinement、缺少證據時保留 coarse boundary、異常短結果回退原檔；預設前 15 秒／後 30 秒，並支援逐工作原檔保留標記。
 
 - 建立 `RuntimeConfigService`，統一 `.env`、`config.settings`、`app_settings` table、schedule override 的 precedence。

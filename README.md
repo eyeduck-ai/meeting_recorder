@@ -95,14 +95,23 @@ python -m scripts.dev_compose up --build -d
 4. 使用者先對 Bot 發送 `/start`。
 5. 進入 Web UI 的 `/settings` 或 Telegram 管理流程核准使用者。
 
+一般個人使用不需要預先提供 Chat ID，也沒有 `TELEGRAM_CHAT_ID` 環境變數；Bot 收到 `/start` 後會將對話 ID 登錄到資料庫，管理員再核准該使用者即可。Bot 使用 polling，不需要公開網址、HTTPS 憑證或 Telegram webhook。若已有另一台主機使用同一個 Bot，請先停止原本的 polling instance，避免衝突。
+
 常用指令包含 `/list`、`/record`、`/edit`、`/meetings` 與 `/stop`。多場錄製同時進行時，`/list` 會顯示 active job id、FIFO queue count 與 retry waiting count；`/record` 建立「現在」錄製時只會在錄製容量已滿時提示會排隊；`/stop` 會停止最新 active recording，`/stop <job_id>` 可停止指定 active job，或取消指定 queued / retry waiting job。
 
 ### YouTube 上傳
 
 1. 在 [Google Cloud Console](https://console.cloud.google.com/) 建立專案並啟用 YouTube Data API v3。
-2. 建立 OAuth 2.0 Desktop App 憑證。
-3. 將 `YOUTUBE_CLIENT_ID`、`YOUTUBE_CLIENT_SECRET` 寫入 `.env`。
-4. 重啟服務後，到 Web UI 的 `/settings` 完成 Device Flow 授權。
+2. 設定 OAuth consent screen；若目前是 External / Testing，將實際上傳帳號加入 Test users。
+3. 建立 OAuth 2.0 **TVs and Limited Input devices（電視和輸入功能受限裝置）** 憑證。此程式使用 Device Flow，請勿建立 Desktop App 或 Web application 類型。
+4. 從下載的 OAuth client JSON 取出 `client_id`、`client_secret`，分別寫入 `.env` 的 `YOUTUBE_CLIENT_ID`、`YOUTUBE_CLIENT_SECRET`。API key 或 service account JSON 無法取代使用者 OAuth 授權。
+5. 重啟服務後，到 Web UI 的 `/settings` 完成 Device Flow 授權，登入擁有目標 YouTube 頻道的 Google 帳號。
+
+Device Flow 僅支援 `youtube` 與 `youtube.readonly` 等指定 scopes，沒有 `youtube.upload`；本程式使用 `https://www.googleapis.com/auth/youtube`，因此同意畫面會要求管理 YouTube 帳號的權限。憑證類型與 scopes 請以 [Google Device Flow 文件](https://developers.google.com/identity/protocols/oauth2/limited-input-device) 為準。授權成功後程式自動建立 `data/youtube_token.json`，不需要手動提供 refresh token 或 channel ID。
+
+External / Testing 的 refresh token 通常會在 7 天後失效；長期自動上傳前請確認 consent screen 的發布狀態與適用的審核要求，詳見 [Google refresh token expiration](https://developers.google.com/identity/protocols/oauth2#expiration)。
+
+會議錄影通常超過 15 分鐘；目標頻道需要完成電話驗證並啟用長影片上傳，詳見 [YouTube 長影片上傳說明](https://support.google.com/youtube/answer/71673)。
 
 ## 資料保存位置
 
