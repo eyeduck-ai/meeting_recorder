@@ -1,5 +1,9 @@
 # 經驗教訓
 
+- 不可把頭尾 refinement samples 合併後取全域 min/max；頭部無活動時會把尾部當起點，將一小時錄影裁成 10／15 秒。兩端須獨立判斷，無法確認時保留 coarse boundary，異常短結果退回原檔。
+- 裁剪保留時間須同步 Settings、app defaults、runtime fallback 與 ActivityConfig；測試既有邊界案例應明確指定其原本的預留參數。
+- 使用者要求保留原檔時，須涵蓋 maintenance retention 與格式轉換路徑，不能只保證 upload helper 當下不刪檔。
+
 本檔記錄開發與盤點過程中的錯誤判斷、耗時痛點與避免方式。新增 Lesson 時，請寫成可被未來 agent 或 contributor 直接套用的判斷規則。
 
 - 不要在未確認 middleware public path prefix 行為前假設 API 已受保護。

@@ -58,8 +58,8 @@ class RuntimeRecordingConfig:
     activity_video_diff_threshold: float = 0.015
     activity_sample_interval_sec: float = 5.0
     activity_sample_window_sec: float = 1.0
-    smart_trim_pre_roll_sec: float = 2.0
-    smart_trim_end_post_roll_sec: float = 5.0
+    smart_trim_pre_roll_sec: float = 15.0
+    smart_trim_end_post_roll_sec: float = 30.0
 
     @property
     def resolution(self) -> tuple[int, int]:
@@ -114,8 +114,8 @@ class RuntimeConfigService:
             "activity_video_diff_threshold": self._setting_value("activity_video_diff_threshold", 0.015),
             "activity_sample_interval_sec": self._setting_value("activity_sample_interval_sec", 5.0),
             "activity_sample_window_sec": self._setting_value("activity_sample_window_sec", 1.0),
-            "smart_trim_pre_roll_sec": self._setting_value("smart_trim_pre_roll_sec", 2.0),
-            "smart_trim_end_post_roll_sec": self._setting_value("smart_trim_end_post_roll_sec", 5.0),
+            "smart_trim_pre_roll_sec": self._setting_value("smart_trim_pre_roll_sec", 15.0),
+            "smart_trim_end_post_roll_sec": self._setting_value("smart_trim_end_post_roll_sec", 30.0),
             "lobby_wait_sec": self._setting_value("lobby_wait_sec", 900),
         }
 

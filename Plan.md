@@ -9,6 +9,8 @@
 
 ## P1：設定、狀態與儲存一致性
 
+- 已修正 smart trim 跨窗口借用活動造成的誤剪：兩端獨立 refinement、缺少證據時保留 coarse boundary、異常短結果回退原檔；預設前 15 秒／後 30 秒，並支援逐工作原檔保留標記。
+
 - 建立 `RuntimeConfigService`，統一 `.env`、`config.settings`、`app_settings` table、schedule override 的 precedence。
 - 讓 schedule/job 狀態語意更精準，拆出 `triggered_at`、`started_at`、`completed_at` 等欄位，讓 missed/catch-up 判斷更可靠。
 - 修正 schedule 解析度、lobby wait 等可設定但未完整套用到 worker/session 的問題。

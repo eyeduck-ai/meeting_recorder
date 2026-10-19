@@ -1,5 +1,9 @@
 # 改善任務
 
+- [x] P1：修正 smart trim 起訖 refinement 互相借用活動，補歷史 10／15 秒案例、尾端缺失與重疊窗口回歸測試。
+- [x] P1：將裁剪預留改為前 15 秒／後 30 秒，維持設定優先序並驗證實際預留範圍。
+- [x] P1：異常短裁剪回退原檔；原檔保留標記涵蓋 retention、dry-run、MKV canonicalization 與無效標記處理。
+
 本檔是可執行任務清單。完成任務後，請把 `[ ]` 改成 `[x]`；若過程中有踩坑、誤判或可避免的耗時模式，請同步更新 `Lesson.md`。
 
 - [x] P0：修 API auth bypass，補 middleware integration tests。

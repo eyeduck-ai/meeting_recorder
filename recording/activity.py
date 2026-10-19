@@ -37,8 +37,8 @@ class ActivityConfig:
     video_diff_threshold: float = 0.015
     sample_interval_sec: float = 5.0
     sample_window_sec: float = 1.0
-    smart_trim_pre_roll_sec: float = 2.0
-    smart_trim_end_post_roll_sec: float = 5.0
+    smart_trim_pre_roll_sec: float = 15.0
+    smart_trim_end_post_roll_sec: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -96,8 +96,8 @@ def build_activity_config(
     video_diff_threshold: float = 0.015,
     sample_interval_sec: float = 5.0,
     sample_window_sec: float = 1.0,
-    smart_trim_pre_roll_sec: float = 2.0,
-    smart_trim_end_post_roll_sec: float = 5.0,
+    smart_trim_pre_roll_sec: float = 15.0,
+    smart_trim_end_post_roll_sec: float = 30.0,
 ) -> ActivityConfig:
     return ActivityConfig(
         audio_threshold_db=audio_threshold_db,
@@ -619,6 +619,20 @@ class RecordingActivityAnalyzer:
         trim_end = min(duration, max(trim_start + 1.0, last_active_end + self.config.smart_trim_end_post_roll_sec))
         status = "trimmed" if trim_start > 0.5 or trim_end < duration - 0.5 else "skipped"
         reason = "media activity boundaries detected" if status == "trimmed" else "no trim needed"
+        candidate_duration = trim_end - trim_start
+        minimum_duration = min(60.0, duration * 0.1)
+        if status == "trimmed" and candidate_duration < minimum_duration:
+            self._diagnostics["trim_safety"] = {
+                "status": "raw_retained",
+                "candidate_start_sec": trim_start,
+                "candidate_end_sec": trim_end,
+                "candidate_duration_sec": candidate_duration,
+                "minimum_duration_sec": minimum_duration,
+            }
+            status = "skipped"
+            reason = "detected activity interval too short; raw recording retained"
+            trim_start = 0.0
+            trim_end = duration
         self._diagnostics["analysis_elapsed_sec"] = round(perf_counter() - started_at, 3)
         return TrimDecision(
             status=status,
@@ -769,26 +783,29 @@ class RecordingActivityAnalyzer:
             )
             refined_samples.extend(samples)
 
-        refined_active = [sample for sample in refined_samples if sample.active is True]
-        if not refined_active:
-            return (
-                first_active,
-                last_active,
-                {
-                    "status": "skipped",
-                    "reason": "no refined active samples",
-                    "window_count": len(windows),
-                    "sample_count": len(refined_samples),
-                },
-            )
-
-        refined_first = min(sample.timestamp_sec for sample in refined_active)
-        refined_last = max(sample.timestamp_sec for sample in refined_active)
+        # Each boundary needs evidence from its own window. A quiet start window
+        # must never borrow the end window's activity and discard the whole middle.
+        start_active = [
+            sample.timestamp_sec
+            for sample in refined_samples
+            if sample.active is True and start_range[0] <= sample.timestamp_sec < start_range[1]
+        ]
+        end_active = [
+            sample.timestamp_sec
+            for sample in refined_samples
+            if sample.active is True and end_range[0] <= sample.timestamp_sec < end_range[1]
+        ]
+        refined_first = min(start_active, default=first_active)
+        refined_last = max(end_active, default=last_active)
+        refinement_available = bool(start_active or end_active)
         return (
             refined_first,
             refined_last,
             {
-                "status": "refined",
+                "status": "refined" if refinement_available else "skipped",
+                "reason": "independent boundary evidence" if refinement_available else "no refined active samples",
+                "start_status": "refined" if start_active else "coarse_retained",
+                "end_status": "refined" if end_active else "coarse_retained",
                 "interval_sec": refinement_interval,
                 "window_count": len(windows),
                 "sample_count": len(refined_samples),

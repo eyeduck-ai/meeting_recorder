@@ -254,6 +254,10 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 
 ### 智慧錄影邊界
 
+- 預設 `smart_trim_pre_roll_sec=15`、`smart_trim_end_post_roll_sec=30`，Settings、app defaults、runtime fallback 與 ActivityConfig 一致；DB／明確 env override 仍優先。
+- 起訖 refinement 僅使用各自窗口的活動證據；某一端無活動時保留該端 coarse boundary，不可借用另一端。重疊窗口只 probe 一次，diagnostics 的 `start_status`／`end_status` 區分 `refined` 與 `coarse_retained`。
+- 候選裁剪區間短於 `min(60 seconds, raw_duration * 0.1)` 時，回傳 `skipped` 與完整原片範圍；`trim_safety` 保存候選起迄、長度及門檻。短錄影仍可正常裁剪。
+
 - `smart_trim_enabled` 啟用後，錄製完成會先保留 raw MKV，再用 `recording/activity.py` 分析原始檔的音訊能量與畫面差異，必要時產生 `*.trimmed.mkv` 作為 preferred local output。
 - `output_path` 代表 Web UI / API 優先使用的本地輸出；`raw_output_path` 永遠指向原始錄影；`trimmed_output_path` 保留本次裁剪輸出的路徑，即使自動 YouTube 上傳成功後該檔案已被刪除。
 - 起點裁剪以第一個「音訊或影像有活動」的 sample 為基準，保留 `smart_trim_pre_roll_sec`。完成檔案分析使用 streaming batch FFmpeg probes，避免長錄影每個 sample 各自啟動子程序，也避免一次把整段 PCM/raw frames 留在記憶體；若純影像差異出現在兩個 sample 之間，會回推到前一個 sample 作為活動起點。
@@ -290,6 +294,8 @@ Smart trim 與 dynamic extension 的媒體活動事件會寫入 `detection_logs`
 Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪除後會 best-effort `VACUUM` 回收 DB 檔案空間。
 
 ### Storage maintenance
+
+個別原檔可在 `runtime_summary_json.local_recording_retention` 寫入 `{ "preserve": true, "reason": "..." }`。僅 boolean `true` 會略過該 job 的 maintenance retention 與 MKV canonicalization，dry-run 亦同；其他 diagnostics／log retention 不受影響。操作員確認可釋放原檔後，才移除或明確取消標記；不新增隱含到期日。
 
 - 本機長期錄影格式是 `.mp4`。錄製仍先輸出 `.mkv` 以提高錄製穩定性；raw capture 成功後，`RecordingPostProcessor` 會 best-effort fast remux preferred output 成 validated `.mp4`，成功後刪除對應 `.mkv` 並把 `recording_jobs.output_path/file_size/runtime_summary_json` 改指 MP4。
 - Remux/transcode 都必須先寫入 same-directory temporary MP4，ffprobe 驗證可讀且有合理 video duration 後才 atomic replace 正式 MP4；任一失敗路徑都要刪 temporary file，且不得刪原 MKV。

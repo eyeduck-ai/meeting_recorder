@@ -158,6 +158,10 @@ Settings API / Web UI 應以 `get_all_settings()` 讀取完整 overlay，並以 
 
 ### 智慧錄影邊界
 
+- Smart trim 預設前留 15 秒、後留 30 秒；起訖 refinement 使用各自窗口的活動證據，無法確認時保留該端 coarse boundary，不可借用另一端。
+- 裁剪結果短於 `min(60 秒, 原片長度的 10%)` 時回退原檔並記錄 `trim_safety`。
+- 操作員要求保留的原檔以 `runtime_summary_json.local_recording_retention.preserve = true` 標記，maintenance retention 與 canonicalization 均須略過。
+
 - `recording/activity.py` 負責媒體活動分析、live extension probe 與 post-recording trim helper；不要把 provider DOM selector 放進這一層。
 - `smart_trim_enabled` 與 `dynamic_extension_enabled` 有全域預設，也可由 schedule nullable 欄位覆寫；`None` 代表繼承全域設定。schedule create/update 必須驗證有效組合，特別是 `dynamic_extension_max_sec == 0 or dynamic_extension_max_sec >= dynamic_extension_idle_sec`。
 - `RecordingMonitor` 到達 `duration_sec` 後才進入 dynamic extension phase；音訊或影像任一 active 就繼續錄，兩者都 inactive 達 `dynamic_extension_idle_sec` 或達 `dynamic_extension_max_sec` 才停止。
