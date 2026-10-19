@@ -1,5 +1,7 @@
 # 經驗教訓
 
+- 探針有回應不代表足以判定 inactive；任一未知且無正向活動證據時須中斷 idle 連續性。FFmpeg exit 0 也不代表裁剪完整，不可用預期片長掩蓋 ffprobe 失敗，須驗證實際片長後再選為上傳來源。
+
 - 不可把頭尾 refinement samples 合併後取全域 min/max；頭部無活動時會把尾部當起點，將一小時錄影裁成 10／15 秒。兩端須獨立判斷，無法確認時保留 coarse boundary，異常短結果退回原檔。
 - 裁剪保留時間須同步 Settings、app defaults、runtime fallback 與 ActivityConfig；測試既有邊界案例應明確指定其原本的預留參數。
 - 使用者要求保留原檔時，須涵蓋 maintenance retention 與格式轉換路徑，不能只保證 upload helper 當下不刪檔。

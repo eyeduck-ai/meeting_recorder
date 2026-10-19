@@ -53,15 +53,15 @@ class MediaActivityState:
 
     @property
     def available(self) -> bool:
-        return self.audio_active is not None or self.video_active is not None
+        return self.active is not None
 
     @property
     def active(self) -> bool | None:
         if self.audio_active is True or self.video_active is True:
             return True
-        if self.audio_active is None and self.video_active is None:
-            return None
-        return False
+        if self.audio_active is False and self.video_active is False:
+            return False
+        return None
 
 
 @dataclass(frozen=True)
@@ -506,12 +506,12 @@ class LiveMediaActivityProbe:
             video_active, video_diff = None, None
         else:
             video_active, video_diff = video_result
-        if audio_active is None and video_active is None:
-            reason = "media probes unavailable"
-        elif audio_active is True or video_active is True:
+        if audio_active is True or video_active is True:
             reason = "media activity detected"
-        else:
+        elif audio_active is False and video_active is False:
             reason = "audio silent and video still"
+        else:
+            reason = "media activity inconclusive; one or more probes unavailable"
         return MediaActivityState(
             audio_active=audio_active,
             video_active=video_active,
@@ -585,6 +585,22 @@ class RecordingActivityAnalyzer:
             return TrimDecision(
                 status="skipped",
                 reason="media probes unavailable",
+                trim_start_sec=0.0,
+                trim_end_sec=duration,
+                duration_sec=duration,
+                samples=samples,
+                diagnostics=self._diagnostics,
+            )
+
+        if any(sample.active is None for sample in samples):
+            self._diagnostics["analysis_elapsed_sec"] = round(perf_counter() - started_at, 3)
+            self._diagnostics["trim_safety"] = {
+                "status": "raw_retained",
+                "reason": "incomplete media activity evidence",
+            }
+            return TrimDecision(
+                status="skipped",
+                reason="media activity inconclusive; raw recording retained",
                 trim_start_sec=0.0,
                 trim_end_sec=duration,
                 duration_sec=duration,
@@ -795,6 +811,15 @@ class RecordingActivityAnalyzer:
             for sample in refined_samples
             if sample.active is True and end_range[0] <= sample.timestamp_sec < end_range[1]
         ]
+        if any(
+            sample.active is None and start_range[0] <= sample.timestamp_sec < start_range[1]
+            for sample in refined_samples
+        ):
+            start_active = []
+        if any(
+            sample.active is None and end_range[0] <= sample.timestamp_sec < end_range[1] for sample in refined_samples
+        ):
+            end_active = []
         refined_first = min(start_active, default=first_active)
         refined_last = max(end_active, default=last_active)
         refinement_available = bool(start_active or end_active)
@@ -1108,8 +1133,23 @@ async def trim_recording(
         logger.error("Trim failed for %s: %s", input_path, stderr[:400])
         return None
     duration_sec = await _probe_media_duration_sec(output_path)
-    if duration_sec is None:
-        duration_sec = expected_duration_sec
+    # Stream-copy boundaries can vary by a keyframe, but a corrupt or truncated
+    # output must never become the preferred recording or upload source.
+    tolerance_sec = max(2.0, min(5.0, expected_duration_sec * 0.02))
+    if (
+        duration_sec is None
+        or not math.isfinite(duration_sec)
+        or duration_sec <= 0
+        or abs(duration_sec - expected_duration_sec) > tolerance_sec
+    ):
+        logger.warning(
+            "Trim output duration invalid for %s: expected=%s actual=%s",
+            input_path,
+            expected_duration_sec,
+            duration_sec,
+        )
+        output_path.unlink(missing_ok=True)
+        return None
     return RecordingInfo(
         output_path=output_path,
         file_size=output_path.stat().st_size,

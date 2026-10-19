@@ -160,6 +160,8 @@ Settings API / Web UI 應以 `get_all_settings()` 讀取完整 overlay，並以 
 
 - Smart trim 預設前留 15 秒、後留 30 秒；起訖 refinement 使用各自窗口的活動證據，無法確認時保留該端 coarse boundary，不可借用另一端。
 - 裁剪結果短於 `min(60 秒, 原片長度的 10%)` 時回退原檔並記錄 `trim_safety`。
+- 未知音訊／影像探針不等於 inactive：兩者皆已確認 inactive 才能計算 idle timeout；未知或例外必須重置 idle timer，並在既有 max extension／hard deadline 內保留錄影。無上限的 legacy direct caller 最多等待一個 idle timeout。
+- Coarse scan 證據不完整時保留完整原片；refinement 證據不完整時保留該端 coarse boundary。裁剪檔須實測片長符合預期（允許 2–5 秒 keyframe 誤差），驗證失敗不可作為上傳來源。
 - 操作員要求保留的原檔以 `runtime_summary_json.local_recording_retention.preserve = true` 標記，maintenance retention 與 canonicalization 均須略過。
 
 - `recording/activity.py` 負責媒體活動分析、live extension probe 與 post-recording trim helper；不要把 provider DOM selector 放進這一層。
