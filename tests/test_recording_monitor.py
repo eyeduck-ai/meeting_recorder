@@ -202,22 +202,22 @@ async def test_monitor_dynamic_extension_stops_after_idle_timeout():
 
 
 @pytest.mark.asyncio
-async def test_monitor_dynamic_extension_falls_back_when_probes_unavailable():
+async def test_monitor_dynamic_extension_retains_recording_until_limit_when_probes_unavailable():
     probe = FakeActivityProbe(
         MediaActivityState(audio_active=None, video_active=None, reason="baseline"),
         MediaActivityState(audio_active=None, video_active=None, reason="unavailable"),
     )
     monitor = make_monitor(
-        job=make_job(duration_sec=5, dynamic_extension_enabled=True),
+        job=make_job(duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_max_sec=10),
         media_activity_probe=probe,
-        clock=sequence_clock(0, 6, 11),
+        clock=sequence_clock(0, 6, 11, 16),
     )
 
     end_reason, ffmpeg_exit_code = await monitor.run()
 
     assert end_reason == "completed"
     assert ffmpeg_exit_code is None
-    assert monitor.dynamic_extension_stop_reason == "activity_probe_unavailable"
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
     assert probe.close_calls == 1
 
 
@@ -228,9 +228,9 @@ async def test_monitor_primes_dynamic_extension_probe_before_duration():
         MediaActivityState(audio_active=None, video_active=None, reason="unavailable"),
     )
     monitor = make_monitor(
-        job=make_job(duration_sec=10, dynamic_extension_enabled=True),
+        job=make_job(duration_sec=10, dynamic_extension_enabled=True, dynamic_extension_max_sec=10),
         media_activity_probe=probe,
-        clock=sequence_clock(0, 6, 11, 16),
+        clock=sequence_clock(0, 6, 11, 16, 21),
     )
 
     end_reason, ffmpeg_exit_code = await monitor.run()
@@ -362,3 +362,67 @@ async def test_monitor_ignores_provider_meeting_end_probe():
     assert end_reason == "completed"
     assert ffmpeg_exit_code is None
     assert session.detect_meeting_end_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("audio", "video"), [(None, False), (False, None)])
+async def test_partial_probe_failure_does_not_end_recording_as_idle(audio, video):
+    probe = FakeActivityProbe(*[MediaActivityState(audio_active=audio, video_active=video) for _ in range(3)])
+    monitor = make_monitor(
+        job=make_job(
+            duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_idle_sec=10, dynamic_extension_max_sec=60
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11, 17, 66),
+    )
+    await monitor.run()
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
+    assert probe.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_unknown_activity_breaks_continuous_idle_timer():
+    idle = MediaActivityState(audio_active=False, video_active=False)
+    unknown = MediaActivityState(audio_active=None, video_active=False)
+    probe = FakeActivityProbe(idle, unknown, idle, idle, idle)
+    monitor = make_monitor(
+        job=make_job(
+            duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_idle_sec=10, dynamic_extension_max_sec=60
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11, 17, 23, 28),
+    )
+    await monitor.run()
+    assert monitor.dynamic_extension_stop_reason == "idle_timeout"
+    assert probe.calls == 5
+
+
+@pytest.mark.asyncio
+async def test_probe_exception_preserves_capture_until_extension_limit():
+    probe = FakeActivityProbe()
+    probe.prime = AsyncMock(side_effect=RuntimeError("probe warmup failed"))
+    probe.check = AsyncMock(side_effect=RuntimeError("probe check failed"))
+    monitor = make_monitor(
+        job=make_job(duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_max_sec=10),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 1, 6, 11, 16),
+    )
+    await monitor.run()
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
+    probe.prime.assert_awaited_once()
+    assert probe.check.await_count == 2
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_probe_grace_period_is_bounded_for_legacy_unlimited_callers():
+    unknown = MediaActivityState(audio_active=None, video_active=None)
+    monitor = make_monitor(
+        job=make_job(
+            duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_idle_sec=10, dynamic_extension_max_sec=0
+        ),
+        media_activity_probe=FakeActivityProbe(unknown, unknown, unknown),
+        clock=sequence_clock(0, 6, 11, 17),
+    )
+    await monitor.run()
+    assert monitor.dynamic_extension_stop_reason == "activity_probe_unavailable"

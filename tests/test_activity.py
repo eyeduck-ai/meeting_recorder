@@ -11,6 +11,8 @@ from recording.activity import (
     AUDIO_SAMPLE_RATE,
     VIDEO_FRAME_SIZE,
     ActivityConfig,
+    ActivitySample,
+    MediaActivityState,
     RecordingActivityAnalyzer,
     _video_activity_from_frames,
     trim_recording,
@@ -20,7 +22,10 @@ from recording.subprocess_utils import BoundedSubprocessResult
 
 class FakeAnalyzer(RecordingActivityAnalyzer):
     def __init__(self, audio_states, video_states=None, *, duration=60.0, config=None):
-        super().__init__(config or ActivityConfig(sample_interval_sec=5.0, smart_trim_pre_roll_sec=2.0))
+        super().__init__(
+            config
+            or ActivityConfig(sample_interval_sec=5.0, smart_trim_pre_roll_sec=2.0, smart_trim_end_post_roll_sec=5.0)
+        )
         self._audio_states = audio_states
         self._video_states = video_states or [(False, 0.0) for _ in audio_states]
         self._duration = duration
@@ -34,13 +39,19 @@ class FakeAnalyzer(RecordingActivityAnalyzer):
         self, input_path: Path, duration: float, sample_timestamps: list[float], **kwargs
     ):
         self.audio_batch_calls += 1
-        return self._audio_states
+        padding = (None, None) if all(state[0] is None for state in self._audio_states) else (False, -120.0)
+        return [
+            self._audio_states[i] if i < len(self._audio_states) else padding for i in range(len(sample_timestamps))
+        ]
 
     async def _collect_video_activity(
         self, input_path: Path, duration: float, sample_timestamps: list[float], **kwargs
     ):
         self.video_batch_calls += 1
-        return self._video_states
+        padding = (None, None) if all(state[0] is None for state in self._video_states) else (False, 0.0)
+        return [
+            self._video_states[i] if i < len(self._video_states) else padding for i in range(len(sample_timestamps))
+        ]
 
     async def _refine_boundaries(self, *, input_path: Path, duration: float, first_active: float, last_active: float):
         return first_active, last_active, {"status": "skipped", "reason": "fake analyzer"}
@@ -237,6 +248,94 @@ async def test_coarse_to_fine_refinement_tightens_trim_boundaries():
     assert analyzer.video_batch_calls == 3
 
 
+class BoundaryEvidenceAnalyzer(RecordingActivityAnalyzer):
+    def __init__(self, *, duration, coarse_active, refined_active):
+        super().__init__(ActivityConfig(smart_trim_pre_roll_sec=2.0, smart_trim_end_post_roll_sec=5.0))
+        self.duration = duration
+        self.coarse_active = set(coarse_active)
+        self.refined_active = set(refined_active)
+
+    async def _probe_duration_sec(self, input_path):
+        return self.duration
+
+    async def _collect_samples_for_timestamps(self, *, timestamps, phase, **kwargs):
+        active = self.coarse_active if phase == "coarse" else self.refined_active
+        return [
+            ActivitySample(timestamp_sec=timestamp, audio_active=timestamp in active, video_active=False)
+            for timestamp in timestamps
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("last_active", "refined_active", "expected_end"),
+    [(4110.0, {4106.0, 4112.0}, 4118.0), (4070.0, {4067.0, 4068.0}, 4074.0)],
+)
+async def test_missing_start_refinement_does_not_replace_start_with_end_window(
+    last_active, refined_active, expected_end
+):
+    analyzer = BoundaryEvidenceAnalyzer(
+        duration=4482.0, coarse_active={0.0, last_active}, refined_active=refined_active
+    )
+
+    decision = await analyzer.analyze(Path("recording.mkv"))
+
+    assert decision.trim_start_sec == 0.0
+    assert decision.trim_end_sec == expected_end
+    assert decision.diagnostics["refinement"]["start_status"] == "coarse_retained"
+
+
+@pytest.mark.asyncio
+async def test_missing_end_refinement_retains_the_last_coarse_activity():
+    analyzer = BoundaryEvidenceAnalyzer(duration=4500.0, coarse_active={100.0, 4000.0}, refined_active={100.0, 101.0})
+
+    decision = await analyzer.analyze(Path("recording.mkv"))
+
+    assert decision.trim_start_sec == 98.0
+    assert decision.trim_end_sec == 4006.0
+    assert decision.diagnostics["refinement"]["end_status"] == "coarse_retained"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_refinement_windows_refine_both_boundaries():
+    analyzer = BoundaryEvidenceAnalyzer(duration=60.0, coarse_active={10.0, 15.0}, refined_active={12.0, 17.0})
+
+    decision = await analyzer.analyze(Path("recording.mkv"))
+
+    assert decision.trim_start_sec == 10.0
+    assert decision.trim_end_sec == 23.0
+    assert decision.diagnostics["refinement"]["window_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_implausibly_short_trim_of_long_recording_retains_raw():
+    states = [(False, -120.0)] * 900
+    states[820] = (True, -20.0)
+    analyzer = FakeAnalyzer(states, duration=4500.0)
+
+    decision = await analyzer.analyze(Path("recording.mkv"))
+
+    assert decision.should_trim is False
+    assert decision.trim_start_sec == 0.0
+    assert decision.trim_end_sec == 4500.0
+    assert "too short" in decision.reason
+    assert decision.diagnostics["trim_safety"]["candidate_duration_sec"] == 8.0
+
+
+@pytest.mark.asyncio
+async def test_short_recording_can_still_trim_a_short_valid_section():
+    analyzer = FakeAnalyzer(
+        [(False, -120.0), (False, -120.0), (True, -20.0), (False, -120.0), (False, -120.0), (False, -120.0)],
+        duration=30.0,
+    )
+
+    decision = await analyzer.analyze(Path("recording.mkv"))
+
+    assert decision.should_trim is True
+    assert decision.trim_start_sec == 8.0
+    assert decision.trim_end_sec == 16.0
+
+
 @pytest.mark.asyncio
 async def test_trim_recording_uses_duration_and_reports_actual_duration(monkeypatch, tmp_path):
     input_path = tmp_path / "raw.mkv"
@@ -379,3 +478,85 @@ async def test_trim_runner_timeout_terminates_process(monkeypatch):
     assert process is not None
     assert process.terminated is True
     assert "trim timed out" in excerpt
+
+
+@pytest.mark.asyncio
+async def test_default_margins_keep_fifteen_seconds_before_and_thirty_after_activity():
+    states = [(100.0 <= index * 5.0 <= 200.0, -20.0) for index in range(60)]
+    analyzer = FakeAnalyzer(states, duration=300.0, config=ActivityConfig())
+
+    decision = await analyzer.analyze(Path("recording.mkv"))
+
+    assert decision.trim_start_sec == 85.0
+    assert decision.trim_end_sec == 231.0
+
+
+@pytest.mark.parametrize(
+    ("audio", "video", "expected"),
+    [
+        (True, None, True),
+        (None, True, True),
+        (True, False, True),
+        (False, True, True),
+        (False, False, False),
+        (None, False, None),
+        (False, None, None),
+        (None, None, None),
+    ],
+)
+def test_activity_requires_both_probes_to_confirm_inactivity(audio, video, expected):
+    state = MediaActivityState(audio_active=audio, video_active=video)
+    assert state.active is expected
+    assert state.available is (expected is not None)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_activity_samples_retain_the_complete_original():
+    analyzer = FakeAnalyzer(
+        [(False, -120.0), (True, -20.0), (None, None), (False, -120.0)],
+        duration=60.0,
+    )
+    decision = await analyzer.analyze(Path("recording.mkv"))
+    assert decision.should_trim is False
+    assert decision.trim_start_sec == 0.0
+    assert decision.trim_end_sec == 60.0
+    assert decision.diagnostics["trim_safety"]["reason"] == "incomplete media activity evidence"
+
+
+@pytest.mark.asyncio
+async def test_inconclusive_refinement_retains_its_coarse_boundary():
+    class IncompleteRefinement(BoundaryEvidenceAnalyzer):
+        async def _collect_samples_for_timestamps(self, *, phase, **kwargs):
+            samples = await super()._collect_samples_for_timestamps(phase=phase, **kwargs)
+            if phase == "refine_1":
+                samples[0] = ActivitySample(
+                    timestamp_sec=samples[0].timestamp_sec, audio_active=None, video_active=False
+                )
+            return samples
+
+    analyzer = IncompleteRefinement(duration=4500.0, coarse_active={100.0, 4000.0}, refined_active={103.0, 4001.0})
+    decision = await analyzer.analyze(Path("recording.mkv"))
+    assert decision.trim_start_sec == 98.0
+    assert decision.diagnostics["refinement"]["start_status"] == "coarse_retained"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actual_duration", [None, 0.0, float("nan"), 10.0, 90.0])
+async def test_invalid_trim_output_is_rejected_and_original_preserved(monkeypatch, tmp_path, actual_duration):
+    source = tmp_path / "raw.mkv"
+    target = tmp_path / "trimmed.mkv"
+    source.write_bytes(b"original")
+
+    async def run(*args, **kwargs):
+        target.write_bytes(b"truncated output")
+        return 0, ""
+
+    async def duration(_path):
+        return actual_duration
+
+    monkeypatch.setattr(activity_module, "_run_ffmpeg_trim", run)
+    monkeypatch.setattr(activity_module, "_probe_media_duration_sec", duration)
+    result = await trim_recording(input_path=source, output_path=target, trim_start_sec=5.0, trim_end_sec=65.0)
+    assert result is None
+    assert source.read_bytes() == b"original"
+    assert not target.exists()

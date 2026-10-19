@@ -43,7 +43,7 @@ class RecordingMonitor:
         self.dynamic_extension_stop_reason: str | None = None
         self._extension_started = False
         self._extension_idle_since: float | None = None
-        self._unavailable_probe_count = 0
+        self._extension_unavailable_since: float | None = None
         self._activity_probe_primed = False
 
     def _now(self) -> float:
@@ -128,7 +128,10 @@ class RecordingMonitor:
             return
         prime = getattr(self.media_activity_probe, "prime", None)
         if prime is not None:
-            await prime(self.session)
+            try:
+                await prime(self.session)
+            except Exception as exc:
+                logger.debug("Media activity probe warmup unavailable: %s", exc)
         self._activity_probe_primed = True
 
     async def _close_media_activity_probe(self) -> None:
@@ -165,17 +168,29 @@ class RecordingMonitor:
                 max_extension,
             )
 
-        state = await self.media_activity_probe.check(self.session)
-        if not state.available:
-            self._unavailable_probe_count += 1
-            if self._unavailable_probe_count <= 1:
-                logger.debug("Dynamic extension waiting for media activity probe baseline")
+        try:
+            state = await self.media_activity_probe.check(self.session)
+        except Exception as exc:
+            logger.debug("Media activity probe unavailable: %s", exc)
+            state = None
+        if state is None or not state.available:
+            # Missing evidence cannot establish continuous silence/stillness.
+            self._extension_idle_since = None
+            if self._extension_unavailable_since is None:
+                self._extension_unavailable_since = now
+                logger.warning("Media activity inconclusive; retaining recording within its extension budget")
+            if max_extension > 0 or ensure_utc(getattr(self.job, "hard_deadline_at", None)):
+                return True
+            # Legacy direct callers may lack both limits. Bound their unknown
+            # probe grace period rather than allow an unlimited recording.
+            unavailable_timeout = int(getattr(self.job, "dynamic_extension_idle_sec", 300) or 300)
+            if now - self._extension_unavailable_since < unavailable_timeout:
                 return True
             self.dynamic_extension_stop_reason = "activity_probe_unavailable"
-            logger.warning("Dynamic extension stopped because media probes are unavailable")
+            logger.warning("Dynamic extension unavailable-probe grace period reached")
             return False
 
-        self._unavailable_probe_count = 0
+        self._extension_unavailable_since = None
         if state.active is True:
             self._extension_idle_since = None
             logger.debug("Dynamic extension continuing: %s", state.reason)

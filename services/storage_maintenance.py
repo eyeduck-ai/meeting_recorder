@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from dataclasses import dataclass
@@ -60,6 +61,15 @@ def _file_size(path: Path) -> int:
         return path.stat().st_size
     except OSError:
         return 0
+
+
+def _local_recording_preserved(job: RecordingJob) -> bool:
+    try:
+        summary = json.loads(job.runtime_summary_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    retention = summary.get("local_recording_retention") if isinstance(summary, dict) else None
+    return isinstance(retention, dict) and retention.get("preserve") is True
 
 
 async def canonicalize_recording_file(
@@ -275,6 +285,8 @@ class StorageMaintenanceService:
         )
         mutated = False
         for job in jobs:
+            if _local_recording_preserved(job):
+                continue
             output_path = Path(job.output_path)
             if not _is_relative_to(output_path, self.recordings_dir):
                 self._add_error(result, "recording", str(output_path), "path is outside recordings_dir")
@@ -317,6 +329,8 @@ class StorageMaintenanceService:
         )
         mutated = False
         for job in jobs:
+            if _local_recording_preserved(job):
+                continue
             output_path = Path(job.output_path)
             if output_path.suffix.lower() != ".mkv":
                 continue

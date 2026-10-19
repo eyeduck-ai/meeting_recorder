@@ -254,6 +254,12 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 
 ### 智慧錄影邊界
 
+- 預設 `smart_trim_pre_roll_sec=15`、`smart_trim_end_post_roll_sec=30`，Settings、app defaults、runtime fallback 與 ActivityConfig 一致；DB／明確 env override 仍優先。
+- 起訖 refinement 僅使用各自窗口的活動證據；某一端無活動時保留該端 coarse boundary，不可借用另一端。重疊窗口只 probe 一次，diagnostics 的 `start_status`／`end_status` 區分 `refined` 與 `coarse_retained`。
+- 候選裁剪區間短於 `min(60 seconds, raw_duration * 0.1)` 時，回傳 `skipped` 與完整原片範圍；`trim_safety` 保存候選起迄、長度及門檻。短錄影仍可正常裁剪。
+- Coarse scan 有未知活動樣本時保留完整原檔；refinement 有未知樣本時保留該端 coarse boundary。未知探針不得被當作靜音或靜止。
+- 裁剪檔必須有可讀、有限且大於零的實測片長，與預期差異不得超過 `max(2, min(5, expected_duration * 0.02))` 秒。驗證失敗會刪除裁剪副本並回退原檔作為輸出與上傳來源，不得以預期片長代替驗證。
+
 - `smart_trim_enabled` 啟用後，錄製完成會先保留 raw MKV，再用 `recording/activity.py` 分析原始檔的音訊能量與畫面差異，必要時產生 `*.trimmed.mkv` 作為 preferred local output。
 - `output_path` 代表 Web UI / API 優先使用的本地輸出；`raw_output_path` 永遠指向原始錄影；`trimmed_output_path` 保留本次裁剪輸出的路徑，即使自動 YouTube 上傳成功後該檔案已被刪除。
 - 起點裁剪以第一個「音訊或影像有活動」的 sample 為基準，保留 `smart_trim_pre_roll_sec`。完成檔案分析使用 streaming batch FFmpeg probes，避免長錄影每個 sample 各自啟動子程序，也避免一次把整段 PCM/raw frames 留在記憶體；若純影像差異出現在兩個 sample 之間，會回推到前一個 sample 作為活動起點。
@@ -262,7 +268,7 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 - 錄影 FFmpeg GOP 以約 1 秒 keyframe interval 輸出，讓 `trim_recording()` 可以維持 stream-copy 裁剪又降低 keyframe 對齊造成的邊界誤差；trim command 使用 duration-based `-ss` / `-t`，stderr 會串流寫入 log 或 bounded excerpt，不用 `communicate()` 保留完整輸出；trim diagnostics 會記錄 expected 與 ffprobe actual output duration。
 - 結尾裁剪以最後一個活動 sample 加上 `smart_trim_end_post_roll_sec` 為基準。
 - `dynamic_extension_enabled` 啟用後，`RecordingMonitor` 到達 `duration_sec` 後進入 extension phase；只要音訊或影像任一仍 active 就繼續錄，當兩者都 inactive 持續 `dynamic_extension_idle_sec` 或達到 `dynamic_extension_max_sec` 時停止。
-- live extension probe 會在接近指定結束時間前預熱音訊 meter 與 video baseline；進入 extension phase 後音訊使用單一長駐 FFmpeg PulseAudio meter，monitor check 只讀取最近峰值快照，不再每次啟動短 FFmpeg probe。音訊 meter 不可用時仍可用 video 判斷；音訊與影像都不可用時，monitor 會在一個 baseline interval 後回退停止，並在 job/detection log 記錄 `activity_probe_unavailable`。
+- live extension probe 會在接近指定結束時間前預熱音訊 meter 與 video baseline；進入 extension phase 後音訊使用單一長駐 FFmpeg PulseAudio meter，monitor check 只讀取最近峰值快照。任一探針 active 即可確認活動；只有兩者都成功且 inactive 才能累積 idle time。未知／探針例外會重置 idle timer，並在既有 max extension 或 hard deadline 內繼續錄影，warmup 例外不得中止 capture。沒有任一上限的 legacy direct caller，未知狀態最多等待一個 idle timeout，之後以 `activity_probe_unavailable` 停止，避免無界錄影。
 - 自動 YouTube 上傳使用 preferred output；若 preferred output 是裁剪檔，上傳成功後 `scheduling/upload_runner.py` 會刪除本地裁剪檔與其 remux/transcode artifact，並把 DB `output_path` 回退到 raw output。
 
 ### 排程行為
@@ -290,6 +296,8 @@ Smart trim 與 dynamic extension 的媒體活動事件會寫入 `detection_logs`
 Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪除後會 best-effort `VACUUM` 回收 DB 檔案空間。
 
 ### Storage maintenance
+
+個別原檔可在 `runtime_summary_json.local_recording_retention` 寫入 `{ "preserve": true, "reason": "..." }`。僅 boolean `true` 會略過該 job 的 maintenance retention 與 MKV canonicalization，dry-run 亦同；其他 diagnostics／log retention 不受影響。操作員確認可釋放原檔後，才移除或明確取消標記；不新增隱含到期日。
 
 - 本機長期錄影格式是 `.mp4`。錄製仍先輸出 `.mkv` 以提高錄製穩定性；raw capture 成功後，`RecordingPostProcessor` 會 best-effort fast remux preferred output 成 validated `.mp4`，成功後刪除對應 `.mkv` 並把 `recording_jobs.output_path/file_size/runtime_summary_json` 改指 MP4。
 - Remux/transcode 都必須先寫入 same-directory temporary MP4，ffprobe 驗證可讀且有合理 video duration 後才 atomic replace 正式 MP4；任一失敗路徑都要刪 temporary file，且不得刪原 MKV。

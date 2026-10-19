@@ -37,8 +37,8 @@ class ActivityConfig:
     video_diff_threshold: float = 0.015
     sample_interval_sec: float = 5.0
     sample_window_sec: float = 1.0
-    smart_trim_pre_roll_sec: float = 2.0
-    smart_trim_end_post_roll_sec: float = 5.0
+    smart_trim_pre_roll_sec: float = 15.0
+    smart_trim_end_post_roll_sec: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -53,15 +53,15 @@ class MediaActivityState:
 
     @property
     def available(self) -> bool:
-        return self.audio_active is not None or self.video_active is not None
+        return self.active is not None
 
     @property
     def active(self) -> bool | None:
         if self.audio_active is True or self.video_active is True:
             return True
-        if self.audio_active is None and self.video_active is None:
-            return None
-        return False
+        if self.audio_active is False and self.video_active is False:
+            return False
+        return None
 
 
 @dataclass(frozen=True)
@@ -96,8 +96,8 @@ def build_activity_config(
     video_diff_threshold: float = 0.015,
     sample_interval_sec: float = 5.0,
     sample_window_sec: float = 1.0,
-    smart_trim_pre_roll_sec: float = 2.0,
-    smart_trim_end_post_roll_sec: float = 5.0,
+    smart_trim_pre_roll_sec: float = 15.0,
+    smart_trim_end_post_roll_sec: float = 30.0,
 ) -> ActivityConfig:
     return ActivityConfig(
         audio_threshold_db=audio_threshold_db,
@@ -506,12 +506,12 @@ class LiveMediaActivityProbe:
             video_active, video_diff = None, None
         else:
             video_active, video_diff = video_result
-        if audio_active is None and video_active is None:
-            reason = "media probes unavailable"
-        elif audio_active is True or video_active is True:
+        if audio_active is True or video_active is True:
             reason = "media activity detected"
-        else:
+        elif audio_active is False and video_active is False:
             reason = "audio silent and video still"
+        else:
+            reason = "media activity inconclusive; one or more probes unavailable"
         return MediaActivityState(
             audio_active=audio_active,
             video_active=video_active,
@@ -592,6 +592,22 @@ class RecordingActivityAnalyzer:
                 diagnostics=self._diagnostics,
             )
 
+        if any(sample.active is None for sample in samples):
+            self._diagnostics["analysis_elapsed_sec"] = round(perf_counter() - started_at, 3)
+            self._diagnostics["trim_safety"] = {
+                "status": "raw_retained",
+                "reason": "incomplete media activity evidence",
+            }
+            return TrimDecision(
+                status="skipped",
+                reason="media activity inconclusive; raw recording retained",
+                trim_start_sec=0.0,
+                trim_end_sec=duration,
+                duration_sec=duration,
+                samples=samples,
+                diagnostics=self._diagnostics,
+            )
+
         active_samples = [sample for sample in samples if sample.active is True]
         if not active_samples:
             self._diagnostics["analysis_elapsed_sec"] = round(perf_counter() - started_at, 3)
@@ -619,6 +635,20 @@ class RecordingActivityAnalyzer:
         trim_end = min(duration, max(trim_start + 1.0, last_active_end + self.config.smart_trim_end_post_roll_sec))
         status = "trimmed" if trim_start > 0.5 or trim_end < duration - 0.5 else "skipped"
         reason = "media activity boundaries detected" if status == "trimmed" else "no trim needed"
+        candidate_duration = trim_end - trim_start
+        minimum_duration = min(60.0, duration * 0.1)
+        if status == "trimmed" and candidate_duration < minimum_duration:
+            self._diagnostics["trim_safety"] = {
+                "status": "raw_retained",
+                "candidate_start_sec": trim_start,
+                "candidate_end_sec": trim_end,
+                "candidate_duration_sec": candidate_duration,
+                "minimum_duration_sec": minimum_duration,
+            }
+            status = "skipped"
+            reason = "detected activity interval too short; raw recording retained"
+            trim_start = 0.0
+            trim_end = duration
         self._diagnostics["analysis_elapsed_sec"] = round(perf_counter() - started_at, 3)
         return TrimDecision(
             status=status,
@@ -769,26 +799,38 @@ class RecordingActivityAnalyzer:
             )
             refined_samples.extend(samples)
 
-        refined_active = [sample for sample in refined_samples if sample.active is True]
-        if not refined_active:
-            return (
-                first_active,
-                last_active,
-                {
-                    "status": "skipped",
-                    "reason": "no refined active samples",
-                    "window_count": len(windows),
-                    "sample_count": len(refined_samples),
-                },
-            )
-
-        refined_first = min(sample.timestamp_sec for sample in refined_active)
-        refined_last = max(sample.timestamp_sec for sample in refined_active)
+        # Each boundary needs evidence from its own window. A quiet start window
+        # must never borrow the end window's activity and discard the whole middle.
+        start_active = [
+            sample.timestamp_sec
+            for sample in refined_samples
+            if sample.active is True and start_range[0] <= sample.timestamp_sec < start_range[1]
+        ]
+        end_active = [
+            sample.timestamp_sec
+            for sample in refined_samples
+            if sample.active is True and end_range[0] <= sample.timestamp_sec < end_range[1]
+        ]
+        if any(
+            sample.active is None and start_range[0] <= sample.timestamp_sec < start_range[1]
+            for sample in refined_samples
+        ):
+            start_active = []
+        if any(
+            sample.active is None and end_range[0] <= sample.timestamp_sec < end_range[1] for sample in refined_samples
+        ):
+            end_active = []
+        refined_first = min(start_active, default=first_active)
+        refined_last = max(end_active, default=last_active)
+        refinement_available = bool(start_active or end_active)
         return (
             refined_first,
             refined_last,
             {
-                "status": "refined",
+                "status": "refined" if refinement_available else "skipped",
+                "reason": "independent boundary evidence" if refinement_available else "no refined active samples",
+                "start_status": "refined" if start_active else "coarse_retained",
+                "end_status": "refined" if end_active else "coarse_retained",
                 "interval_sec": refinement_interval,
                 "window_count": len(windows),
                 "sample_count": len(refined_samples),
@@ -1091,8 +1133,23 @@ async def trim_recording(
         logger.error("Trim failed for %s: %s", input_path, stderr[:400])
         return None
     duration_sec = await _probe_media_duration_sec(output_path)
-    if duration_sec is None:
-        duration_sec = expected_duration_sec
+    # Stream-copy boundaries can vary by a keyframe, but a corrupt or truncated
+    # output must never become the preferred recording or upload source.
+    tolerance_sec = max(2.0, min(5.0, expected_duration_sec * 0.02))
+    if (
+        duration_sec is None
+        or not math.isfinite(duration_sec)
+        or duration_sec <= 0
+        or abs(duration_sec - expected_duration_sec) > tolerance_sec
+    ):
+        logger.warning(
+            "Trim output duration invalid for %s: expected=%s actual=%s",
+            input_path,
+            expected_duration_sec,
+            duration_sec,
+        )
+        output_path.unlink(missing_ok=True)
+        return None
     return RecordingInfo(
         output_path=output_path,
         file_size=output_path.stat().st_size,

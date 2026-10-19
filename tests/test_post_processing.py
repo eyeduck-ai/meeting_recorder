@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import recording.activity as activity_module
 from database.migrations import run_schema_migrations
 from database.models import Base, DetectionLog, JobStatus
 from database.models import RecordingJob as RecordingJobModel
@@ -449,3 +450,76 @@ async def test_post_processing_unexpected_trim_error_preserves_raw_recording_suc
         assert "probe crashed" in db_job.error_message
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actual_duration", [None, 10.0])
+async def test_invalid_trim_is_not_selected_for_upload(
+    post_processing_session_local, tmp_path, monkeypatch, actual_duration
+):
+    raw = tmp_path / "raw.mkv"
+    raw.write_bytes(b"complete original")
+    now = utc_now()
+    job = RecordingJob(
+        job_id="invalid-trim",
+        provider="jitsi",
+        meeting_code="test-room",
+        display_name="Bot",
+        duration_sec=120,
+        output_dir=tmp_path,
+        diagnostics_dir=tmp_path,
+        smart_trim_enabled=True,
+    )
+    _create_db_job(post_processing_session_local, job)
+
+    class Analyzer:
+        def __init__(self, config):
+            pass
+
+        async def analyze(self, path):
+            return TrimDecision(
+                status="trimmed",
+                reason="activity boundaries",
+                trim_start_sec=10.0,
+                trim_end_sec=100.0,
+                duration_sec=120.0,
+            )
+
+    async def run(*cmd, **kwargs):
+        (tmp_path / "raw.trimmed.mkv").write_bytes(b"truncated")
+        return 0, ""
+
+    async def duration(path):
+        return actual_duration
+
+    monkeypatch.setattr(activity_module, "_run_ffmpeg_trim", run)
+    monkeypatch.setattr(activity_module, "_probe_media_duration_sec", duration)
+    processor = RecordingPostProcessor(
+        analyzer_factory=Analyzer,
+        canonicalizer=AsyncMock(return_value=None),
+        session_factory=lambda: post_processing_session_local,
+        completed_notifier=AsyncMock(),
+    )
+    result = RecordingResult(
+        job_id=job.job_id,
+        status=JobStatus.SUCCEEDED,
+        recording_info=RecordingInfo(
+            output_path=raw,
+            file_size=raw.stat().st_size,
+            duration_sec=120.0,
+            start_time=now,
+            end_time=now + timedelta(seconds=120),
+        ),
+    )
+    upload = await processor.run(
+        RecordingPostProcessingRequest(
+            job=job, result=result, youtube_enabled=True, youtube_privacy="unlisted", meeting_name="Test"
+        )
+    )
+    assert upload is not None
+    assert upload.video_path == raw
+    assert upload.cleanup_video_path_after_success is None
+    assert result.trim_status == "failed"
+    assert result.recording_info.duration_sec == 120.0
+    assert raw.read_bytes() == b"complete original"
+    assert not (tmp_path / "raw.trimmed.mkv").exists()

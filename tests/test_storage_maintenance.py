@@ -1,5 +1,6 @@
 """Tests for storage retention and local recording canonicalization."""
 
+import json
 import os
 from datetime import timedelta
 from types import SimpleNamespace
@@ -160,6 +161,68 @@ async def test_cleanup_uploaded_recordings_requires_youtube_and_age(db_session, 
     assert uploaded_recent.exists()
     assert not_uploaded.exists()
     assert uploading.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_explicitly_preserved_uploaded_original_survives_retention(db_session, storage_settings, dry_run):
+    path = storage_settings.recordings_dir / "preserved.mp4"
+    path.write_bytes(b"keep this original")
+    _create_job(
+        db_session,
+        output_path=str(path),
+        completed_at=utc_now() - timedelta(days=30),
+        youtube_video_id="full-original",
+        runtime_summary_json=json.dumps({"local_recording_retention": {"preserve": True}}),
+    )
+
+    result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=dry_run)
+
+    assert path.read_bytes() == b"keep this original"
+    assert result["deleted_recordings"] == []
+    job = db_session.query(RecordingJob).filter(RecordingJob.job_id == "job123").one()
+    assert job.local_recording_deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_explicitly_preserved_mkv_is_not_replaced_by_canonicalization(db_session, storage_settings, monkeypatch):
+    path = storage_settings.recordings_dir / "preserved.mkv"
+    path.write_bytes(b"keep this original mkv")
+    _create_job(
+        db_session,
+        output_path=str(path),
+        completed_at=utc_now(),
+        runtime_summary_json=json.dumps({"local_recording_retention": {"preserve": True}}),
+    )
+    canonicalize = AsyncMock(return_value=None)
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", canonicalize)
+
+    await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+
+    canonicalize.assert_not_awaited()
+    assert path.read_bytes() == b"keep this original mkv"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "summary",
+    ["not json", "[]", '{"local_recording_retention":{"preserve":"false"}}'],
+)
+async def test_invalid_or_nonboolean_retention_marker_does_not_disable_cleanup(db_session, storage_settings, summary):
+    path = storage_settings.recordings_dir / "ordinary.mp4"
+    path.write_bytes(b"ordinary old upload")
+    _create_job(
+        db_session,
+        output_path=str(path),
+        completed_at=utc_now() - timedelta(days=30),
+        youtube_video_id="ordinary-upload",
+        runtime_summary_json=summary,
+    )
+
+    result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+
+    assert not path.exists()
+    assert len(result["deleted_recordings"]) == 1
 
 
 @pytest.mark.asyncio

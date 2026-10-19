@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     activity_video_diff_threshold: float = 0.015
     activity_sample_interval_sec: float = 5.0
     activity_sample_window_sec: float = 1.0
-    smart_trim_pre_roll_sec: float = 2.0
-    smart_trim_end_post_roll_sec: float = 5.0
+    smart_trim_pre_roll_sec: float = 15.0
+    smart_trim_end_post_roll_sec: float = 30.0
     lobby_wait_sec: int = 900
     max_recording_sec: int = 14400  # 4 hours default max
     max_concurrent_recordings: int = 2

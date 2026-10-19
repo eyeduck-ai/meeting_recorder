@@ -1,5 +1,7 @@
 # 改善計畫
 
+- 已加強裁剪與動態結束的保守判斷：未知探針不算 inactive，延長仍受原有上限約束，裁剪實測片長驗證失敗時回退原檔。
+
 本檔記錄後續架構改善方向與優先級。任務細項請同步維護在 `Task.md`；過程中的踩坑與誤判請記錄到 `Lesson.md`。
 
 ## P0：安全邊界
@@ -8,6 +10,8 @@
 - 收斂 wildcard CORS 與 API 認證邊界，避免受保護 API 被跨來源濫用。
 
 ## P1：設定、狀態與儲存一致性
+
+- 已修正 smart trim 跨窗口借用活動造成的誤剪：兩端獨立 refinement、缺少證據時保留 coarse boundary、異常短結果回退原檔；預設前 15 秒／後 30 秒，並支援逐工作原檔保留標記。
 
 - 建立 `RuntimeConfigService`，統一 `.env`、`config.settings`、`app_settings` table、schedule override 的 precedence。
 - 讓 schedule/job 狀態語意更精準，拆出 `triggered_at`、`started_at`、`completed_at` 等欄位，讓 missed/catch-up 判斷更可靠。
