@@ -1,3 +1,7 @@
+import asyncio
+import os
+import sys
+
 import pytest
 
 from recording import subprocess_utils
@@ -79,3 +83,66 @@ async def test_bounded_subprocess_timeout_terminates_then_kills(monkeypatch):
     assert process.terminated is True
     assert process.killed is True
     assert "process timed out" in result.stderr
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="POSIX termination and process existence checks")
+async def test_canceling_real_subprocess_kills_child_and_drains_reader_tasks(tmp_path):
+    pid_file = tmp_path / "child.pid"
+    stderr_log = tmp_path / "child.stderr"
+    script = (
+        "import os, pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "print('ready', flush=True); print('diagnostic', file=sys.stderr, flush=True); "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    before = set(asyncio.all_tasks())
+    task = asyncio.create_task(
+        subprocess_utils.run_bounded_subprocess(
+            sys.executable,
+            "-c",
+            script,
+            str(pid_file),
+            timeout_sec=60,
+            stderr_log_path=stderr_log,
+            terminate_timeout_sec=0.05,
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            while not pid_file.exists():
+                await asyncio.sleep(0.01)
+        pid = int(pid_file.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        assert stderr_log.read_text() == "diagnostic\n"
+        leaked = [pending for pending in asyncio.all_tasks() - before if not pending.done()]
+        assert leaked == []
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_real_subprocess_stream_log_error_still_reaps_child(tmp_path):
+    invalid_log = tmp_path / "directory-as-log"
+    invalid_log.mkdir()
+    before = set(asyncio.all_tasks())
+    with pytest.raises(IsADirectoryError):
+        await asyncio.wait_for(
+            subprocess_utils.run_bounded_subprocess(
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+                timeout_sec=60,
+                stderr_log_path=invalid_log,
+                terminate_timeout_sec=0.05,
+            ),
+            timeout=1,
+        )
+    assert [pending for pending in asyncio.all_tasks() - before if not pending.done()] == []

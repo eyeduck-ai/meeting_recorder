@@ -21,13 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dbus-user-session \
     # Minimal utilities
     curl \
+    x11vnc \
     # Build dependencies (will be removed after pip install)
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast package management
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 # Set working directory
 WORKDIR /app
@@ -58,22 +59,22 @@ RUN apt-get purge -y build-essential && \
 
 # Copy application code (after dependencies for better caching)
 ARG BUILD_TIMESTAMP=unknown
+ENV APP_REVISION=${BUILD_TIMESTAMP}
+LABEL org.opencontainers.image.revision=${BUILD_TIMESTAMP}
 COPY . .
 
 # Install the application itself without re-resolving dependencies
 RUN uv pip install --system --no-cache-dir --no-deps -e .
 
-# Copy .env.example to .env if .env doesn't exist
-RUN cp -n .env.example .env 2>/dev/null || true
-
-# Create directories for volumes
-RUN mkdir -p /app/recordings /app/diagnostics /app/data /app/logs
-
-# Set up PipeWire runtime directory
-ENV XDG_RUNTIME_DIR=/run/user/0
-RUN mkdir -p /run/user/0 && chmod 700 /run/user/0 && \
-    mkdir -p /etc/pipewire/pipewire.conf.d && \
-    mkdir -p /etc/pipewire/pipewire-pulse.conf.d
+# Runtime owns only persistent data and its home, never application source.
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd --gid ${APP_GID} recorder && \
+    useradd --uid ${APP_UID} --gid ${APP_GID} --create-home recorder && \
+    mkdir -p /app/recordings /app/diagnostics /app/data /app/logs && \
+    chown recorder:recorder /app/recordings /app/diagnostics /app/data /app/logs
+ENV HOME=/home/recorder
+ENV XDG_RUNTIME_DIR=/tmp/meeting-recorder-runtime
 
 # Expose API port
 EXPOSE 8000
@@ -82,5 +83,6 @@ EXPOSE 8000
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
+USER recorder:recorder
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

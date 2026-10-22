@@ -1,18 +1,20 @@
 """Tests for storage retention and local recording canonicalization."""
 
+import asyncio
 import json
 import os
+import time
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 import services.storage_maintenance as storage_module
 from database.migrations import run_schema_migrations
-from database.models import Base, DetectionLog, JobStatus, RecordingJob
+from database.models import Base, DetectionLog, DurableWork, JobStatus, RecordingJob
 from services.storage_maintenance import StorageMaintenanceService
 from utils.timezone import utc_now
 
@@ -204,6 +206,148 @@ async def test_maintenance_keeps_mkv_when_mp4_conversion_fails(db_session, stora
     assert mkv_path.exists()
     assert result["canonicalized"] == []
     assert result["errors"]
+
+
+@pytest.mark.asyncio
+async def test_maintenance_releases_write_transaction_before_awaiting_media(db_session, storage_settings, monkeypatch):
+    expired_path = storage_settings.recordings_dir / "expired.mp4"
+    expired_path.write_bytes(b"expired")
+    _create_job(
+        db_session,
+        job_id="expired",
+        output_path=str(expired_path),
+        youtube_video_id="uploaded",
+        completed_at=utc_now() - timedelta(days=15),
+    )
+    source = storage_settings.recordings_dir / "raw.mkv"
+    source.write_bytes(b"raw")
+    _create_job(db_session, output_path=str(source))
+    second_engine = create_engine(str(db_session.get_bind().url), connect_args={"timeout": 0.1})
+
+    def independent_update():
+        with second_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "UPDATE recording_jobs SET display_name='Concurrent writer' WHERE job_id='job123'"
+            )
+
+    async def remux(input_path, **_kwargs):
+        # This previously failed with SQLITE_BUSY: retention had flushed writes
+        # and held its transaction throughout FFmpeg's await.
+        await asyncio.to_thread(independent_update)
+        target = input_path.with_suffix(".mp4")
+        target.write_bytes(b"remuxed")
+        return target
+
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", remux)
+    try:
+        result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+        assert result["errors"] == []
+        job = db_session.query(RecordingJob).filter_by(job_id="job123").one()
+        assert job.display_name == "Concurrent writer"
+        assert job.output_path == str(source.with_suffix(".mp4"))
+    finally:
+        second_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_maintenance_rechecks_preserve_marker_after_remux(db_session, storage_settings, monkeypatch):
+    source = storage_settings.recordings_dir / "preserve.mkv"
+    source.write_bytes(b"original")
+    _create_job(db_session, output_path=str(source))
+
+    async def remux(input_path, **_kwargs):
+        with Session(db_session.get_bind()) as concurrent:
+            job = concurrent.query(RecordingJob).filter_by(job_id="job123").one()
+            job.runtime_summary_json = json.dumps({"local_recording_retention": {"preserve": True}})
+            concurrent.commit()
+        target = input_path.with_suffix(".mp4")
+        target.write_bytes(b"remuxed")
+        return target
+
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", remux)
+    result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+    assert result["canonicalized"] == []
+    assert result["warnings"]
+    assert source.read_bytes() == b"original"
+    job = db_session.query(RecordingJob).filter_by(job_id="job123").one()
+    assert job.output_path == str(source)
+
+
+@pytest.mark.asyncio
+async def test_maintenance_preserves_original_when_database_commit_fails(db_session, storage_settings, monkeypatch):
+    source = storage_settings.recordings_dir / "commit-failure.mkv"
+    source.write_bytes(b"original")
+    _create_job(db_session, output_path=str(source))
+
+    async def remux(input_path, **_kwargs):
+        target = input_path.with_suffix(".mp4")
+        target.write_bytes(b"remuxed")
+        return target
+
+    class FailingSession(Session):
+        def commit(self):
+            if self.dirty:
+                raise RuntimeError("injected database commit failure")
+            super().commit()
+
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", remux)
+    monkeypatch.setattr(storage_module, "Session", FailingSession)
+    result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+    assert result["errors"][0]["scope"] == "canonicalize"
+    assert source.read_bytes() == b"original"
+    assert db_session.query(RecordingJob).one().output_path == str(source)
+
+
+@pytest.mark.asyncio
+async def test_slow_filesystem_maintenance_does_not_block_event_loop(db_session, storage_settings, monkeypatch):
+    diagnostic_dir = storage_settings.diagnostics_dir / "job123"
+    diagnostic_dir.mkdir()
+    _create_job(db_session, diagnostic_dir=str(diagnostic_dir), completed_at=utc_now() - timedelta(days=15))
+    service = StorageMaintenanceService(storage_settings)
+    original = service._directory_size
+
+    def slow_directory_size(path):
+        time.sleep(0.15)
+        return original(path)
+
+    monkeypatch.setattr(service, "_directory_size", slow_directory_size)
+    ticks = 0
+    task = asyncio.create_task(service.run(db_session, dry_run=False))
+    while not task.done():
+        ticks += 1
+        await asyncio.sleep(0.01)
+    await task
+    assert ticks >= 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["pending", "running", "retry_wait", "needs_review", "failed"])
+async def test_maintenance_preserves_artifacts_needed_by_unfinished_durable_work(
+    db_session, storage_settings, monkeypatch, state
+):
+    source = storage_settings.recordings_dir / "pending-upload.mkv"
+    source.write_bytes(b"retry-source")
+    diagnostic_dir = storage_settings.diagnostics_dir / "job123"
+    diagnostic_dir.mkdir()
+    (diagnostic_dir / "remux.log").write_text("work log")
+    job = _create_job(
+        db_session,
+        output_path=str(source),
+        completed_at=utc_now() - timedelta(days=15),
+        youtube_video_id="existing-upload",
+        diagnostic_dir=str(diagnostic_dir),
+    )
+    db_session.add(DurableWork(job_id=job.job_id, kind="upload", state=state, payload_json="{}"))
+    db_session.commit()
+    remux = AsyncMock()
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", remux)
+    result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+    assert result["deleted_recordings"] == []
+    assert result["deleted_diagnostics"] == []
+    assert result["canonicalized"] == []
+    assert source.read_bytes() == b"retry-source"
+    assert diagnostic_dir.exists()
+    remux.assert_not_called()
 
 
 @pytest.mark.asyncio

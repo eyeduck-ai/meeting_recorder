@@ -1013,7 +1013,10 @@ class RecordingActivityAnalyzer:
             [
                 "-an",
                 "-vf",
-                f"fps={fps:.6f},scale={VIDEO_SAMPLE_WIDTH}:{VIDEO_SAMPLE_HEIGHT},format=gray",
+                # Preserve the final decoded frame when EOF falls between sample-grid
+                # points (e.g. AAC padding yields a 30.021 s container). Default
+                # fps EOF rounding drops that frame and invents an unknown tail.
+                f"fps={fps:.6f}:eof_action=pass,scale={VIDEO_SAMPLE_WIDTH}:{VIDEO_SAMPLE_HEIGHT},format=gray",
                 "-f",
                 "rawvideo",
                 "-",

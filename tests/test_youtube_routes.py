@@ -1,5 +1,6 @@
 """Tests for YouTube API route upload cleanup behavior."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,6 +10,8 @@ from sqlalchemy.orm import sessionmaker
 
 import api.routes.youtube as youtube_routes
 import database.session as session_module
+import scheduling.job_runner as runner_module
+import scheduling.upload_runner as upload_module
 from database.migrations import run_schema_migrations
 from database.models import Base, JobStatus, RecordingJob
 from services.storage_maintenance import CanonicalRecording
@@ -23,6 +26,9 @@ def youtube_route_session_local(tmp_path, monkeypatch):
     run_schema_migrations(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     monkeypatch.setattr(session_module, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(runner_module, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(upload_module, "get_session_local", lambda: SessionLocal)
+    monkeypatch.setattr(upload_module, "notify_youtube_upload_completed", AsyncMock(return_value=None))
     return SessionLocal
 
 
@@ -94,13 +100,19 @@ async def test_manual_upload_deletes_trimmed_artifacts_after_mkv_canonicalizatio
         )
     )
     monkeypatch.setattr(youtube_routes, "get_youtube_uploader", lambda: uploader)
-    monkeypatch.setattr(youtube_routes, "prepare_upload_recording_file", prepare_upload)
+    monkeypatch.setattr(upload_module, "prepare_upload_recording_file", prepare_upload)
+    monkeypatch.setattr(upload_module, "get_youtube_uploader", lambda: uploader)
+    runner = runner_module.JobRunner()
+    monkeypatch.setattr(runner_module, "get_job_runner", lambda: runner)
 
     response = await youtube_routes.upload_video(
         youtube_routes.UploadRequest(job_id="manual-trim", title="Meeting", privacy="unlisted")
     )
 
-    assert response["success"] is True
+    assert response["success"] is True and response["queued"] is True
+    # A repeated request before the task runs reuses one persisted intent.
+    await youtube_routes.upload_video(youtube_routes.UploadRequest(job_id="manual-trim"))
+    await asyncio.gather(*list(runner._upload_tasks))
     uploader.upload_video.assert_awaited_once()
     assert uploader.upload_video.await_args.kwargs["video_path"] == temporary_upload_path
     assert raw_path.exists()

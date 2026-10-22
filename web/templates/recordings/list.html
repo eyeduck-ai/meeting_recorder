@@ -201,12 +201,15 @@
         try {
             const response = await fetch('/api/v1/youtube/upload', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ job_id: jobId, title: `Recording - ${meetingCode}`, privacy: 'unlisted' })
+                body: JSON.stringify({ job_id: jobId, privacy: 'unlisted' })
             });
 
             const data = await response.json();
 
-            if (data.success) {
+            if (data.success && data.queued) {
+                btn.textContent = "已排入上傳佇列";
+                btn.title = "可在維運頁面查看進度與重試狀態";
+            } else if (data.success && data.video_url) {
                 // Replace with link (basic implementation, ideally should reload or swap)
                 btn.outerHTML = `<a href="${data.video_url}" target="_blank" class="text-green-500 text-sm font-bold">Uploaded</a>`;
             } else {

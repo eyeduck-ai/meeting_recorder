@@ -32,6 +32,8 @@ git clone https://github.com/eyeduck-ai/meeting_recorder.git
 cd meeting_recorder
 cp .env.example .env
 mkdir -p data recordings diagnostics logs
+# Linux bind mount 必須讓容器 UID/GID 1000 可寫；其他 UID 可使用 source build args。
+sudo chown -R 1000:1000 data recordings diagnostics logs
 ```
 
 ### 3. 編輯 `.env`
@@ -54,7 +56,7 @@ mkdir -p data recordings diagnostics logs
 
 `MAX_CONCURRENT_RECORDINGS` 必須大於等於 `1`，且不可大於 `RECORDING_DISPLAY_POOL_SIZE`；`MAX_PARALLEL_ACTIVITY_ANALYSES` 必須大於等於 `1`；設定錯誤時服務會在啟動時 fail fast。錄製 slot 滿時，立即錄製與手動觸發排程會依進入順序排隊；Web UI 的 Dashboard / Jobs 會顯示 queue position，queued immediate job 與 queued schedule run 都可取消，queued job 不支援 Finish。錄製中的 job 才能 Stop/Finish；等待 retry 的 job 會顯示 retry 倒數並可取消，但不佔錄製 slot，也不分配 FIFO queue position。YouTube remux/upload 中的 job 只顯示 Processing，不支援 Stop、Finish 或 Delete。Jobs 頁的 Delete completed 只刪除 `succeeded`、`failed`、`canceled` 等終態 job，會保留 queued、active 與 uploading job。
 
-多路錄製會對每個 active job 做保守磁碟預留，估算會包含已啟用的最長 dynamic extension；若 `dynamic_extension_max_sec=0`，則用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿。若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。Jitsi 明確回報連線建立失敗時會使用既有的延遲重試；等待主持人或大廳未獲准加入仍依 lobby timeout 結束。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊；retry attempt 受原本 fixed baseline + bounded dynamic extension 的 hard deadline 限制，不會重複加算延長時間。多場同時完成時，錄製 runtime 會在 FFmpeg finalize 後先釋放，smart trim / activity analysis 再受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；後處理中的 job 可能仍顯示 Processing/Finalizing，但不再佔用 `MAX_CONCURRENT_RECORDINGS` 錄製 slot，避免後處理 FFmpeg probe 互相搶 CPU/IO 或阻塞下一場錄製。若服務在後處理期間重啟，已有 raw/output 檔的 `finalizing` job 會恢復為 `succeeded` 並記錄 post-processing interrupted；若服務在 YouTube upload 中重啟，job 也會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在非終態。
+多路錄製會對每個 active job 做保守磁碟預留，估算會包含已啟用的最長 dynamic extension；若 `dynamic_extension_max_sec=0`，則用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿。若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。Jitsi 明確回報連線建立失敗時會使用既有的延遲重試；等待主持人或大廳未獲准加入仍依 lobby timeout 結束。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊；retry attempt 受原本 fixed baseline + bounded dynamic extension 的 hard deadline 限制，不會重複加算延長時間。多場同時完成時，錄製 runtime 會在 FFmpeg finalize 後先釋放，smart trim / activity analysis 再受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；後處理中的 job 可能仍顯示 Processing/Finalizing，但不再佔用 `MAX_CONCURRENT_RECORDINGS` 錄製 slot，避免後處理 FFmpeg probe 互相搶 CPU/IO 或阻塞下一場錄製。錄影完成後的後處理與上傳待辦會保存到 SQLite，重啟會接續新版已保存的工作並有限次重試，不占錄影容量。舊版沒有待辦紀錄的中斷工作只保留原檔與 interrupted 訊息；不會因升級而自動重新上傳所有歷史錄影。
 
 預設 app browser mode 若在開始錄影前遇到 browser/app-window 技術性失敗，會用 normal mode + crop fallback 重試一次；若 provider 已明確回報 join timeout、lobby timeout、會議未開始、會議不存在或其他加入錯誤，系統會直接視為加入失敗，不再用 normal mode 重試同一場。
 
@@ -69,15 +71,19 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 若你要從目前原始碼自行建置：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
+MEETING_RECORDER_REVISION=$(git rev-parse HEAD) docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
 ```
 
-啟動後開啟 [http://localhost:8000](http://localhost:8000)。
+啟動後開啟 [http://localhost:8000](http://localhost:8000)。容器以 `recorder`（預設 UID/GID `1000:1000`）運行，移除所有 Linux capabilities，啟用 `no-new-privileges`，不需要 privileged mode。HTTP 預設只綁定 `127.0.0.1`；若需區網存取，明確設定 `APP_BIND_ADDRESS` 並設定 `AUTH_PASSWORD`。
+
+從舊版 root 容器升級時，先等錄製、後處理與上傳完成，停止服務、備份資料，再把 `data/`、`recordings/`、`diagnostics/`、`logs/` 的 owner 改為容器 UID/GID；請保留 `.env` 與 OAuth token 的 owner-only 權限。不要用 `chmod 777`。使用自訂 UID/GID 時，在 source build 的 `.env` 設定 `APP_UID`／`APP_GID`，並配合掛載目錄 owner。
+
+VNC 僅在明確加入 `-f docker-compose.debug.yml` 時啟用，僅綁定 loopback。它會連接 `DEBUG_VNC_DISPLAY`（預設第一個錄製 display `100`），等待實際工作建立畫面；沒有錄製時沒有可看的桌面。
 
 ### 本地測試與 live validation
 
 不要用裸 `docker compose up --build -d` 在其他 worktree 做測試；那可能替換已部署的 recorder。
-本地測試請使用隔離 wrapper，預設會使用獨立 project、`APP_PORT=8001`、`VNC_PORT=5901` 與 workspace 專屬 image tag：
+本地測試請使用隔離 wrapper，預設會使用獨立 project、`APP_PORT=8001` 與 workspace 專屬 image tag（VNC 預設關閉，debug override 使用 `5901`）：
 
 ```bash
 python -m scripts.dev_compose up --build -d
@@ -95,7 +101,7 @@ python -m scripts.dev_compose up --build -d
 4. 使用者先對 Bot 發送 `/start`。
 5. 進入 Web UI 的 `/settings` 或 Telegram 管理流程核准使用者。
 
-通知會分別遵守開始、完成、失敗與上傳偏好。只有 Telegram API 確認接受才會記錄成功；這不代表使用者已閱讀訊息。若舊訊息無法編輯而改送新訊息，系統會保存新訊息 ID 供後續更新。
+通知會分別遵守開始、完成、失敗與上傳偏好。每場工作、事件與收件者都保存獨立的通知紀錄及訊息 ID；只有 Telegram API 確認接受才標為 `acknowledged`，這不代表使用者已閱讀。明確可重試的錯誤會有限次重試；新訊息送出逾時或中斷而無法確認結果時標為 `uncertain`，需在維運頁面確認未收到後再重送，避免重複通知。舊版單一訊息 ID 無法證明所屬收件者，升級後第一個新事件會建立新訊息。
 
 一般個人使用不需要預先提供 Chat ID，也沒有 `TELEGRAM_CHAT_ID` 環境變數；Bot 收到 `/start` 後會將對話 ID 登錄到資料庫，管理員再核准該使用者即可。Bot 使用 polling，不需要公開網址、HTTPS 憑證或 Telegram webhook。若已有另一台主機使用同一個 Bot，請先停止原本的 polling instance，避免衝突。
 
@@ -139,6 +145,20 @@ External / Testing 的 refresh token 通常會在 7 天後失效；長期自動�
 ### Secret 保存提醒
 
 會議密碼、通知 webhook secret 與 YouTube token 目前由本機 `.env`、SQLite DB 或 `data/youtube_token.json` 保存；Web UI/API 會遮罩顯示，但不是加密儲存。部署時請保護 `.env`、`data/` volume 與備份檔案的讀取權限。
+
+## 維運狀態與重啟恢復
+
+Web UI 的 **Operations／維運狀態**（`/operations`）提供執行版本、錄製容量、下次排程、磁碟、最近 30 場探針未知比例，以及後處理／上傳待辦和各收件者通知結果；舊資料沒有診斷時會顯示「尚無樣本」，不當作成功或零錯誤。
+
+- `/health/live`：程序事件迴圈存活；`/health/ready`：資料庫、錄製音訊環境與排程器就緒時回 HTTP 200，否則 503。`/health` 保留相容回應。
+- 手動 YouTube 上傳會立即回覆「已排入上傳佇列」，可在維運頁查看進度。新版會保存 resumable session 與 offset，重啟先向 YouTube 查詢已接受的位置；已完成的影片會取回原連結，不重傳。
+- `needs_review` 表示上傳 session 過期或來源檔改變等無法安全續傳的情況。請先查看頻道，再按「確認上傳狀態」填入既有影片 ID；系統會核對所屬頻道。確認沒有影片才選擇建立新上傳。
+- `failed` 表示自動重試已用完或錯誤需人工處理。通知與上傳皆有明確重試入口；已接受通知與過時事件不會再次傳送。
+- 仍有未完成／待確認待辦的錄影與 diagnostics 會受到保護，清理與刪除操作不會移除其續傳來源。
+
+排程使用標準五欄 CRON：星期 `0`／`7` 都是星期日，支援清單、範圍、步進與英文名稱；同時限制日期和星期時使用標準 OR 語義。無效或永遠無法執行的表達式會在儲存前拒絕。
+
+SQLite 使用 WAL 與 5 秒 busy timeout；升級版本記錄在 `schema_migrations`。備份運行中的資料庫時必須使用 SQLite backup API，不能只複製 `app.db` 而漏掉 WAL。安全做法是停止服務後備份整個 `data/` 目錄及 `.env`；回復舊映像時，也應回復相容的資料庫備份。
 
 ## 日常操作
 

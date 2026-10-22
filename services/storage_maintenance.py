@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from config.settings import Settings, get_settings
 from database.models import DetectionLog, JobStatus, RecordingJob
 from recording.mp4_validation import validate_mp4_file
 from recording.remux import derive_mp4_path, ensure_canonical_mp4, ensure_upload_mp4, recording_file_variants
+from services.job_actions import unfinished_work_exists
+from services.recording_retention import preserve_raw_recording
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
@@ -63,15 +66,6 @@ def _file_size(path: Path) -> int:
         return 0
 
 
-def _local_recording_preserved(job: RecordingJob) -> bool:
-    try:
-        summary = json.loads(job.runtime_summary_json or "{}")
-    except (TypeError, ValueError):
-        return False
-    retention = summary.get("local_recording_retention") if isinstance(summary, dict) else None
-    return isinstance(retention, dict) and retention.get("preserve") is True
-
-
 async def canonicalize_recording_file(
     input_path: Path,
     *,
@@ -79,12 +73,14 @@ async def canonicalize_recording_file(
     transcode_log_path: Path | None = None,
     progress_callback=None,
     dry_run: bool = False,
+    remove_source: bool = True,
 ) -> CanonicalRecording | None:
     """Convert a local recording to canonical MP4 using fast remux only."""
     return await _prepare_mp4_recording_file(
         input_path,
         remux_log_path=remux_log_path,
         dry_run=dry_run,
+        remove_source=remove_source,
     )
 
 
@@ -94,12 +90,14 @@ async def prepare_upload_recording_file(
     remux_log_path: Path | None = None,
     transcode_log_path: Path | None = None,
     progress_callback=None,
+    remove_source: bool = True,
 ) -> CanonicalRecording | None:
     """Prepare an MP4 for YouTube upload while respecting upload transcode settings."""
     local = await _prepare_mp4_recording_file(
         input_path,
         remux_log_path=remux_log_path,
         dry_run=False,
+        remove_source=remove_source,
     )
     if not local:
         return None
@@ -134,6 +132,7 @@ async def _prepare_mp4_recording_file(
     *,
     remux_log_path: Path | None = None,
     dry_run: bool = False,
+    remove_source: bool = True,
 ) -> CanonicalRecording | None:
     """Prepare an MP4 and remove the source only after the MP4 is validated."""
     input_path = Path(input_path)
@@ -171,7 +170,7 @@ async def _prepare_mp4_recording_file(
 
     deleted_source = None
     freed_bytes = 0
-    if output_path.resolve() != input_path.resolve() and input_path.exists():
+    if remove_source and output_path.resolve() != input_path.resolve() and input_path.exists():
         input_path.unlink()
         deleted_source = input_path
         freed_bytes = source_size
@@ -194,29 +193,39 @@ class StorageMaintenanceService:
         self.logs_dir = Path(self.settings.logs_dir)
 
     async def run(self, db: Session, *, dry_run: bool = True) -> dict:
-        """Run storage maintenance and return a categorized summary."""
+        """Run independent short transactions; media never holds a DB session.
+
+        Callers supply a clean session only as a database binding. Blocking
+        filesystem / SQLite work uses thread-local sessions, so slow I/O and
+        VACUUM cannot block recording probes on the event loop.
+        """
+        if db.new or db.dirty or db.deleted:
+            raise ValueError("Storage maintenance requires a session without pending writes")
+        bind = db.get_bind()
+        # End any caller read transaction before worker connections mutate data.
+        db.rollback()
         now = utc_now()
         result = self._empty_result(dry_run=dry_run)
-        mutated = False
-        vacuum_needed = False
-
-        uploaded_mutated = self._cleanup_uploaded_recordings(db, result, now=now, dry_run=dry_run)
-        mutated |= uploaded_mutated
-        if uploaded_mutated and not dry_run:
-            db.flush()
-        mutated |= await self._canonicalize_legacy_recordings(db, result, dry_run=dry_run)
-        mutated |= self._cleanup_diagnostics(db, result, now=now, dry_run=dry_run)
-        self._cleanup_rotated_logs(result, now=now, dry_run=dry_run)
-        deleted_detection_logs = self._cleanup_detection_logs(db, result, now=now, dry_run=dry_run)
-        mutated |= deleted_detection_logs > 0
-        vacuum_needed = deleted_detection_logs > 0
-
-        if not dry_run and mutated:
-            db.commit()
-            if vacuum_needed:
-                self._vacuum_sqlite(db, result)
-
+        await asyncio.to_thread(self._cleanup_before_media, bind, result, now, dry_run)
+        await self._canonicalize_legacy_recordings(bind, result, dry_run=dry_run)
+        await asyncio.to_thread(self._cleanup_after_media, bind, result, now, dry_run)
+        db.expire_all()
         return result
+
+    def _cleanup_before_media(self, bind, result: dict, now: datetime, dry_run: bool) -> None:
+        with Session(bind=bind, autoflush=False) as session:
+            if self._cleanup_uploaded_recordings(session, result, now=now, dry_run=dry_run) and not dry_run:
+                session.commit()
+
+    def _cleanup_after_media(self, bind, result: dict, now: datetime, dry_run: bool) -> None:
+        with Session(bind=bind, autoflush=False) as session:
+            mutated = self._cleanup_diagnostics(session, result, now=now, dry_run=dry_run)
+            self._cleanup_rotated_logs(result, now=now, dry_run=dry_run)
+            deleted = self._cleanup_detection_logs(session, result, now=now, dry_run=dry_run)
+            if not dry_run and (mutated or deleted):
+                session.commit()
+            if not dry_run and deleted:
+                self._vacuum_sqlite(session, result)
 
     def _empty_result(self, *, dry_run: bool) -> dict:
         return {
@@ -280,12 +289,13 @@ class StorageMaintenanceService:
                 RecordingJob.youtube_video_id != None,
                 RecordingJob.output_path != None,
                 RecordingJob.local_recording_deleted_at == None,
+                ~unfinished_work_exists(),
             )
             .all()
         )
         mutated = False
         for job in jobs:
-            if _local_recording_preserved(job):
+            if preserve_raw_recording(job.runtime_summary_json):
                 continue
             output_path = Path(job.output_path)
             if not _is_relative_to(output_path, self.recordings_dir):
@@ -317,51 +327,59 @@ class StorageMaintenanceService:
 
         return mutated
 
-    async def _canonicalize_legacy_recordings(self, db: Session, result: dict, *, dry_run: bool) -> bool:
-        jobs = (
-            db.query(RecordingJob)
-            .filter(
-                RecordingJob.status == JobStatus.SUCCEEDED.value,
-                RecordingJob.output_path != None,
-                RecordingJob.local_recording_deleted_at == None,
+    def _canonicalization_candidates(self, bind) -> list[tuple[str, str]]:
+        with Session(bind=bind, autoflush=False) as session:
+            jobs = (
+                session.query(RecordingJob)
+                .filter(
+                    RecordingJob.status == JobStatus.SUCCEEDED.value,
+                    RecordingJob.output_path != None,
+                    RecordingJob.local_recording_deleted_at == None,
+                    ~unfinished_work_exists(),
+                )
+                .all()
             )
-            .all()
-        )
-        mutated = False
-        for job in jobs:
-            if _local_recording_preserved(job):
-                continue
-            output_path = Path(job.output_path)
-            if output_path.suffix.lower() != ".mkv":
-                continue
+            return [
+                (job.job_id, job.output_path)
+                for job in jobs
+                if not preserve_raw_recording(job.runtime_summary_json)
+                and Path(job.output_path).suffix.lower() == ".mkv"
+            ]
+
+    async def _canonicalize_legacy_recordings(self, bind, result: dict, *, dry_run: bool) -> None:
+        candidates = await asyncio.to_thread(self._canonicalization_candidates, bind)
+        for job_id, path in candidates:
+            output_path = Path(path)
             if not _is_relative_to(output_path, self.recordings_dir):
                 self._add_error(result, "canonicalize", str(output_path), "path is outside recordings_dir")
                 continue
             if not output_path.exists():
                 self._add_error(result, "canonicalize", str(output_path), "source MKV is missing")
                 continue
-
-            remux_log = self.diagnostics_dir / job.job_id / "remux.log"
-            transcode_log = self.diagnostics_dir / job.job_id / "transcode.log"
             try:
                 canonical = await canonicalize_recording_file(
                     output_path,
-                    remux_log_path=remux_log,
-                    transcode_log_path=transcode_log,
+                    remux_log_path=self.diagnostics_dir / job_id / "remux.log",
                     dry_run=dry_run,
+                    remove_source=False,
                 )
+                if not canonical:
+                    self._add_error(result, "canonicalize", path, "MP4 conversion did not produce a file")
+                    continue
+                if not dry_run:
+                    canonical = await asyncio.to_thread(
+                        self._save_canonical_recording, bind, job_id, output_path, canonical
+                    )
+                    if not canonical:
+                        result["warnings"].append(f"Skipped changed recording {job_id}; source preserved")
+                        continue
             except Exception as exc:
-                self._add_error(result, "canonicalize", str(output_path), str(exc))
+                self._add_error(result, "canonicalize", path, str(exc))
                 continue
-
-            if not canonical:
-                self._add_error(result, "canonicalize", str(output_path), "MP4 conversion did not produce a file")
-                continue
-
             result["canonicalized"].append(
                 {
-                    "job_id": job.job_id,
-                    "from": str(output_path),
+                    "job_id": job_id,
+                    "from": path,
                     "to": str(canonical.output_path),
                     "deleted_source": str(canonical.deleted_source) if canonical.deleted_source else None,
                     "status": canonical.status,
@@ -369,41 +387,64 @@ class StorageMaintenanceService:
             )
             result["freed_bytes"] += canonical.freed_bytes
 
-            if not dry_run:
-                job.output_path = str(canonical.output_path)
-                job.file_size = canonical.file_size
-                for attr in ("raw_output_path", "trimmed_output_path"):
-                    value = getattr(job, attr)
-                    if value and Path(value) == output_path:
-                        setattr(job, attr, str(canonical.output_path))
+    def _save_canonical_recording(
+        self, bind, job_id: str, output_path: Path, canonical: CanonicalRecording
+    ) -> CanonicalRecording | None:
+        # Re-read after FFmpeg: another request may have started upload, deleted
+        # the job, or marked the original for preservation while remux ran.
+        with Session(bind=bind, autoflush=False) as session:
+            if bind.dialect.name == "sqlite":
+                # Serialize this short eligibility check and update, never the
+                # preceding media subprocess or filesystem cleanup.
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            job = session.query(RecordingJob).filter(RecordingJob.job_id == job_id, ~unfinished_work_exists()).first()
+            if (
+                not job
+                or job.status != JobStatus.SUCCEEDED.value
+                or job.output_path != str(output_path)
+                or job.local_recording_deleted_at is not None
+                or preserve_raw_recording(job.runtime_summary_json)
+            ):
+                return None
+            job.output_path = str(canonical.output_path)
+            job.file_size = canonical.file_size
+            for attr in ("raw_output_path", "trimmed_output_path"):
+                value = getattr(job, attr)
+                if value and Path(value) == output_path:
+                    setattr(job, attr, str(canonical.output_path))
 
-                # Remux changes the artifact path and size, not the recording or
-                # trim boundaries. Keep unrelated artifacts and diagnostics intact.
-                try:
-                    summary = json.loads(job.runtime_summary_json or "null")
-                except (TypeError, ValueError):
-                    summary = None
-                summary_changed = False
-                if isinstance(summary, dict):
-                    for section_name, path_fields in (
-                        ("recording_info", ("output_path",)),
-                        ("trim", ("raw_output_path", "trimmed_output_path")),
-                    ):
-                        section = summary.get(section_name)
-                        if not isinstance(section, dict):
-                            continue
-                        for field in path_fields:
-                            value = section.get(field)
-                            if isinstance(value, str) and Path(value) == output_path:
-                                section[field] = str(canonical.output_path)
-                                if section_name == "recording_info":
-                                    section["file_size"] = canonical.file_size
-                                summary_changed = True
-                    if summary_changed:
-                        job.runtime_summary_json = json.dumps(summary, ensure_ascii=False)
-                mutated = True
-
-        return mutated
+            # Remux changes the artifact path and size, not the recording or
+            # trim boundaries. Keep unrelated artifacts and diagnostics intact.
+            try:
+                summary = json.loads(job.runtime_summary_json or "null")
+            except (TypeError, ValueError):
+                summary = None
+            summary_changed = False
+            if isinstance(summary, dict):
+                for section_name, path_fields in (
+                    ("recording_info", ("output_path",)),
+                    ("trim", ("raw_output_path", "trimmed_output_path")),
+                ):
+                    section = summary.get(section_name)
+                    if not isinstance(section, dict):
+                        continue
+                    for field in path_fields:
+                        value = section.get(field)
+                        if isinstance(value, str) and Path(value) == output_path:
+                            section[field] = str(canonical.output_path)
+                            if section_name == "recording_info":
+                                section["file_size"] = canonical.file_size
+                            summary_changed = True
+                if summary_changed:
+                    job.runtime_summary_json = json.dumps(summary, ensure_ascii=False)
+            session.commit()
+        # Database references are durable before removing the original container.
+        # Failed commits therefore leave the MKV intact for the next run.
+        if output_path != canonical.output_path and output_path.exists():
+            source_size = _file_size(output_path)
+            output_path.unlink()
+            return replace(canonical, deleted_source=output_path, freed_bytes=source_size)
+        return canonical
 
     def _cleanup_diagnostics(self, db: Session, result: dict, *, now: datetime, dry_run: bool) -> bool:
         cutoff = self._cutoff(now, DIAGNOSTICS_RETENTION_DAYS)
@@ -417,6 +458,7 @@ class StorageMaintenanceService:
             .filter(
                 RecordingJob.status.in_(terminal_statuses),
                 RecordingJob.diagnostic_dir != None,
+                ~unfinished_work_exists(),
             )
             .all()
         )

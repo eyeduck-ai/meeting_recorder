@@ -12,4 +12,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        BUILD_TIMESTAMP: ${MEETING_RECORDER_REVISION:-unknown}
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     image: ${MEETING_RECORDER_IMAGE:-meeting-recorder:dev-local}

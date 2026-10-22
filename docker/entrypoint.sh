@@ -1,189 +1,71 @@
 #!/bin/bash
+set -eu
+umask 077
 
-echo "=== AutoMeetRecorder Container Starting ==="
+# All audio processes run as the unprivileged application user.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/meeting-recorder-runtime}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/pipewire/pipewire.conf.d"     "$XDG_CONFIG_HOME/pipewire/pipewire-pulse.conf.d"
+chmod 700 "$XDG_RUNTIME_DIR"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/session-bus"
+rm -f "$XDG_RUNTIME_DIR/session-bus"
+dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork
+rm -f "$XDG_RUNTIME_DIR/pipewire-0" "$XDG_RUNTIME_DIR/pipewire-0.lock"
+rm -f "$XDG_RUNTIME_DIR/pulse/native"
 
-# Set up XDG_RUNTIME_DIR for PipeWire
-export XDG_RUNTIME_DIR=/run/user/0
-mkdir -p $XDG_RUNTIME_DIR
-chmod 700 $XDG_RUNTIME_DIR
-
-# Start D-Bus (required for PipeWire/WirePlumber)
-echo "Starting D-Bus..."
-if [ ! -d /run/dbus ]; then
-    mkdir -p /run/dbus
-fi
-rm -f /run/dbus/pid 2>/dev/null || true
-dbus-daemon --system --fork 2>/dev/null || echo "D-Bus system daemon already running"
-
-# Start a D-Bus session bus (needed for PipeWire)
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-    # Create session bus socket directory
-    mkdir -p $XDG_RUNTIME_DIR/bus
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus/session"
-    # Start session bus daemon manually
-    dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork --print-pid > /tmp/dbus-session.pid 2>/dev/null || true
-    echo "D-Bus session started: $DBUS_SESSION_BUS_ADDRESS"
-fi
-
-# Clean up any stale PipeWire files
-echo "Cleaning up stale audio files..."
-rm -rf $XDG_RUNTIME_DIR/pipewire-* $XDG_RUNTIME_DIR/pulse 2>/dev/null || true
-
-# Create PipeWire configuration for virtual audio
-mkdir -p /etc/pipewire/pipewire.conf.d
-cat > /etc/pipewire/pipewire.conf.d/10-virtual-sink.conf << 'EOF'
-# Virtual sink configuration for recording
-# Disable idle suspension to prevent FFmpeg audio stalls
-context.properties = {
-    # Disable suspend on idle - critical for recording stability
-    module.suspend-on-idle = false
-}
+cat > "$XDG_CONFIG_HOME/pipewire/pipewire.conf.d/10-virtual-sink.conf" <<'EOF'
+context.properties = { module.suspend-on-idle = false }
 context.objects = [
-    {   factory = adapter
-        args = {
-            factory.name     = support.null-audio-sink
-            node.name        = "virtual_speaker"
-            node.description = "Virtual Speaker for Recording"
-            media.class      = "Audio/Sink"
-            audio.position   = [ FL FR ]
-            audio.rate       = 48000
-            monitor.channel-volumes = true
-            # Prevent node from being suspended when idle
-            node.pause-on-idle = false
-            session.suspend-timeout-seconds = 0
-        }
+    { factory = adapter
+      args = {
+        factory.name = support.null-audio-sink
+        node.name = "virtual_speaker"
+        node.description = "Virtual Speaker for Recording"
+        media.class = "Audio/Sink"
+        audio.position = [ FL FR ]
+        audio.rate = 48000
+        monitor.channel-volumes = true
+        node.pause-on-idle = false
+        session.suspend-timeout-seconds = 0
+      }
     }
 ]
 EOF
-
-# Configure PipeWire-Pulse for compatibility
-mkdir -p /etc/pipewire/pipewire-pulse.conf.d
-cat > /etc/pipewire/pipewire-pulse.conf.d/10-recording.conf << 'EOF'
-# Optimize for recording stability
-pulse.properties = {
-    server.address = [ "unix:native" ]
-}
-stream.properties = {
-    resample.quality = 4
-}
+cat > "$XDG_CONFIG_HOME/pipewire/pipewire-pulse.conf.d/10-recording.conf" <<'EOF'
+pulse.properties = { server.address = [ "unix:native" ] }
+stream.properties = { resample.quality = 4 }
 EOF
-
-# Kill any existing audio processes
-pkill -9 pipewire 2>/dev/null || true
-pkill -9 wireplumber 2>/dev/null || true
-sleep 0.5
-
-# Start PipeWire
-echo "Starting PipeWire audio server..."
 pipewire &
-PIPEWIRE_PID=$!
-sleep 1
-
-# Verify PipeWire is running
-if ! kill -0 $PIPEWIRE_PID 2>/dev/null; then
-    echo "ERROR: PipeWire failed to start"
-else
-    echo "PipeWire started (PID: $PIPEWIRE_PID)"
-fi
-
-# Start WirePlumber (session manager)
-echo "Starting WirePlumber session manager..."
 wireplumber &
-WIREPLUMBER_PID=$!
-sleep 1
-
-if ! kill -0 $WIREPLUMBER_PID 2>/dev/null; then
-    echo "WARNING: WirePlumber failed to start"
-else
-    echo "WirePlumber started (PID: $WIREPLUMBER_PID)"
-fi
-
-# Start PipeWire-Pulse (PulseAudio compatibility layer)
-echo "Starting PipeWire-Pulse compatibility layer..."
 pipewire-pulse &
-PIPEWIRE_PULSE_PID=$!
-sleep 1
-
-if ! kill -0 $PIPEWIRE_PULSE_PID 2>/dev/null; then
-    echo "WARNING: PipeWire-Pulse failed to start"
-else
-    echo "PipeWire-Pulse started (PID: $PIPEWIRE_PULSE_PID)"
-fi
-
-# Wait for audio system to be ready
-AUDIO_READY=0
-echo "Waiting for audio system..."
-for i in $(seq 1 15); do
-    sleep 0.5
+audio_ready=0
+for attempt in $(seq 1 30); do
     if pactl info >/dev/null 2>&1; then
-        AUDIO_READY=1
+        audio_ready=1
         break
     fi
-    echo "Waiting for audio... ($i/15)"
+    sleep 0.5
 done
-
-if [ "$AUDIO_READY" = "1" ]; then
-    echo "Audio system ready!"
-
-    # Check if virtual_speaker sink exists (from config), if not create it
-    if ! pactl list sinks short 2>/dev/null | grep -q virtual_speaker; then
-        echo "Creating virtual_speaker sink via pactl..."
-        pactl load-module module-null-sink sink_name=virtual_speaker \
-            sink_properties=device.description="Virtual_Speaker" \
-            rate=48000 channels=2 2>/dev/null || true
-        sleep 0.5
-    fi
-
-    # Set virtual_speaker as default
-    pactl set-default-sink virtual_speaker 2>/dev/null || true
-
-    # List audio devices for debugging
-    echo "=== Audio Configuration (PipeWire) ==="
-    echo "Sinks:"
-    pactl list sinks short 2>/dev/null || true
-    echo "Sources:"
-    pactl list sources short 2>/dev/null || true
-    echo "======================================="
-else
-    echo "WARNING: Audio system failed to start. Audio recording will use silent fallback."
+if [ "$audio_ready" != 1 ]; then
+    echo "ERROR: recording audio server failed to start" >&2
+    exit 1
 fi
+pactl set-default-sink virtual_speaker >/dev/null 2>&1 || true
 
-# Start VNC server if DEBUG_VNC is set (requires x11vnc to be installed)
-if [ "${DEBUG_VNC:-0}" = "1" ]; then
-    if ! command -v x11vnc &>/dev/null; then
-        echo "WARNING: DEBUG_VNC=1 but x11vnc is not installed. Skipping VNC."
-        echo "To enable VNC, add x11vnc to Dockerfile or install at runtime."
-    else
-        echo "Starting VNC server on port 5900 for debugging..."
-
-        # Read resolution from environment variables, default 1920x1080
-        VNC_WIDTH="${RESOLUTION_W:-1920}"
-        VNC_HEIGHT="${RESOLUTION_H:-1080}"
-        VNC_DEPTH="24"
-        VNC_DISPLAY=":99"
-
-        # Clean up old lock file
-        if [ -f "/tmp/.X99-lock" ]; then
-            echo "Removing stale X lock file..."
-            rm -f /tmp/.X99-lock
-        fi
-
-        # Check if Xvfb is already running
-        if ! pgrep -x Xvfb > /dev/null; then
-            echo "Starting Xvfb with resolution ${VNC_WIDTH}x${VNC_HEIGHT}..."
-            Xvfb ${VNC_DISPLAY} -screen 0 ${VNC_WIDTH}x${VNC_HEIGHT}x${VNC_DEPTH} \
-                -ac +extension GLX +extension RANDR +extension RENDER &
+# Attach to an actual per-job display when it exists; do not reserve a capture slot.
+if [ "${DEBUG_VNC:-0}" = 1 ]; then
+    debug_display="${DEBUG_VNC_DISPLAY:-100}"
+    if ! [[ "$debug_display" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: DEBUG_VNC_DISPLAY must be a display number" >&2
+        exit 1
+    fi
+    (
+        while true; do
+            if [ -S "/tmp/.X11-unix/X$debug_display" ]; then
+                x11vnc -display ":$debug_display" -forever -nopw -shared                     -rfbport 5900 -o /tmp/x11vnc.log || true
+            fi
             sleep 2
-        else
-            echo "Xvfb already running, reusing existing instance"
-        fi
-
-        export DISPLAY=${VNC_DISPLAY}
-        x11vnc -display ${VNC_DISPLAY} -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log 2>/dev/null
-        echo "VNC server started - connect to localhost:5900 (${VNC_WIDTH}x${VNC_HEIGHT})"
-    fi
+        done
+    ) &
 fi
-
-echo "=== Starting Application ==="
-# Execute the main command
 exec "$@"

@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         "Using dev compose identity: "
         f"project={env['COMPOSE_PROJECT_NAME']} "
         f"app_port={env['APP_PORT']} "
-        f"vnc_port={env['VNC_PORT']} "
+        f"vnc={env['VNC_PORT'] if 'docker-compose.debug.yml' in env.get('COMPOSE_FILE', '') else 'off'} "
         f"image={env['MEETING_RECORDER_IMAGE']}",
         file=sys.stderr,
     )

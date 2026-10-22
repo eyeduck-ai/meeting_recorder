@@ -207,6 +207,8 @@
                     <span>Recordings</span>
                 </a>
 
+                <a href="/operations" class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if request.url.path == '/operations' %}active{% endif %}"><span aria-hidden="true">◉</span><span>Operations</span></a>
+
                 <a href="/detection-logs"
                     class="nav-item flex items-center gap-4 px-4 py-3 rounded-full {% if '/detection-logs' in request.url.path %}active{% endif %}">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"

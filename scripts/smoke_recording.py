@@ -18,8 +18,10 @@ from playwright.async_api import async_playwright
 
 from config.settings import get_settings
 from recording.ffmpeg_pipeline import FFmpegPipeline
+from recording.remux import ensure_canonical_mp4
 from recording.runtime_checks import get_recording_runtime_status
 from recording.virtual_env import VirtualEnvironment, VirtualEnvironmentConfig
+from scripts.media_validation import validate_smoke_media
 from utils.timezone import utc_now
 
 logger = logging.getLogger(__name__)
@@ -278,9 +280,15 @@ async def main() -> int:
         recording_info = await ffmpeg.stop()
         ffmpeg = None
 
+        canonical_path = await ensure_canonical_mp4(output_path)
+        if canonical_path is None:
+            raise RuntimeError("Smoke recording could not be converted to validated MP4")
+        media = await validate_smoke_media(canonical_path, expected_duration=args.duration_sec)
         summary.update(
             {
-                "success": recording_info.file_size > 0 and ffmpeg_log_path.exists(),
+                "success": ffmpeg_log_path.exists(),
+                "media_validation": media,
+                "canonical_path": str(canonical_path),
                 "recording_info": {
                     "output_path": str(recording_info.output_path),
                     "file_size": recording_info.file_size,

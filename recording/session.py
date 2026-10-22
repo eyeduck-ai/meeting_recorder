@@ -65,6 +65,7 @@ class RecordingSession:
         self.page: Page | None = None
         self.ffmpeg: FFmpegPipeline | None = None
 
+        self.activity_probe_summary: dict | None = None
         self._console_messages: list[dict] = []
         self._stage_timings: dict[str, dict[str, str]] = {}
         self._current_stage: str | None = None
@@ -511,6 +512,7 @@ class RecordingSession:
             "output_file": str(self.output_file),
             "provider_state_log": str(self.provider_state_path) if self.provider_state_path.exists() else None,
             "stages": self._stage_timings,
+            "activity_probe": self.activity_probe_summary,
             "updated_at": utc_now().isoformat(),
         }
         if trim_summary:

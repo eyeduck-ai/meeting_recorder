@@ -45,7 +45,7 @@ def test_build_dev_identity_uses_isolated_defaults(tmp_path):
 
     assert identity.project == f"meeting-recorder-dev-{workspace_hash(tmp_path)}"
     assert identity.image == f"meeting-recorder:dev-{workspace_hash(tmp_path)}"
-    assert identity.host_ports == frozenset({8001, 5901})
+    assert identity.host_ports == frozenset({8001})
     assert identity.container_name is None
 
 

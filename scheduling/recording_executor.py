@@ -1,16 +1,18 @@
 """Recording execution, retry, DB status, and notification flow."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from database.models import JobStatus
+from database.models import DurableWork, JobStatus
 from database.session import JobRepository, build_result_update_fields, get_session_local
 from recording.job_types import RecordingJob
 from recording.post_processing import RecordingPostProcessingRequest
 from scheduling.upload_runner import UploadRequest
+from services.durable_work import post_processing_payload
 from telegram_bot.notifications import (
     notify_recording_failed,
     notify_recording_retry,
@@ -65,6 +67,7 @@ class RecordingExecutor:
         self._worker_provider = worker_provider
         self._notification_lock = asyncio.Lock()
         self._attempt_by_job_id: dict[str, int] = {}
+        self._stage_notification_tasks: set[asyncio.Task] = set()
 
     async def run_with_retry(
         self,
@@ -102,6 +105,21 @@ class RecordingExecutor:
                 if result.status == JobStatus.SUCCEEDED and result.recording_info:
                     update_fields["completed_at"] = None
                     repo.update_status(job.job_id, JobStatus.FINALIZING.value, **update_fields)
+                    if not session.query(DurableWork).filter_by(job_id=job.job_id, kind="post_process").first():
+                        request = RecordingPostProcessingRequest(
+                            job=job,
+                            result=result,
+                            youtube_enabled=youtube_enabled,
+                            youtube_privacy=youtube_privacy,
+                            meeting_name=meeting_name,
+                        )
+                        session.add(
+                            DurableWork(
+                                job_id=job.job_id,
+                                kind="post_process",
+                                payload_json=json.dumps(post_processing_payload(request)),
+                            )
+                        )
                     finalizing_notification_needed = True
                 else:
                     repo.update_status(job.job_id, result.status.value, **update_fields)
@@ -209,7 +227,23 @@ class RecordingExecutor:
             s.close()
 
     def _schedule_stage_notification(self, job_id: str, status: JobStatus) -> None:
-        asyncio.create_task(self._notify_stage_update(job_id, status))
+        task = asyncio.create_task(self._notify_stage_update(job_id, status))
+        self._stage_notification_tasks.add(task)
+        task.add_done_callback(self._stage_notification_done)
+
+    def _stage_notification_done(self, task: asyncio.Task) -> None:
+        self._stage_notification_tasks.discard(task)
+        if not task.cancelled() and task.exception():
+            logger.warning("Stage notification task failed (%s)", type(task.exception()).__name__)
+
+    async def shutdown(self, timeout_sec: float = 5.0) -> None:
+        tasks = list(self._stage_notification_tasks)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout_sec)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._stage_notification_tasks.clear()
 
     def _is_retryable_error(self, error_message: str, error_code: str | None = None) -> bool:
         if error_code == "CONNECTION_FAILED":

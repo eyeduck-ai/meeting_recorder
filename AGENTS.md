@@ -57,6 +57,18 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 
 ## 重要架構事實
 
+### Durable work、通知與維運
+
+- `services.durable_work.DurableWorkStore` 與 `durable_work` 是 post-processing/upload intent、claim、retry/recovery 的 owner；只恢復 explicit intent，不可自動重傳歷史 succeeded jobs。raw-success 與 post intent 必須同交易；post完成與 upload intent 也必須同交易。
+- YouTube resumable session URI、offset、來源 SHA-256／prepared path 保存在私有 resume JSON；API/ops/log 禁止輸出。session 過期、來源變動標 `needs_review`，只有操作者 reconciliation 可允許新 session。
+- `services.recording_retention.preserve_raw_recording()` 是 raw-preserve marker owner，後處理、上傳準備與維護都使用它，避免任何 canonicalization path 刪除指定保留的原 MKV。
+- maintenance 與所有刪除入口須保護非 succeeded durable work 引用的檔案與 diagnostics。上傳失敗待續傳的 temporary file 不可刪除。
+- `services.notification_delivery.NotificationDeliveryService` 與 `database.notification_models.NotificationDelivery` 管 per-job/event/chat intent/ack；Telegram 沒有 send idempotency key，新送逾時或重啟中斷標 `uncertain`，不可盲重送。已知 message ID 的 edit 可重試，已 ack 或過時事件不可重送。舊 job 單一 telegram_message_id 不可猜對應 chat。
+- `scheduling.cron` 是標準 5 欄 CRON 的驗證、next/previous fire owner；不得再次各自替換 weekday。SQLite WAL/busy_timeout 由 database/session.py 管，schema_migrations 由 database/migrations.py 管；備份運行中 SQLite 用 backup API。
+- `services.health.HealthProbe` 管 thread probe、single-flight、cache 與 bounded wait；`/health/live` 不做 subprocess/DB probe。`services.operations` 只回傳白名單狀態欄位，舊資料缺 probe evidence 不視為 0。
+- Docker 預設非 root UID/GID 1000、cap_drop ALL、no-new-privileges、loopback HTTP；debug VNC 只有額外載入 docker-compose.debug.yml 才發布。不得為解決 volume owner 錯誤而恢復 privileged 或 chmod777。
+
+
 ### 受控並行錄製
 
 - `recording.worker.get_worker()` 是 singleton

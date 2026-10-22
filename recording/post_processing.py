@@ -15,9 +15,11 @@ from config.settings import get_settings
 from database.models import DetectionLog, JobStatus
 from database.models import RecordingJob as RecordingJobModel
 from database.session import JobRepository, build_result_update_fields, get_session_local
+from providers.base import redact_url_secrets
 from recording.activity import RecordingActivityAnalyzer, trim_recording
 from recording.job_types import RecordingJob, RecordingResult
 from scheduling.upload_runner import UploadRequest
+from services.recording_retention import preserve_raw_recording
 from services.storage_maintenance import canonicalize_recording_file
 from telegram_bot.notifications import notify_recording_completed
 from utils.timezone import to_local, utc_now
@@ -251,7 +253,7 @@ class RecordingPostProcessor:
         title_parts = [time_str]
         if request.meeting_name:
             title_parts.append(request.meeting_name)
-        title_parts.append(request.job.meeting_code)
+        title_parts.append(redact_url_secrets(request.job.meeting_code))
         return UploadRequest(
             job_id=request.job.job_id,
             video_path=output_path,
@@ -269,6 +271,8 @@ class RecordingPostProcessor:
             return
 
         original_output_path = recording_info.output_path
+        if original_output_path == result.raw_output_path and preserve_raw_recording(result.runtime_summary):
+            return
         remux_log = job.diagnostics_dir / "remux.log" if job.diagnostics_dir else None
         transcode_log = job.diagnostics_dir / "transcode.log" if job.diagnostics_dir else None
         try:

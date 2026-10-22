@@ -1,4 +1,5 @@
 import json
+import stat
 from datetime import timedelta
 
 import pytest
@@ -107,14 +108,8 @@ async def test_notification_config_mask_without_existing_secret_saves_empty(db_s
     assert stored["webhook_secret"] == ""
 
 
-def test_token_storage_round_trip_and_restricts_permissions(tmp_path, monkeypatch):
+def test_token_storage_round_trip_and_restricts_permissions(tmp_path):
     token_path = tmp_path / "youtube_token.json"
-    chmod_calls = []
-
-    def fake_chmod(self, mode):
-        chmod_calls.append((self, mode))
-
-    monkeypatch.setattr(type(token_path), "chmod", fake_chmod)
 
     storage = TokenStorage(storage_path=token_path)
     token = OAuthToken(
@@ -128,7 +123,7 @@ def test_token_storage_round_trip_and_restricts_permissions(tmp_path, monkeypatc
 
     assert loaded.access_token == "access"
     assert loaded.refresh_token == "refresh"
-    assert chmod_calls == [(token_path, 0o600)]
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
 
 
 @pytest.mark.asyncio

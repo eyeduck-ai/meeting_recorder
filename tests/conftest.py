@@ -1,8 +1,23 @@
 """Pytest configuration and shared fixtures."""
 
+import atexit
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+
+# Test collection must never inherit a developer's live .env database or credentials.
+_test_runtime = tempfile.TemporaryDirectory(prefix="meeting-recorder-tests-")
+atexit.register(_test_runtime.cleanup)
+os.environ["DATABASE_URL"] = f"sqlite:///{Path(_test_runtime.name) / 'app.db'}"
+for _directory in ("DATA_DIR", "RECORDINGS_DIR", "DIAGNOSTICS_DIR", "LOGS_DIR"):
+    _path = Path(_test_runtime.name) / _directory.lower()
+    _path.mkdir()
+    os.environ[_directory] = str(_path)
+for _secret in ("TELEGRAM_BOT_TOKEN", "YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"):
+    os.environ[_secret] = ""
 
 
 @pytest.fixture
