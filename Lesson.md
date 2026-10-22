@@ -165,3 +165,4 @@
 - 維運頁需測有真實 upcoming schedule、legacy malformed runtime JSON 與 factory 契約；僅空資料測試抓不到 s.name 與 session getter 層級錯誤。
 - 真實媒體測試發現 AAC padding 使 format duration 為 30.021 秒，coarse scan 包含 30 秒而 FFmpeg fps 預設 EOF rounding 只輸出到 28 秒。`eof_action=pass` 保留最後真實解碼 frame；不可忽略未知樣本或填 inactive，缺音軌仍應保守保留原片。
 - CI job 成功不代表 optional Codecov 上傳成功；應檢查 log。無外部 token 時，改保存 GitHub Actions coverage artifact，並在報告不存在時讓步驟失敗。
+- GitHub runner 的依賴安裝可能卡在套件鏡像；已有 FFmpeg/ffprobe 時不要再 apt update，缺少時限制下載 timeout/retries，並為安裝與 job 設期限。

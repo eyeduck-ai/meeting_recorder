@@ -458,7 +458,7 @@ python -m scripts.test_provider --url "https://zoom.us/j/123456789" --provider z
 
 `tests/conftest.py` 在 collection 前隔離 DATABASE_URL、LOGS_DIR 與 Telegram/YouTube credentials，防止讀取開發機 `.env` 的正式資料。媒體測試在無 FFmpeg 時 skip；CI 設 `REQUIRE_MEDIA_TOOLS=1` 強制缺依賴失敗。
 
-Coverage XML 直接保存為 GitHub Actions 的 `coverage-report` artifact，保留 14 天；不需要 Codecov token。
+Coverage XML 直接保存為 GitHub Actions 的 `coverage-report` artifact，保留 14 天；不需要 Codecov token。CI 優先使用 runner 已有 FFmpeg；缺少時才安裝，安裝步驟限時 5 分鐘、test job 限時 15 分鐘，同一 ref 的新 run 會取消舊 run。
 
 PR CI 只執行一輪 pytest + coverage（包含 real SQLite restart/concurrency、HTTP upload contract、真實 FFmpeg trim/remux/靜音/靜止影像），並執行與 nightly 共用的 Docker smoke。smoke 使用無網路、非 root、cap-drop ALL、no-new-privileges 的容器，實錄 Chromium 動畫與音源，驗證 MP4 實際片長、音／影軌、完整解碼、音量與像素變化；不呼叫外部會議、YouTube 或 Telegram。
 
