@@ -236,6 +236,20 @@ class JitsiProvider(BaseProvider):
                 evidence={"matched_selectors": matched_in_meeting, "url": page.url},
             )
 
+        # A failed conference request leaves the prejoin form mounted. Detect its
+        # visible notification before PREJOIN so the runner can retry the failure
+        # within the existing recording deadline instead of reporting JOIN_TIMEOUT.
+        connection_failure_selector = '[data-testid="notify.connectionFailed"]'
+        connection_failure = self._first_locator(page.locator(connection_failure_selector))
+        if await connection_failure.is_visible():
+            return MeetingStateSnapshot(
+                state=MeetingState.ERROR,
+                reason="Jitsi reported a connection failure while joining",
+                evidence={"matched_selectors": [connection_failure_selector], "url": page.url},
+                error_code="CONNECTION_FAILED",
+                error_message="Jitsi connection failed; the conference could not be joined",
+            )
+
         matched_ended = []
         for selector in ended_indicators:
             if await page.locator(selector).count() > 0:

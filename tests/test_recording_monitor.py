@@ -2,10 +2,12 @@
 
 import asyncio
 from datetime import timedelta
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 from recording.activity import ActivityConfig, LiveMediaActivityProbe, MediaActivityState
 from recording.monitor import RecordingMonitor
@@ -350,6 +352,58 @@ async def test_live_activity_probe_prime_warms_audio_and_video():
     await probe.prime(FakeSession())
 
     assert sorted(calls) == ["audio", "video"]
+
+
+@pytest.mark.asyncio
+async def test_live_silent_static_video_stops_after_idle_despite_jpeg_byte_changes():
+    encoded = BytesIO()
+    Image.new("RGB", (1920, 1080), (32, 64, 96)).save(encoded, format="JPEG", quality=35)
+    original = encoded.getvalue()
+    comment = b"same visible frame with different JPEG metadata"
+    alternate = original[:2] + b"\xff\xfe" + (len(comment) + 2).to_bytes(2, "big") + comment + original[2:]
+    probe = LiveMediaActivityProbe(ActivityConfig())
+    probe._check_audio = AsyncMock(return_value=(False, -120.0))
+    session = FakeSession()
+    session.page = SimpleNamespace(screenshot=AsyncMock(side_effect=[original, alternate, original, alternate]))
+    monitor = make_monitor(
+        session=session,
+        job=make_job(
+            duration_sec=5,
+            dynamic_extension_enabled=True,
+            dynamic_extension_idle_sec=10,
+            dynamic_extension_max_sec=20,
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 4, 6, 11, 16, 26),
+    )
+
+    await monitor.run()
+
+    assert monitor.dynamic_extension_stop_reason == "idle_timeout"
+    assert session.page.screenshot.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_live_corrupt_screenshot_keeps_recording_within_extension_budget():
+    probe = LiveMediaActivityProbe(ActivityConfig())
+    probe._check_audio = AsyncMock(return_value=(False, -120.0))
+    session = FakeSession()
+    session.page = SimpleNamespace(screenshot=AsyncMock(return_value=b"invalid screenshot"))
+    monitor = make_monitor(
+        session=session,
+        job=make_job(
+            duration_sec=5,
+            dynamic_extension_enabled=True,
+            dynamic_extension_idle_sec=10,
+            dynamic_extension_max_sec=20,
+        ),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 6, 11, 16, 26),
+    )
+
+    await monitor.run()
+
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
 
 
 @pytest.mark.asyncio

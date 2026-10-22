@@ -58,6 +58,8 @@ diagnostics/*
 !diagnostics/.gitkeep
 data/*
 !data/.gitkeep
+logs/*
+!logs/.gitkeep
 
 # Documentation
 *.md

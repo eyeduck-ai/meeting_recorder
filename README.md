@@ -54,7 +54,7 @@ mkdir -p data recordings diagnostics logs
 
 `MAX_CONCURRENT_RECORDINGS` 必須大於等於 `1`，且不可大於 `RECORDING_DISPLAY_POOL_SIZE`；`MAX_PARALLEL_ACTIVITY_ANALYSES` 必須大於等於 `1`；設定錯誤時服務會在啟動時 fail fast。錄製 slot 滿時，立即錄製與手動觸發排程會依進入順序排隊；Web UI 的 Dashboard / Jobs 會顯示 queue position，queued immediate job 與 queued schedule run 都可取消，queued job 不支援 Finish。錄製中的 job 才能 Stop/Finish；等待 retry 的 job 會顯示 retry 倒數並可取消，但不佔錄製 slot，也不分配 FIFO queue position。YouTube remux/upload 中的 job 只顯示 Processing，不支援 Stop、Finish 或 Delete。Jobs 頁的 Delete completed 只刪除 `succeeded`、`failed`、`canceled` 等終態 job，會保留 queued、active 與 uploading job。
 
-多路錄製會對每個 active job 做保守磁碟預留，估算會包含已啟用的最長 dynamic extension；若 `dynamic_extension_max_sec=0`，則用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿。若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊；retry attempt 受原本 fixed baseline + bounded dynamic extension 的 hard deadline 限制，不會重複加算延長時間。多場同時完成時，錄製 runtime 會在 FFmpeg finalize 後先釋放，smart trim / activity analysis 再受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；後處理中的 job 可能仍顯示 Processing/Finalizing，但不再佔用 `MAX_CONCURRENT_RECORDINGS` 錄製 slot，避免後處理 FFmpeg probe 互相搶 CPU/IO 或阻塞下一場錄製。若服務在後處理期間重啟，已有 raw/output 檔的 `finalizing` job 會恢復為 `succeeded` 並記錄 post-processing interrupted；若服務在 YouTube upload 中重啟，job 也會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在非終態。
+多路錄製會對每個 active job 做保守磁碟預留，估算會包含已啟用的最長 dynamic extension；若 `dynamic_extension_max_sec=0`，則用 `MAX_RECORDING_SEC` 作為無上限延長的保守估算上限，避免多場長錄製同時通過單點 free-space 檢查後把磁碟打滿。若預估後不足以保留 `MIN_FREE_DISK_GB_BEFORE_RECORDING`，job 會以 `DISK_FULL` 失敗。Jitsi 明確回報連線建立失敗時會使用既有的延遲重試；等待主持人或大廳未獲准加入仍依 lobby timeout 結束。遇到可重試的 join/network failure 時，retry 等待不會佔用錄製 slot，會延遲後以同一 job id 重新排隊；retry attempt 受原本 fixed baseline + bounded dynamic extension 的 hard deadline 限制，不會重複加算延長時間。多場同時完成時，錄製 runtime 會在 FFmpeg finalize 後先釋放，smart trim / activity analysis 再受 `MAX_PARALLEL_ACTIVITY_ANALYSES` 節流；後處理中的 job 可能仍顯示 Processing/Finalizing，但不再佔用 `MAX_CONCURRENT_RECORDINGS` 錄製 slot，避免後處理 FFmpeg probe 互相搶 CPU/IO 或阻塞下一場錄製。若服務在後處理期間重啟，已有 raw/output 檔的 `finalizing` job 會恢復為 `succeeded` 並記錄 post-processing interrupted；若服務在 YouTube upload 中重啟，job 也會恢復為 `succeeded` 並記錄 upload interrupted，不會永久停在非終態。
 
 預設 app browser mode 若在開始錄影前遇到 browser/app-window 技術性失敗，會用 normal mode + crop fallback 重試一次；若 provider 已明確回報 join timeout、lobby timeout、會議未開始、會議不存在或其他加入錯誤，系統會直接視為加入失敗，不再用 normal mode 重試同一場。
 
@@ -94,6 +94,8 @@ python -m scripts.dev_compose up --build -d
 3. 重新啟動服務。
 4. 使用者先對 Bot 發送 `/start`。
 5. 進入 Web UI 的 `/settings` 或 Telegram 管理流程核准使用者。
+
+通知會分別遵守開始、完成、失敗與上傳偏好。只有 Telegram API 確認接受才會記錄成功；這不代表使用者已閱讀訊息。若舊訊息無法編輯而改送新訊息，系統會保存新訊息 ID 供後續更新。
 
 一般個人使用不需要預先提供 Chat ID，也沒有 `TELEGRAM_CHAT_ID` 環境變數；Bot 收到 `/start` 後會將對話 ID 登錄到資料庫，管理員再核准該使用者即可。Bot 使用 polling，不需要公開網址、HTTPS 憑證或 Telegram webhook。若已有另一台主機使用同一個 Bot，請先停止原本的 polling instance，避免衝突。
 
@@ -183,7 +185,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ### 動態延長如何決定何時停止？
 
-到達排程指定的錄製長度後，若啟用 Dynamic End Extension，系統會用音訊能量與畫面差異判斷是否仍有活動。只要音訊或影像其中之一仍有變化，就會繼續錄製；當音訊靜音且畫面固定連續達到設定的 Idle Stop 時間，或達到 Max Extension 上限時才停止。預設 Idle Stop 為 300 秒，Max Extension 為 3600 秒。任一探針失效且另一探針沒有活動時，結果視為「無法判定」，會重置靜止計時並在原本的延長上限／工作截止時間內繼續錄影；探針故障不代表會議已結束。
+到達排程指定的錄製長度後，若啟用 Dynamic End Extension，系統會用音訊能量與畫面差異判斷是否仍有活動。只要音訊或影像其中之一仍有變化，就會繼續錄製；當音訊靜音且畫面固定連續達到設定的 Idle Stop 時間，或達到 Max Extension 上限時才停止。預設 Idle Stop 為 300 秒，Max Extension 為 3600 秒。畫面差異以 Pillow 解碼後的灰階像素計算，不使用 JPEG 壓縮資料的差異，避免靜止畫面的編碼變化被誤認為活動。任一探針失效且另一探針沒有活動時，結果視為「無法判定」，會重置靜止計時並在原本的延長上限／工作截止時間內繼續錄影；探針故障不代表會議已結束。
 
 ### 為什麼錄影畫面還看到瀏覽器工具列？
 

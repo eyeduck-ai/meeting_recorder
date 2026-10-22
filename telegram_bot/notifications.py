@@ -340,7 +340,7 @@ async def _send_or_edit_status_message(
         return None
 
     chat_ids = await _get_approved_chat_ids(notification_type)
-    first_message_id = job.telegram_message_id
+    first_message_id = None
     semaphore = asyncio.Semaphore(TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY)
 
     async def send_one(chat_id: int) -> int | None:
@@ -348,12 +348,30 @@ async def _send_or_edit_status_message(
             return await _send_or_edit_one_chat(bot, chat_id=chat_id, job=job, message=message)
 
     results = await asyncio.gather(*(send_one(chat_id) for chat_id in chat_ids), return_exceptions=True)
-    for result in results:
+    delivered = 0
+    for chat_id, result in zip(chat_ids, results, strict=True):
         if isinstance(result, Exception):
             logger.error("Unexpected Telegram notification fanout error: %s", result)
             continue
-        if first_message_id is None and result is not None:
-            first_message_id = result
+        if result is not None:
+            delivered += 1
+            logger.info(
+                "Telegram API acknowledged job %s type=%s chat=%s message_id=%s",
+                getattr(job, "job_id", "unknown"),
+                notification_type,
+                chat_id,
+                result,
+            )
+            if first_message_id is None:
+                first_message_id = result
+    if delivered != len(chat_ids):
+        logger.warning(
+            "Telegram notification incomplete for job %s type=%s: acknowledged=%s recipients=%s",
+            getattr(job, "job_id", "unknown"),
+            notification_type,
+            delivered,
+            len(chat_ids),
+        )
 
     return first_message_id
 
@@ -368,28 +386,31 @@ async def notify_recording_status(job: RecordingJob, status: str | JobStatus) ->
         message=message,
         notification_type="start",
     )
-    logger.info(f"Updated recording stage notification for job {job.job_id}: {phase}")
+    if message_id is not None:
+        logger.info(f"Updated recording stage notification for job {job.job_id}: {phase}")
     return message_id
 
 
-async def notify_recording_completed(job: RecordingJob) -> None:
+async def notify_recording_completed(job: RecordingJob) -> int | None:
     """Update notification to show recording completed."""
     phase = "uploading" if job.youtube_enabled else "completed"
 
     meeting_label = _resolve_meeting_label(job)
     message = _build_status_message(job, phase, meeting_label=meeting_label)
-    await _send_or_edit_status_message(job=job, message=message, notification_type="start")
+    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="complete")
+    if message_id is not None:
+        logger.info(f"Updated recording complete notification for job {job.job_id}")
+    return message_id
 
-    logger.info(f"Updated recording complete notification for job {job.job_id}")
 
-
-async def notify_recording_failed(job: RecordingJob) -> None:
+async def notify_recording_failed(job: RecordingJob) -> int | None:
     """Update notification to show recording failed."""
     meeting_label = _resolve_meeting_label(job)
     message = _build_status_message(job, "failed", meeting_label=meeting_label)
-    await _send_or_edit_status_message(job=job, message=message, notification_type="start")
-
-    logger.info(f"Updated recording failure notification for job {job.job_id}")
+    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="failure")
+    if message_id is not None:
+        logger.info(f"Updated recording failure notification for job {job.job_id}")
+    return message_id
 
 
 async def notify_recording_retry(
@@ -424,17 +445,19 @@ async def notify_recording_retry(
         notification_type="failure",
     )
 
-    logger.info(f"Sent recording retry notification for job {job.job_id} (attempt {attempt})")
+    if first_message_id is not None:
+        logger.info(f"Sent recording retry notification for job {job.job_id} (attempt {attempt})")
     return first_message_id
 
 
-async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> None:
+async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> int | None:
     """Update notification to show YouTube upload completed."""
     meeting_label = _resolve_meeting_label(job)
     message = _build_status_message(job, "uploaded", video_url, meeting_label=meeting_label)
-    await _send_or_edit_status_message(job=job, message=message, notification_type="start")
-
-    logger.info(f"Updated YouTube upload notification for job {job.job_id}")
+    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="upload")
+    if message_id is not None:
+        logger.info(f"Updated YouTube upload notification for job {job.job_id}")
+    return message_id
 
 
 async def send_to_user(chat_id: int, message: str) -> bool:

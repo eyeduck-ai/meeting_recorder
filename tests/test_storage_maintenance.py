@@ -89,6 +89,104 @@ async def test_maintenance_canonicalizes_mkv_to_mp4_and_updates_job(db_session, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("converted_role", ["raw", "trimmed"])
+async def test_maintenance_updates_only_converted_artifact_references(
+    db_session, storage_settings, monkeypatch, converted_role
+):
+    raw_path = storage_settings.recordings_dir / "raw.mkv"
+    trimmed_path = storage_settings.recordings_dir / "trimmed.mkv"
+    raw_path.write_bytes(b"raw-recording")
+    trimmed_path.write_bytes(b"trimmed-recording")
+    source_path = raw_path if converted_role == "raw" else trimmed_path
+    mp4_path = source_path.with_suffix(".mp4")
+    other_path = trimmed_path if converted_role == "raw" else raw_path
+    summary = {
+        "recording_info": {
+            "output_path": str(source_path),
+            "file_size": source_path.stat().st_size,
+            "duration_sec": 100.0 if converted_role == "trimmed" else 120.0,
+        },
+        "trim": {
+            "raw_output_path": str(raw_path),
+            "trimmed_output_path": str(trimmed_path),
+            "trim_start_sec": 10.0,
+            "trim_end_sec": 110.0,
+            "trim_status": "trimmed",
+            "trim_reason": "activity boundaries",
+            "diagnostics": {"expected_duration_sec": 100.0, "actual_duration_sec": 100.25},
+        },
+        "dynamic_extension": {"stop_reason": "idle_timeout"},
+    }
+    job = _create_job(
+        db_session,
+        output_path=str(source_path),
+        raw_output_path=str(raw_path),
+        trimmed_output_path=str(trimmed_path),
+        duration_actual_sec=120.0,
+        trim_start_sec=10.0,
+        trim_end_sec=110.0,
+        trim_status="trimmed",
+        trim_reason="activity boundaries",
+        runtime_summary_json=json.dumps(summary),
+    )
+
+    async def fake_ensure_canonical_mp4(input_path, **kwargs):
+        assert input_path == source_path
+        mp4_path.write_bytes(b"canonical-mp4-content")
+        return mp4_path
+
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", fake_ensure_canonical_mp4)
+    await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+    db_session.refresh(job)
+
+    expected_raw = mp4_path if converted_role == "raw" else raw_path
+    expected_trimmed = mp4_path if converted_role == "trimmed" else trimmed_path
+    assert job.output_path == str(mp4_path)
+    assert job.raw_output_path == str(expected_raw)
+    assert job.trimmed_output_path == str(expected_trimmed)
+    assert job.duration_actual_sec == 120.0
+    assert (job.trim_start_sec, job.trim_end_sec, job.trim_status, job.trim_reason) == (
+        10.0,
+        110.0,
+        "trimmed",
+        "activity boundaries",
+    )
+    summary["recording_info"]["output_path"] = str(mp4_path)
+    summary["recording_info"]["file_size"] = mp4_path.stat().st_size
+    summary["trim"][f"{converted_role}_output_path"] = str(mp4_path)
+    assert json.loads(job.runtime_summary_json) == summary
+    assert not source_path.exists()
+    assert other_path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summary", [None, "invalid-json", "[]", '{"trim": null, "recording_info": "legacy"}'])
+async def test_maintenance_preserves_unusable_summary_while_updating_raw_path(
+    db_session, storage_settings, monkeypatch, summary
+):
+    source_path = storage_settings.recordings_dir / "raw.mkv"
+    mp4_path = source_path.with_suffix(".mp4")
+    source_path.write_bytes(b"mkv-data")
+    job = _create_job(
+        db_session,
+        output_path=str(source_path),
+        raw_output_path=str(source_path),
+        runtime_summary_json=summary,
+    )
+
+    async def fake_ensure_canonical_mp4(input_path, **kwargs):
+        mp4_path.write_bytes(b"mp4-data")
+        return mp4_path
+
+    monkeypatch.setattr(storage_module, "ensure_canonical_mp4", fake_ensure_canonical_mp4)
+    await StorageMaintenanceService(storage_settings).run(db_session, dry_run=False)
+    db_session.refresh(job)
+
+    assert job.raw_output_path == str(mp4_path)
+    assert job.runtime_summary_json == summary
+
+
+@pytest.mark.asyncio
 async def test_maintenance_keeps_mkv_when_mp4_conversion_fails(db_session, storage_settings, monkeypatch):
     mkv_path = storage_settings.recordings_dir / "recording_job123.mkv"
     mkv_path.write_bytes(b"mkv-data")
@@ -349,13 +447,22 @@ async def test_dry_run_does_not_delete_or_update_db(db_session, storage_settings
 async def test_dry_run_canonicalization_reports_would_attempt(db_session, storage_settings):
     mkv_path = storage_settings.recordings_dir / "recording_job123.mkv"
     mkv_path.write_bytes(b"mkv-data")
-    _create_job(db_session, output_path=str(mkv_path), file_size=mkv_path.stat().st_size)
+    summary = json.dumps({"trim": {"raw_output_path": str(mkv_path)}})
+    _create_job(
+        db_session,
+        output_path=str(mkv_path),
+        raw_output_path=str(mkv_path),
+        file_size=mkv_path.stat().st_size,
+        runtime_summary_json=summary,
+    )
 
     result = await StorageMaintenanceService(storage_settings).run(db_session, dry_run=True)
 
     job = db_session.query(RecordingJob).filter(RecordingJob.job_id == "job123").first()
     assert result["canonicalized"][0]["status"] == "would_attempt"
     assert job.output_path == str(mkv_path)
+    assert job.raw_output_path == str(mkv_path)
+    assert job.runtime_summary_json == summary
     assert mkv_path.exists()
 
 

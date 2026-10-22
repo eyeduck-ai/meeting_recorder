@@ -292,6 +292,8 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 
 ### Detection Logs
 
+即時影像活動分析依賴鎖定的 Pillow 套件，使用解碼、縮小後的灰階像素差；解碼失敗回傳未知，不可退回 JPEG byte diff。Jitsi 加入階段的可見 `notify.connectionFailed` 會回報 `CONNECTION_FAILED`，由 RecordingExecutor 針對 failed 結果排入既有 bounded delayed retry；canceled 結果不重試。
+
 Legacy provider-level `duration_mode=auto` / auto-detect-end 已移除；schedule 現在一律以固定基準時長錄製，結束延長由 `dynamic_extension_enabled` 的媒體活動偵測決定。舊的 `recording/detection.py`、`recording/detectors.py` 與 provider detector tests 已刪除，不再是錄影停止條件或 UI/API 可調功能。
 
 Smart trim 與 dynamic extension 的媒體活動事件會寫入 `detection_logs`，並可經由 `/api/detection/logs` 查詢、匯出、標記準確度與清空。`/api/detection/logs` 與 export 支援 `job_id`、`detector_type`、`detected` server-side filters；logs response 會回傳 filtered total 與 summary counts，UI stats 與 CSV export 都以目前 filter 為準。SQLite migration 與 ORM metadata 會建立 `triggered_at`、`job_id + triggered_at`、`detector_type + detected + triggered_at` indexes，避免診斷資料累積後 logs 查詢退化。目前 UI 只顯示 `media_activity` 與 `dynamic_extension` 篩選，歷史未知 detector type 仍會以 legacy/raw label 顯示。
@@ -304,6 +306,7 @@ Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪�
 - 本機長期錄影格式是 `.mp4`。錄製仍先輸出 `.mkv` 以提高錄製穩定性；raw capture 成功後，`RecordingPostProcessor` 會 best-effort fast remux preferred output 成 validated `.mp4`，成功後刪除對應 `.mkv` 並把 `recording_jobs.output_path/file_size/runtime_summary_json` 改指 MP4。
 - Remux/transcode 都必須先寫入 same-directory temporary MP4，ffprobe 驗證可讀且有合理 video duration 後才 atomic replace 正式 MP4；任一失敗路徑都要刪 temporary file，且不得刪原 MKV。
 - Remux、MP4 validation、duration probe 與 thumbnail generation 等一般 media subprocess 應使用 `recording.subprocess_utils.run_bounded_subprocess()`，統一 timeout、terminate/kill cleanup、stdout/stderr excerpt 與 optional stderr log；smart trim 的 streaming trim runner 與 transcode progress runner 保留專用 streaming 實作。
+- Maintenance 的 MKV → MP4 轉換需同步更新指向該來源的 raw/trimmed path 與 runtime summary，保留不同 artifact 的裁剪 metadata 與片長。
 - 若 MP4 canonicalization 失敗，錄影 job 不會因此失敗；DB 保留原 `.mkv`，每日 maintenance 下次會重試 legacy MKV canonicalization。
 - YouTube 自動與手動上傳成功都必須寫入 `youtube_video_id` 與 `youtube_uploaded_at`。Legacy MKV 在上傳前會先建立本機 canonical MP4；只有 upload path 會依 `FFMPEG_TRANSCODE_ON_UPLOAD` 產生 temporary upload MP4，完成或失敗後都不應長期留下第二份影片。
 - 已上傳 YouTube 且本機錄影已存在 14 天以上時，maintenance 會刪除本機影片與 thumbnail，保留 DB job 與 YouTube link，並寫入 `local_recording_deleted_at` / `local_recording_cleanup_reason`。
@@ -377,7 +380,7 @@ Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪�
 
 Telegram `/list` 會透過 `JobRuntimeStateService` 顯示 active recording job、FIFO queued count 與 retry waiting count。`/stop` 無參數時使用同一份 snapshot 選出最新 active recording job；多路錄製時應優先使用 `/list` 取得 job id，再用 `/stop <job_id>` 精準停止或取消 queued/retry waiting job。Telegram stop 也必須走 `JobActionService`，不要直接呼叫 worker cancel flag。Telegram create schedule wizard 的 queue warning 應看 snapshot `available_slots`，不要恢復 busy flag 判斷容量是否已滿。
 
-Telegram recording stage、completion、failure、retry 與 upload notifications 都是 best-effort；send/edit/fallback-send 會以最多 3 chat 的 bounded concurrent fanout 執行，且每個 Telegram API 呼叫都有 10 秒 timeout。Timeout 或 API exception 只記錄 log，不能阻斷錄製、後處理或上傳主流程；Telegram 回報 `Message is not modified` 時視為 edit no-op success，不可 fallback-send 造成重複訊息。Recording lifecycle notification 的使用者可見內容固定使用英文，標題優先透過 `recording_jobs.schedule_id -> schedules.meeting_id -> meetings.name` 顯示有效 meeting name；空白或含 replacement character 的壞 label 會被略過，接著 fallback 有效且非 generic 的 `display_name`，最後才 fallback `meeting_code`。訊息會顯示 Provider / Status，Started / Ended 使用設定時區的 `YYYY-MM-DD HH:MM`，Duration 使用 minutes。現行 DB 仍只保存單一 `telegram_message_id`，多 chat per-message tracking 留到未來 schema 版本。
+Telegram recording stage、completion、failure、retry 與 upload notifications 都是 best-effort；send/edit/fallback-send 會以最多 3 chat 的 bounded concurrent fanout 執行，且每個 Telegram API 呼叫都有 10 秒 timeout。Timeout 或 API exception 只記錄 log，不能阻斷錄製、後處理或上傳主流程；Telegram 回報 `Message is not modified` 時視為 edit no-op success，不可 fallback-send 造成重複訊息。Recording lifecycle notification 的使用者可見內容固定使用英文，標題優先透過 `recording_jobs.schedule_id -> schedules.meeting_id -> meetings.name` 顯示有效 meeting name；空白或含 replacement character 的壞 label 會被略過，接著 fallback 有效且非 generic 的 `display_name`，最後才 fallback `meeting_code`。訊息會顯示 Provider / Status，Started / Ended 使用設定時區的 `YYYY-MM-DD HH:MM`，Duration 使用 minutes。通知依事件選用 `start` / `complete` / `failure` / `upload` 偏好；成功 log 僅在 Telegram API 接受時寫入，另記錄 job、事件類型、chat、message ID 與部分失敗數量，並不代表使用者已讀。fallback-send 回傳的新 ID 必須由各呼叫端持久化，且不得覆寫 await 期間已變動的工作狀態。現行 DB 仍只保存單一 `telegram_message_id`，多 chat per-message tracking 留到未來 schema 版本。
 
 這些路由才是目前文件應描述的真實 API 範圍；若路由有新增、刪除或改名，請同步更新本文件。
 

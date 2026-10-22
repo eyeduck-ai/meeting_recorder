@@ -226,8 +226,12 @@ class RecordingPostProcessor:
             db_job = JobRepository(session).get_by_job_id(job_id)
             if not db_job:
                 return
-            await self._completed_notifier(db_job)
+            message_id = await self._completed_notifier(db_job)
+            if message_id and message_id != db_job.telegram_message_id:
+                db_job.telegram_message_id = message_id
+                session.commit()
         except Exception as exc:
+            session.rollback()
             logger.warning("Failed to send recording completed notification for job %s: %s", job_id, exc)
         finally:
             session.close()

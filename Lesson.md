@@ -146,3 +146,9 @@
 - 同一 owner module 內只被呼叫一次、且只是串接另一個 helper 與一個 await 的 async wrapper，通常不值得保留；讓唯一 flow 直接呈現條件可讀性更高。
 - 單次使用的 path derivation helper 若只是格式化一個 filename，且沒有跨呼叫端契約，應 inline 在 owner flow；否則 private helper 也會被誤認為可重用 API。
 - app browser fallback 不應以「capture 前失敗」作為唯一條件；provider join/admit 階段已產生 `failure_stage` 與 `error_code` 時，代表會議不存在、尚未開始、lobby timeout 或 provider 明確拒絕，應直接收斂為 join failure，而不是再用 normal mode 延長等待。
+
+- Live 媒體演算法需要驗證正式 Docker 的依賴；可選 import 缺依賴後改比較 JPEG bytes 會把編碼差異誤判為活動，即使 completed-file FFmpeg trim 正常也可能錄到最大延長。需用同像素不同編碼與實際容器驗證。
+- provider 的 transient 連線 toast 若未轉成結構化錯誤，最後只會變成 JOIN_TIMEOUT 而漏掉 retry；辨識加入錯誤不等於恢復 provider-level end detection。
+- Telegram helper 吞掉例外以保護錄影後，外層不能無條件記成功；舊 message ID 也不是本次 API 成功證據。驗證要區分發送嘗試、API acknowledged 與已讀，並保存 fallback 新 ID。
+- canonicalization 不只更新 preferred output：刪除來源前後要同步 raw、trimmed 與 runtime metadata 的同檔引用；歷史裁剪影片片長不能直接改成原片片長。
+- 稽核生產 log 時必須先排除開發測試產生的假錯誤；測試用獨立 LOGS_DIR，避免混淆真實排程結果。

@@ -121,22 +121,23 @@ def _byte_diff_ratio(previous: bytes, current: bytes) -> float:
     return min(1.0, (diff / max_diff) + size_penalty)
 
 
-def _image_diff_ratio(previous: bytes, current: bytes) -> float:
+def _image_diff_ratio(previous: bytes, current: bytes) -> float | None:
+    """Compare decoded pixels; compressed image bytes are not activity evidence."""
     try:
         from io import BytesIO
 
         from PIL import Image
 
-        image1 = Image.open(BytesIO(previous)).resize((96, 54)).convert("L")
-        image2 = Image.open(BytesIO(current)).resize((96, 54)).convert("L")
-        pixels1 = list(image1.getdata())
-        pixels2 = list(image2.getdata())
+        with Image.open(BytesIO(previous)) as image1, Image.open(BytesIO(current)) as image2:
+            pixels1 = image1.resize((VIDEO_SAMPLE_WIDTH, VIDEO_SAMPLE_HEIGHT)).convert("L").tobytes()
+            pixels2 = image2.resize((VIDEO_SAMPLE_WIDTH, VIDEO_SAMPLE_HEIGHT)).convert("L").tobytes()
         if len(pixels1) != len(pixels2):
-            return 1.0
+            return None
         diff = sum(abs(a - b) for a, b in zip(pixels1, pixels2, strict=False))
         return diff / (255 * len(pixels1))
-    except Exception:
-        return _byte_diff_ratio(previous, current)
+    except Exception as exc:
+        logger.debug("Live video image decode unavailable: %s", exc)
+        return None
 
 
 def _db_from_peak(max_abs_sample: int) -> float:
@@ -548,6 +549,8 @@ class LiveMediaActivityProbe:
             return None, None
         diff = _image_diff_ratio(self._last_screenshot, current)
         self._last_screenshot = current
+        if diff is None:
+            return None, None
         return diff >= self.config.video_diff_threshold, diff
 
 
