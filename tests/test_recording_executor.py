@@ -52,8 +52,8 @@ def executor_session_local(tmp_path, monkeypatch):
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     monkeypatch.setattr(executor_module, "get_session_local", lambda: SessionLocal)
-    monkeypatch.setattr(executor_module, "notify_recording_failed", AsyncMock())
-    monkeypatch.setattr(executor_module, "notify_recording_retry", AsyncMock())
+    monkeypatch.setattr(executor_module, "notify_recording_failed", AsyncMock(return_value=None))
+    monkeypatch.setattr(executor_module, "notify_recording_retry", AsyncMock(return_value=None))
     monkeypatch.setattr(executor_module, "notify_recording_status", AsyncMock(return_value=None))
     monkeypatch.setattr(executor_module, "ACTIVE_NOTIFICATION_STATUSES", set())
 
@@ -81,7 +81,7 @@ def _create_db_job(session_local, job: RecordingJob) -> None:
         session.close()
 
 
-def _create_db_job_with_status(session_local, *, job_id: str, status: JobStatus) -> None:
+def _create_db_job_with_status(session_local, *, job_id: str, status: JobStatus, telegram_message_id=None) -> None:
     session = session_local()
     try:
         session.add(
@@ -93,6 +93,7 @@ def _create_db_job_with_status(session_local, *, job_id: str, status: JobStatus)
                 duration_sec=300,
                 lobby_wait_sec=900,
                 status=status.value,
+                telegram_message_id=telegram_message_id,
             )
         )
         session.commit()
@@ -169,6 +170,142 @@ async def test_stage_notification_sends_when_db_status_still_matches(executor_se
     try:
         db_job = session.query(RecordingJobModel).filter(RecordingJobModel.job_id == "stage-current").one()
         assert db_job.telegram_message_id == 321
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_stage_notification_persists_replacement_id_without_reverting_new_status(
+    executor_session_local, monkeypatch
+):
+    """A fallback send should replace the old ID without overwriting a concurrent terminal status."""
+    _create_db_job_with_status(
+        executor_session_local, job_id="stage-replacement", status=JobStatus.RECORDING, telegram_message_id=111
+    )
+
+    async def complete_while_sending(_job, _status):
+        session = executor_session_local()
+        try:
+            JobRepository(session).update_status("stage-replacement", JobStatus.SUCCEEDED.value)
+            session.commit()
+        finally:
+            session.close()
+        return 222
+
+    monkeypatch.setattr(executor_module, "notify_recording_status", complete_while_sending)
+    executor = RecordingExecutor(worker_provider=lambda: FakeWorker([]))
+
+    await executor._notify_stage_update("stage-replacement", JobStatus.RECORDING)
+
+    session = executor_session_local()
+    try:
+        db_job = JobRepository(session).get_by_job_id("stage-replacement")
+        assert db_job.telegram_message_id == 222
+        assert db_job.status == JobStatus.SUCCEEDED.value
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error_code", "error_message", "seconds_remaining", "expected_retry"),
+    [
+        (JobStatus.FAILED, "CONNECTION_FAILED", "Jitsi could not join", 300, True),
+        (JobStatus.FAILED, "CONNECTION_FAILED", "Jitsi could not join", -1, False),
+        (JobStatus.FAILED, "CONNECTION_FAILED", "Jitsi could not join", 10, False),
+        (JobStatus.FAILED, "LOBBY_TIMEOUT", "Host did not start meeting", 300, False),
+        (JobStatus.FAILED, "JOIN_TIMEOUT", "Timeout after 60 seconds", 300, False),
+        (JobStatus.CANCELED, "CONNECTION_FAILED", "Jitsi could not join", 300, False),
+        (JobStatus.CANCELED, "CANCELED", "Canceled after NetworkError", 300, False),
+    ],
+)
+async def test_structured_connection_retry_respects_deadline_and_cancellation(
+    executor_session_local, tmp_path, status, error_code, error_message, seconds_remaining, expected_retry
+):
+    job = RecordingJob(
+        job_id="retry-policy",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job(executor_session_local, job)
+    worker = FakeWorker(
+        [RecordingResult(job_id=job.job_id, status=status, error_code=error_code, error_message=error_message)]
+    )
+    executor = RecordingExecutor(worker_provider=lambda: worker)
+    deadline = utc_now() + timedelta(seconds=seconds_remaining)
+
+    outcome = await executor.run_with_retry(
+        job=job,
+        schedule_id=None,
+        meeting_end_time=deadline,
+        youtube_enabled=False,
+        youtube_privacy="unlisted",
+        meeting_name=None,
+    )
+
+    assert isinstance(outcome, RecordingRetryRequest) is expected_retry
+    assert worker.calls == [(job.job_id, 1)]
+    session = executor_session_local()
+    try:
+        db_job = JobRepository(session).get_by_job_id(job.job_id)
+        assert db_job.status == (JobStatus.QUEUED.value if expected_retry else status.value)
+    finally:
+        session.close()
+    if expected_retry:
+        assert outcome.job.hard_deadline_at == deadline
+        assert outcome.delay_sec == 15
+    else:
+        executor_module.notify_recording_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_failure_and_retry_notifications_persist_replacement_message_id(
+    executor_session_local, tmp_path, monkeypatch, retryable
+):
+    job = RecordingJob(
+        job_id="failure-message",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job_with_status(
+        executor_session_local, job_id=job.job_id, status=JobStatus.QUEUED, telegram_message_id=111
+    )
+    notifier = AsyncMock(return_value=222)
+    monkeypatch.setattr(executor_module, "notify_recording_retry" if retryable else "notify_recording_failed", notifier)
+    worker = FakeWorker(
+        [
+            RecordingResult(
+                job_id=job.job_id,
+                status=JobStatus.FAILED,
+                error_code="CONNECTION_FAILED" if retryable else "LOBBY_TIMEOUT",
+                error_message="Join failed",
+            )
+        ]
+    )
+    executor = RecordingExecutor(worker_provider=lambda: worker)
+
+    await executor.run_with_retry(
+        job=job,
+        schedule_id=None,
+        meeting_end_time=utc_now() + timedelta(minutes=5),
+        youtube_enabled=False,
+        youtube_privacy="unlisted",
+        meeting_name=None,
+    )
+
+    notifier.assert_awaited_once()
+    session = executor_session_local()
+    try:
+        db_job = JobRepository(session).get_by_job_id(job.job_id)
+        assert db_job.telegram_message_id == 222
+        assert db_job.status == (JobStatus.QUEUED.value if retryable else JobStatus.FAILED.value)
     finally:
         session.close()
 

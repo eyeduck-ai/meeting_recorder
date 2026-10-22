@@ -167,8 +167,12 @@ class YouTubeUploadRunner:
                     db_job = repo.get_by_job_id(job_id)
                     if db_job and result.video_url:
                         try:
-                            await notify_youtube_upload_completed(db_job, result.video_url)
+                            message_id = await notify_youtube_upload_completed(db_job, result.video_url)
+                            if message_id and message_id != db_job.telegram_message_id:
+                                db_job.telegram_message_id = message_id
+                                session.commit()
                         except Exception as e:
+                            session.rollback()
                             logger.warning("Failed to send YouTube upload notification for job %s: %s", job_id, e)
                     return True
                 else:

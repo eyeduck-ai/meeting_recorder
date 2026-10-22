@@ -113,8 +113,10 @@ class RecordingExecutor:
                 should_retry = False
                 error_msg = result.error_message or ""
                 meeting_end_time = ensure_utc(meeting_end_time) or meeting_end_time
-                if result.status in (JobStatus.FAILED, JobStatus.CANCELED):
-                    should_retry = self._is_retryable_error(error_msg) and utc_now() < meeting_end_time
+                if result.status == JobStatus.FAILED:
+                    should_retry = (
+                        self._is_retryable_error(error_msg, result.error_code) and utc_now() < meeting_end_time
+                    )
 
                 if db_job and should_retry:
                     time_remaining = (meeting_end_time - utc_now()).total_seconds()
@@ -123,7 +125,9 @@ class RecordingExecutor:
                             f"Retryable network error for job {job.job_id}: {error_msg}. "
                             f"Requeueing in {retry_delay_sec}s (attempt {attempt})"
                         )
-                        await notify_recording_retry(db_job, attempt, retry_delay_sec, error_msg)
+                        message_id = await notify_recording_retry(db_job, attempt, retry_delay_sec, error_msg)
+                        if message_id and message_id != db_job.telegram_message_id:
+                            db_job.telegram_message_id = message_id
                         self._prepare_retry_job(
                             job,
                             meeting_end_time=meeting_end_time,
@@ -154,7 +158,16 @@ class RecordingExecutor:
 
                 if db_job:
                     if result.status in (JobStatus.FAILED, JobStatus.CANCELED):
-                        await notify_recording_failed(db_job)
+                        try:
+                            message_id = await notify_recording_failed(db_job)
+                            if message_id and message_id != db_job.telegram_message_id:
+                                db_job.telegram_message_id = message_id
+                                session.commit()
+                        except Exception as exc:
+                            session.rollback()
+                            logger.warning(
+                                "Failed to send recording failure notification for job %s: %s", job.job_id, exc
+                            )
 
                 logger.info(f"Job {job.job_id} completed with status: {result.status.value}")
             finally:
@@ -198,7 +211,9 @@ class RecordingExecutor:
     def _schedule_stage_notification(self, job_id: str, status: JobStatus) -> None:
         asyncio.create_task(self._notify_stage_update(job_id, status))
 
-    def _is_retryable_error(self, error_message: str) -> bool:
+    def _is_retryable_error(self, error_message: str, error_code: str | None = None) -> bool:
+        if error_code == "CONNECTION_FAILED":
+            return True
         error_str = str(error_message)
         return any(pattern in error_str for pattern in RETRYABLE_ERRORS)
 
@@ -272,8 +287,8 @@ class RecordingExecutor:
                     return
 
                 message_id = await notify_recording_status(db_job, status)
-                if message_id and not db_job.telegram_message_id:
-                    repo.update_status(job_id, db_job.status, telegram_message_id=message_id)
+                if message_id and message_id != db_job.telegram_message_id:
+                    db_job.telegram_message_id = message_id
                     session.commit()
             except Exception as e:
                 logger.warning(f"Failed to send stage notification for job {job_id}: {e}")

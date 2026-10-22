@@ -91,6 +91,7 @@ def _create_upload_job(
     raw_output_path=None,
     trimmed_output_path=None,
     error_message: str | None = None,
+    telegram_message_id: int | None = None,
 ):
     session = SessionLocal()
     try:
@@ -107,6 +108,7 @@ def _create_upload_job(
                 trimmed_output_path=str(trimmed_output_path) if trimmed_output_path else None,
                 youtube_enabled=True,
                 error_message=error_message,
+                telegram_message_id=telegram_message_id,
             )
         )
         session.commit()
@@ -126,11 +128,11 @@ def _get_upload_job(SessionLocal, job_id: str = "job123"):
 async def test_upload_to_youtube_persists_video_id_and_uploaded_at(tmp_path, monkeypatch):
     SessionLocal = _build_upload_session(tmp_path, monkeypatch)
     monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
-    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock())
+    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock(return_value=222))
 
     video_path = tmp_path / "recording.mp4"
     video_path.write_bytes(b"mp4")
-    _create_upload_job(SessionLocal, video_path)
+    _create_upload_job(SessionLocal, video_path, telegram_message_id=111)
 
     uploader = SimpleNamespace(
         is_configured=True,
@@ -156,6 +158,7 @@ async def test_upload_to_youtube_persists_video_id_and_uploaded_at(tmp_path, mon
     assert job.status == JobStatus.SUCCEEDED.value
     assert job.youtube_video_id == "yt123"
     assert job.youtube_uploaded_at is not None
+    assert job.telegram_message_id == 222
 
 
 @pytest.mark.asyncio
@@ -189,7 +192,7 @@ async def test_upload_to_youtube_restores_success_on_upload_failure(tmp_path, mo
     SessionLocal = _build_upload_session(tmp_path, monkeypatch)
     monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
     monkeypatch.setattr(upload_runner_module, "clear_progress", Mock())
-    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock())
+    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock(return_value=None))
     video_path = tmp_path / "recording.mp4"
     video_path.write_bytes(b"mp4")
     _create_upload_job(SessionLocal, video_path)
@@ -442,7 +445,7 @@ async def test_upload_to_youtube_success_writes_metadata_and_clears_upload_error
         error_message="YouTube upload failed: old error",
     )
     monkeypatch.setattr(upload_runner_module, "update_progress", Mock())
-    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock())
+    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock(return_value=None))
 
     class FakeUploader:
         is_configured = True

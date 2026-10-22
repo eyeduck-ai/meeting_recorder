@@ -97,10 +97,10 @@ def session_local(tmp_path, monkeypatch):
 
     monkeypatch.setattr(job_runner_module, "get_session_local", lambda: SessionLocal)
     monkeypatch.setattr(recording_executor_module, "get_session_local", lambda: SessionLocal)
-    monkeypatch.setattr(recording_executor_module, "notify_recording_failed", AsyncMock())
-    monkeypatch.setattr(recording_executor_module, "notify_recording_retry", AsyncMock())
+    monkeypatch.setattr(recording_executor_module, "notify_recording_failed", AsyncMock(return_value=None))
+    monkeypatch.setattr(recording_executor_module, "notify_recording_retry", AsyncMock(return_value=None))
     monkeypatch.setattr(recording_executor_module, "notify_recording_status", AsyncMock(return_value=None))
-    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock())
+    monkeypatch.setattr(upload_runner_module, "notify_youtube_upload_completed", AsyncMock(return_value=None))
     monkeypatch.setattr(recording_executor_module, "ACTIVE_NOTIFICATION_STATUSES", set())
 
     class FakeRuntimeConfigService:

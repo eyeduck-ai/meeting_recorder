@@ -4,6 +4,18 @@
 
 本檔記錄後續架構改善方向與優先級。任務細項請同步維護在 `Task.md`；過程中的踩坑與誤判請記錄到 `Lesson.md`。
 
+## 2026-10 運作稽核與後續優先級
+
+- 維持單機 Docker 與現有 provider/capture/post-processing/upload 邊界；當前規模不需拆微服務。
+- 本輪修正：live 影像像素分析依賴與未知回退、Jitsi 暫時連線失敗重試、Telegram 事件偏好／API 成功紀錄／fallback ID，以及 maintenance canonical artifact metadata。
+- P1：共用標準 CRON parser 並在入庫前編譯驗證；修正 weekday step/range 數字整段替換造成的錯誤（既有簡單 weekday 清單不受影響）。
+- P1：以 SQLite durable work/outbox 保存 post-processing、upload、notification 待辦與 retry state；重啟可續做且有冪等鍵，避免 succeeded 掩蓋尚未完成的上傳。
+- P1：maintenance 媒體處理移出 SQLite writer transaction，先驗證並行寫入與 event loop 延遲，再評估 WAL / busy timeout 與版本化 migration。
+- P2：建立 per-job/per-chat Telegram delivery 記錄；現有單一 message ID 無法可靠涵蓋多 chat，並應顯示各階段實際結果與 last error。
+- P2：分開 liveness、recording readiness 與 operations summary；非同步或快取 runtime probe，呈現執行版本、最近排程、上傳 backlog、probe unknown 與磁碟狀態。
+- P2：PR 加入真實編碼媒體、缺依賴、片長／音軌／靜止影像與重啟恢復測試；外部服務用 HTTP contract stub，整合現有重複 pytest/coverage 執行。
+- P2：在隔離 Docker smoke 驗證移除 privileged、專用 UID/GID、debug-only VNC 與 loopback port 預設，再調整正式部署。
+
 ## P0：安全邊界
 
 - 修正 `/api` public path 造成 API 認證繞過的問題。

@@ -50,6 +50,40 @@ def _create_db_job(session_local, job: RecordingJob) -> None:
 
 
 @pytest.mark.asyncio
+async def test_completed_notification_persists_replacement_message_id(post_processing_session_local, tmp_path):
+    job = RecordingJob(
+        job_id="post-message",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Bot",
+        duration_sec=300,
+        output_dir=tmp_path,
+    )
+    _create_db_job(post_processing_session_local, job)
+    session = post_processing_session_local()
+    try:
+        JobRepository(session).update_status(job.job_id, JobStatus.SUCCEEDED.value, telegram_message_id=111)
+        session.commit()
+    finally:
+        session.close()
+    notifier = AsyncMock(return_value=222)
+    processor = RecordingPostProcessor(
+        session_factory=lambda: post_processing_session_local, completed_notifier=notifier
+    )
+
+    await processor._notify_completed(job.job_id)
+
+    notifier.assert_awaited_once()
+    session = post_processing_session_local()
+    try:
+        db_job = JobRepository(session).get_by_job_id(job.job_id)
+        assert db_job.telegram_message_id == 222
+        assert db_job.status == JobStatus.SUCCEEDED.value
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
 async def test_activity_analysis_limiter_limits_parallel_completed_file_work():
     limiter = ActivityAnalysisLimiter(max_parallel=1)
     running = 0
@@ -184,7 +218,7 @@ async def test_post_processing_success_canonicalizes_and_returns_upload_request(
             return_value=CanonicalRecording(output_path=mp4_path, file_size=mp4_path.stat().st_size)
         ),
         session_factory=lambda: post_processing_session_local,
-        completed_notifier=AsyncMock(),
+        completed_notifier=AsyncMock(return_value=None),
     )
 
     upload_request = await processor.run(
@@ -261,7 +295,7 @@ async def test_detection_log_failure_does_not_block_terminal_success(post_proces
     processor = RecordingPostProcessor(
         canonicalizer=AsyncMock(return_value=None),
         session_factory=lambda: (lambda: DetectionLogFailingSession(post_processing_session_local())),
-        completed_notifier=AsyncMock(),
+        completed_notifier=AsyncMock(return_value=None),
     )
 
     upload_request = await processor.run(
@@ -354,7 +388,7 @@ async def test_post_processing_trimmed_recording_normalizes_upload_and_db_paths(
             return_value=CanonicalRecording(output_path=trimmed_mp4_path, file_size=trimmed_mp4_path.stat().st_size)
         ),
         session_factory=lambda: post_processing_session_local,
-        completed_notifier=AsyncMock(),
+        completed_notifier=AsyncMock(return_value=None),
     )
 
     upload_request = await processor.run(
@@ -427,7 +461,7 @@ async def test_post_processing_unexpected_trim_error_preserves_raw_recording_suc
         analyzer_factory=BrokenAnalyzer,
         canonicalizer=AsyncMock(return_value=None),
         session_factory=lambda: post_processing_session_local,
-        completed_notifier=AsyncMock(),
+        completed_notifier=AsyncMock(return_value=None),
     )
 
     upload_request = await processor.run(
@@ -498,7 +532,7 @@ async def test_invalid_trim_is_not_selected_for_upload(
         analyzer_factory=Analyzer,
         canonicalizer=AsyncMock(return_value=None),
         session_factory=lambda: post_processing_session_local,
-        completed_notifier=AsyncMock(),
+        completed_notifier=AsyncMock(return_value=None),
     )
     result = RecordingResult(
         job_id=job.job_id,

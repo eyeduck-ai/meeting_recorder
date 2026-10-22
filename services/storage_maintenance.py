@@ -372,6 +372,35 @@ class StorageMaintenanceService:
             if not dry_run:
                 job.output_path = str(canonical.output_path)
                 job.file_size = canonical.file_size
+                for attr in ("raw_output_path", "trimmed_output_path"):
+                    value = getattr(job, attr)
+                    if value and Path(value) == output_path:
+                        setattr(job, attr, str(canonical.output_path))
+
+                # Remux changes the artifact path and size, not the recording or
+                # trim boundaries. Keep unrelated artifacts and diagnostics intact.
+                try:
+                    summary = json.loads(job.runtime_summary_json or "null")
+                except (TypeError, ValueError):
+                    summary = None
+                summary_changed = False
+                if isinstance(summary, dict):
+                    for section_name, path_fields in (
+                        ("recording_info", ("output_path",)),
+                        ("trim", ("raw_output_path", "trimmed_output_path")),
+                    ):
+                        section = summary.get(section_name)
+                        if not isinstance(section, dict):
+                            continue
+                        for field in path_fields:
+                            value = section.get(field)
+                            if isinstance(value, str) and Path(value) == output_path:
+                                section[field] = str(canonical.output_path)
+                                if section_name == "recording_info":
+                                    section["file_size"] = canonical.file_size
+                                summary_changed = True
+                    if summary_changed:
+                        job.runtime_summary_json = json.dumps(summary, ensure_ascii=False)
                 mutated = True
 
         return mutated

@@ -286,7 +286,7 @@ async def test_status_message_fallback_send_timeout_is_best_effort(monkeypatch, 
             notification_type="start",
         )
 
-    assert message_id == 99
+    assert message_id is None
     assert [call[:2] for call in fake_bot.calls] == [("edit", 1), ("send", 1)]
     assert "Telegram fallback-send timed out for chat 1" in caplog.text
 
@@ -343,3 +343,109 @@ async def test_telegram_call_helper_catches_callable_exception(caplog):
     assert success is False
     assert result is None
     assert "Telegram send failed for chat 123" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_status_message_returns_replacement_id(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(side_effect=BadRequest("message to edit not found")),
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=123)),
+    )
+    monkeypatch.setattr(notifications, "get_bot", AsyncMock(return_value=bot))
+    monkeypatch.setattr(notifications, "_get_approved_chat_ids", AsyncMock(return_value=[1]))
+    message_id = await notifications._send_or_edit_status_message(
+        job=SimpleNamespace(job_id="replacement", telegram_message_id=99),
+        message="done",
+        notification_type="complete",
+    )
+    assert message_id == 123
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["complete", "failure", "upload"])
+async def test_terminal_notification_uses_own_preference_and_acknowledgment(
+    notification_session_local,
+    monkeypatch,
+    caplog,
+    kind,
+):
+    from unittest.mock import AsyncMock
+
+    from database.models import RecordingJob, TelegramUser
+
+    with notification_session_local() as session:
+        session.add(
+            TelegramUser(
+                chat_id=42,
+                approved=True,
+                notify_on_start=False,
+                notify_on_complete=kind == "complete",
+                notify_on_failure=kind == "failure",
+                notify_on_upload=kind == "upload",
+            )
+        )
+        session.commit()
+    bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=123)))
+    monkeypatch.setattr(notifications, "get_bot", AsyncMock(return_value=bot))
+    job = RecordingJob(
+        job_id="terminal",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Recorder",
+        duration_sec=10,
+        youtube_enabled=kind == "upload",
+        telegram_message_id=None,
+    )
+    with caplog.at_level("INFO"):
+        if kind == "complete":
+            result = await notifications.notify_recording_completed(job)
+        elif kind == "failure":
+            result = await notifications.notify_recording_failed(job)
+        else:
+            result = await notifications.notify_youtube_upload_completed(job, "https://youtu.be/test")
+    assert result == 123
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.call_args.kwargs["chat_id"] == 42
+    assert f"Telegram API acknowledged job terminal type={kind}" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["complete", "failure", "upload", "stage", "retry"])
+async def test_failed_notification_does_not_log_success(monkeypatch, caplog, kind):
+    from unittest.mock import AsyncMock
+
+    from database.models import RecordingJob
+
+    bot = SimpleNamespace(
+        edit_message_text=AsyncMock(side_effect=RuntimeError("offline")),
+        send_message=AsyncMock(side_effect=RuntimeError("offline")),
+    )
+    monkeypatch.setattr(notifications, "get_bot", AsyncMock(return_value=bot))
+    monkeypatch.setattr(notifications, "_get_approved_chat_ids", AsyncMock(return_value=[42]))
+    job = RecordingJob(
+        job_id="offline",
+        provider="jitsi",
+        meeting_code="room",
+        display_name="Recorder",
+        duration_sec=10,
+        youtube_enabled=True,
+        telegram_message_id=99,
+    )
+    with caplog.at_level("INFO"):
+        if kind == "complete":
+            result = await notifications.notify_recording_completed(job)
+        elif kind == "failure":
+            result = await notifications.notify_recording_failed(job)
+        elif kind == "upload":
+            result = await notifications.notify_youtube_upload_completed(job, "https://youtu.be/test")
+        elif kind == "stage":
+            result = await notifications.notify_recording_status(job, "recording")
+        else:
+            result = await notifications.notify_recording_retry(job, 2, 15, "network error")
+    assert result is None
+    assert "acknowledged=0 recipients=1" in caplog.text
+    assert "Updated " not in caplog.text
+    assert "Sent recording retry" not in caplog.text
+    assert "API acknowledged job" not in caplog.text

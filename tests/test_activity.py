@@ -2,9 +2,12 @@
 
 import asyncio
 from array import array
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from PIL import Image
 
 import recording.activity as activity_module
 from recording.activity import (
@@ -14,10 +17,43 @@ from recording.activity import (
     ActivitySample,
     MediaActivityState,
     RecordingActivityAnalyzer,
+    _byte_diff_ratio,
+    _image_diff_ratio,
     _video_activity_from_frames,
     trim_recording,
 )
 from recording.subprocess_utils import BoundedSubprocessResult
+
+
+def test_live_video_compares_decoded_pixels_instead_of_jpeg_encoding():
+    image = Image.new("RGB", (1920, 1080), (32, 64, 96))
+    first = BytesIO()
+    image.save(first, format="JPEG", quality=35)
+    # A valid JPEG comment changes encoded bytes without changing any pixels.
+    comment = b"same visible frame with different JPEG metadata"
+    second = first.getvalue()[:2] + b"\xff\xfe" + (len(comment) + 2).to_bytes(2, "big") + comment + first.getvalue()[2:]
+
+    assert _byte_diff_ratio(first.getvalue(), second) > ActivityConfig().video_diff_threshold
+    assert _image_diff_ratio(first.getvalue(), second) == 0.0
+
+
+def test_live_video_decode_failure_returns_unknown():
+    assert _image_diff_ratio(b"broken screenshot one", b"broken screenshot two") is None
+
+
+def test_live_video_missing_decoder_returns_unknown():
+    with patch.dict("sys.modules", {"PIL": None}):
+        assert _image_diff_ratio(b"screenshot one", b"screenshot two") is None
+
+
+def test_live_video_detects_actual_pixel_change():
+    frames = []
+    for color in ("black", "white"):
+        output = BytesIO()
+        Image.new("RGB", (192, 108), color).save(output, format="JPEG", quality=35)
+        frames.append(output.getvalue())
+
+    assert _image_diff_ratio(*frames) > ActivityConfig().video_diff_threshold
 
 
 class FakeAnalyzer(RecordingActivityAnalyzer):

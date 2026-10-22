@@ -80,6 +80,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - `RecordingWorker` 維護 active job registry，對外只用 `active_jobs` / `active_count` 表示 runtime active state；不要恢復舊 `is_busy` / `current_status` 全域狀態。cancel/finish 是 per-job 狀態，API/Web UI 應以 job_id 指定操作對象。`_current_job` 只保留作為 worker 內部/相容欄位，route、template、Telegram handler 不得用它推論 active recording 或容量
 - `services.job_actions.JobActionService` 是 job stop/finish/delete/cancel queued 的單一狀態決策層；queued cancel 必須使用 `JobRunner.cancel_queued_job_for_action()` 的 structured result 判斷 FIFO / retry waiting 來源，不要恢復 boolean `cancel_queued_job()` 或 route/service 自行推論 retry state。`ACTIVE_RECORDING_STATUSES` 與 `TERMINAL_JOB_STATUSES` 也由同一模組提供，REST route、Web UI route 與 template 不要各自維護不同的 job status 操作表
 - `services.job_runtime_state.JobRuntimeStateService` 是 API / Web UI / Telegram active、FIFO queued、retry waiting view 的單一組裝層；runner capacity/count fallback 與 invalid value normalization 也必須集中在這裡處理，不要在 route、template 或 Telegram handler 重新拼 active job ids、queue maps、capacity fallback 或 retry countdown maps
+- Jitsi 可見連線建立失敗以 CONNECTION_FAILED 結構化錯誤交由既有 delayed retry；只有 failed 可重試，canceled 不可重新排隊。
 - provider lobby wait 必須可被 worker per-job cancel flag 中斷；`waiting_lobby` stop 不可等到 `lobby_wait_sec` timeout 才收斂為 canceled
 - `services/__init__.py` 不 re-export 具體 service；新程式應直接 import service owner module，避免 package import eager-load unrelated service modules
 - legacy schedule `duration_mode` 只保留為 DB string column 與 migration target；不要恢復 `DurationMode` enum 或 provider-level auto-detect-end API
@@ -88,6 +89,7 @@ README 面向使用者與部署者；`docs/development.md` 面向人類開發者
 - delete job 只允許 `succeeded`、`failed`、`canceled` 終態；`uploading` 代表錄影已成功但正在處理/上傳，不可 stop/finish/delete，upload issue 應回到 `succeeded` 並記錄在既有 job 欄位
 - app restart 時 stale `finalizing` 若已有 `raw_output_path` 或 `output_path` 指向存在檔案，應恢復為 `succeeded` 並記錄 post-processing interrupted；只有沒有可用錄影檔的 stale finalizing/running job 才標 failed
 - Telegram `/list` 與無參數 `/stop` 必須以 worker active registry 與 DB active status 交集為準，避免 stale DB active row 誤導；Telegram `/stop` 必須走 `JobActionService`，多路錄製下無參數只停止最新 active recording，指定 `/stop <job_id>` 時只作用於該 job
+- Telegram 成功紀錄只表示 API acknowledged，不代表已讀；完成、失敗、上傳必須分別套用其通知偏好，fallback-send 新 message ID 要由呼叫端持久化且不可覆寫較新工作狀態。
 - Telegram notification API 呼叫不可無界等待；send/edit/fallback-send 必須走 bounded timeout helper，fanout 必須 bounded concurrent，timeout 只能記 log，不得阻斷 recording/post-processing/upload 主流程
 - Telegram 建立排程 wizard 的「現在會排隊」提示必須看 `JobRuntimeStateService` snapshot 的 `available_slots`，不可恢復 busy flag 判斷，因為多路錄製下有 active job 不代表容量已滿
 - 現況預設支援 2 個同時錄製工作，可由 `.env` 的 `MAX_CONCURRENT_RECORDINGS` 調整
@@ -160,6 +162,7 @@ Settings API / Web UI 應以 `get_all_settings()` 讀取完整 overlay，並以 
 
 - Smart trim 預設前留 15 秒、後留 30 秒；起訖 refinement 使用各自窗口的活動證據，無法確認時保留該端 coarse boundary，不可借用另一端。
 - 裁剪結果短於 `min(60 秒, 原片長度的 10%)` 時回退原檔並記錄 `trim_safety`。
+- Live 影像活動分析必須使用 Pillow 解碼後的像素差；依賴應列入 pyproject/uv.lock。解碼失敗是 unknown，不可回退 JPEG compressed-byte diff。
 - 未知音訊／影像探針不等於 inactive：兩者皆已確認 inactive 才能計算 idle timeout；未知或例外必須重置 idle timer，並在既有 max extension／hard deadline 內保留錄影。無上限的 legacy direct caller 最多等待一個 idle timeout。
 - Coarse scan 證據不完整時保留完整原片；refinement 證據不完整時保留該端 coarse boundary。裁剪檔須實測片長符合預期（允許 2–5 秒 keyframe 誤差），驗證失敗不可作為上傳來源。
 - 操作員要求保留的原檔以 `runtime_summary_json.local_recording_retention.preserve = true` 標記，maintenance retention 與 canonicalization 均須略過。

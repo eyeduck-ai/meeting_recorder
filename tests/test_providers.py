@@ -800,6 +800,62 @@ class TestProviderProbeState:
         assert snapshot.evidence["password_prompt"] is True
 
     @pytest.mark.asyncio
+    async def test_jitsi_failed_connection_is_reported_instead_of_prejoin_timeout(self):
+        provider = JitsiProvider()
+        failure_selector = '[data-testid="notify.connectionFailed"]'
+        page = FakePage(
+            {
+                failure_selector: 1,
+                '[data-testid="dialog.rejoinNow"]': 1,
+                '[data-testid="prejoin.joinMeeting"]': 1,
+                'input[data-testid="prejoin.input"]': 1,
+            }
+        )
+        snapshots = []
+
+        result = await provider.wait_until_joined(page, timeout_sec=1, probe_callback=snapshots.append)
+
+        assert result.success is False
+        assert result.in_lobby is False
+        assert result.error_code == "CONNECTION_FAILED"
+        assert len(snapshots) == 1
+        assert snapshots[0].state == MeetingState.ERROR
+        assert snapshots[0].evidence["matched_selectors"] == [failure_selector]
+        assert page.locator('[data-testid="dialog.rejoinNow"]').clicked is False
+
+    @pytest.mark.asyncio
+    async def test_jitsi_hidden_connection_failure_does_not_override_prejoin(self):
+        provider = JitsiProvider()
+        failure_selector = '[data-testid="notify.connectionFailed"]'
+        page = FakePage({failure_selector: 1, '[data-testid="prejoin.joinMeeting"]': 1})
+        page.locator(failure_selector).is_visible = AsyncMock(return_value=False)
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.PREJOIN
+        assert snapshot.error_code is None
+
+    @pytest.mark.asyncio
+    async def test_jitsi_in_meeting_ui_takes_precedence_over_connection_notice(self):
+        provider = JitsiProvider()
+        page = FakePage({'[data-testid="notify.connectionFailed"]': 1, "#remoteVideos": 1})
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.IN_MEETING
+        assert snapshot.error_code is None
+
+    @pytest.mark.asyncio
+    async def test_jitsi_waiting_for_host_is_not_a_connection_failure(self):
+        provider = JitsiProvider()
+        page = FakePage({'text="Waiting for the host"': 1})
+
+        snapshot = await provider.probe_state(page)
+
+        assert snapshot.state == MeetingState.LOBBY
+        assert snapshot.error_code is None
+
+    @pytest.mark.asyncio
     async def test_webex_probe_state_detects_lobby_from_title(self, monkeypatch):
         provider = WebexProvider()
         page = FakePage(url="https://company.webex.com/meet/test", title="In Lobby")
