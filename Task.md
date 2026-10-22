@@ -126,3 +126,5 @@
 - [x] 增加 per-chat Telegram delivery ledger 與 operations summary，區分各階段結果與使用者已讀。
 - [x] 將實際媒體與缺依賴整合測試納入 PR CI，合併重複 pytest/coverage 執行。
 - [x] 隔離驗證最小 Docker 權限、專用 UID/GID 與 debug-only VNC，再更新部署預設。
+
+- [x] 將 CI coverage 報告保存到 GitHub Actions artifact，移除未設定 token 的外部上傳依賴。
