@@ -7,8 +7,7 @@ services:
   app:
     image: ${MEETING_RECORDER_IMAGE:-ghcr.io/eyeduck-ai/meeting_recorder:latest}
     ports:
-      - "${APP_PORT:-8000}:8000"
-      - "${VNC_PORT:-5900}:5900"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8000}:8000"
     volumes:
       - ./recordings:/app/recordings
       - ./diagnostics:/app/diagnostics
@@ -20,9 +19,17 @@ services:
     environment:
       - TZ=${TZ:-Asia/Taipei}
       - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}
-    privileged: true
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     shm_size: '2gb'
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=8)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 45s
+      retries: 3
     logging:
       driver: json-file
       options:

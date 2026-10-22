@@ -165,6 +165,44 @@ def test_schedule_service_rejects_invalid_update_duration(db_session, meeting):
         service.update_schedule(db_session, schedule.id, {"duration_sec": 14401})
 
 
+@pytest.mark.parametrize("expression", ["broken", "30 25 * * *", "0 0 31 2 *"])
+def test_schedule_service_rejects_cron_before_persistence(db_session, meeting, expression):
+    scheduler = FakeScheduler()
+    service = ScheduleService(scheduler=scheduler)
+    with pytest.raises(ValidationError, match="cron_expression"):
+        service.create_schedule(
+            db_session,
+            ScheduleCreateData(meeting_id=meeting.id, schedule_type="cron", cron_expression=expression),
+        )
+    assert db_session.query(Schedule).count() == 0
+    assert scheduler.added == []
+
+
+def test_schedule_service_invalid_cron_update_keeps_existing_schedule(db_session, meeting):
+    scheduler = FakeScheduler()
+    service = ScheduleService(scheduler=scheduler)
+    schedule = service.create_schedule(
+        db_session,
+        ScheduleCreateData(meeting_id=meeting.id, schedule_type="cron", cron_expression="30 7 * * mon,thu"),
+    )
+    with pytest.raises(ValidationError, match="cron_expression"):
+        service.update_schedule(db_session, schedule.id, {"cron_expression": "30 7 * * 8", "duration_sec": 900})
+    db_session.expire_all()
+    assert schedule.cron_expression == "30 7 * * mon,thu"
+    assert schedule.duration_sec == 4200
+    assert scheduler.updated == []
+
+
+def test_enabling_invalid_legacy_cron_does_not_persist_enabled_flag(db_session, meeting):
+    schedule = Schedule(meeting_id=meeting.id, schedule_type="cron", cron_expression="invalid", enabled=False)
+    db_session.add(schedule)
+    db_session.commit()
+    with pytest.raises(ValidationError, match="cron_expression"):
+        ScheduleService(scheduler=FakeScheduler()).set_enabled(db_session, schedule.id, True)
+    db_session.refresh(schedule)
+    assert schedule.enabled is False
+
+
 def test_schedule_service_trigger_marks_triggered_and_returns_queue_result(db_session, meeting):
     class FakeRunner:
         def queue_schedule(self, schedule_id, manual_trigger=False):

@@ -70,6 +70,8 @@ def is_authenticated(request: Request) -> bool:
 # Exact paths that don't require authentication.
 PUBLIC_EXACT_PATHS = {
     "/health",
+    "/health/live",
+    "/health/ready",
     "/api",  # API info and environment status
     "/api/environment",
     "/login",

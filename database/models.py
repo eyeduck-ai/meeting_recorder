@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.base import Base
@@ -327,3 +327,29 @@ class DetectionLog(Base):
     attempt_no: Mapped[int] = mapped_column(Integer, default=1)
     was_accurate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # For manual review
     triggered_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+
+
+class DurableWork(Base):
+    """Restart-safe work intent. resume_json is private upload capability data."""
+
+    __tablename__ = "durable_work"
+    __table_args__ = (
+        UniqueConstraint("job_id", "kind", name="uq_durable_work_job_kind"),
+        Index("ix_durable_work_state_next_attempt", "state", "next_attempt_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    resume_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)
+
+
+# Import additional table owners after shared models are defined.
+import database.notification_models  # noqa: E402, F401

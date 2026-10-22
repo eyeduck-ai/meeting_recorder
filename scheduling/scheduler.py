@@ -1,5 +1,4 @@
 import logging
-import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,12 +9,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from croniter import croniter
 from sqlalchemy.orm import Session
 
 from config.settings import get_settings
 from database.models import Schedule, ScheduleType
 from database.session import get_session_local
+from scheduling.cron import StandardCronTrigger, previous_fire_time
 from services.storage_maintenance import (
     MAINTENANCE_HOUR,
     MAINTENANCE_JOB_ID,
@@ -25,35 +24,6 @@ from services.storage_maintenance import (
 from utils.timezone import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
-
-
-def convert_cron_weekday(cron_expression: str) -> str:
-    """Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon).
-
-    Standard CRON: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
-    APScheduler:   0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
-
-    This function converts the weekday field so that user can use familiar
-    standard CRON format while APScheduler executes correctly.
-    """
-    parts = cron_expression.split()
-    if len(parts) != 5:
-        return cron_expression  # Invalid format, return as-is
-
-    minute, hour, day, month, weekday = parts
-
-    # Convert weekday field
-    def convert_day(match):
-        day_num = int(match.group())
-        # 0 (Sun) -> 6, 1 (Mon) -> 0, 2 (Tue) -> 1, etc.
-        if day_num == 0:
-            return "6"  # Sunday
-        return str(day_num - 1)
-
-    # Handle ranges like 1-5, lists like 1,4, and single values
-    converted_weekday = re.sub(r"\d+", convert_day, weekday)
-
-    return f"{minute} {hour} {day} {month} {converted_weekday}"
 
 
 class SchedulerService:
@@ -212,9 +182,7 @@ class SchedulerService:
                     logger.error(f"Schedule {schedule.id} has no cron expression")
                     return None
 
-                # Convert standard CRON weekday (0=Sun) to APScheduler format (0=Mon)
-                converted_cron = convert_cron_weekday(schedule.cron_expression)
-                trigger = CronTrigger.from_crontab(converted_cron, timezone=self._scheduler.timezone)
+                trigger = StandardCronTrigger(schedule.cron_expression, timezone=self._scheduler.timezone)
 
             else:
                 logger.error(f"Unknown schedule type: {schedule.schedule_type}")
@@ -245,9 +213,7 @@ class SchedulerService:
             if schedule_type_value == ScheduleType.CRON.value and schedule.cron_expression and self._job_callback:
                 try:
                     now_local = datetime.now(self._scheduler.timezone)
-                    # Use croniter to get previous fire time
-                    cron_iter = croniter(schedule.cron_expression, now_local)
-                    last_fire = cron_iter.get_prev(datetime)
+                    last_fire = previous_fire_time(schedule.cron_expression, now_local)
                     # Ensure timezone aware
                     if last_fire.tzinfo is None:
                         last_fire = last_fire.replace(tzinfo=self._scheduler.timezone)

@@ -120,9 +120,9 @@
 - [x] 辨識 Jitsi 暫時連線失敗，交給既有 deadline 內 delayed retry，取消工作不可重試。
 - [x] 修正 Telegram 完成／失敗／上傳偏好、僅 API acknowledged 才記成功、fallback 新訊息 ID 持久化。
 - [x] 修正 maintenance MKV canonicalization 後 raw/trimmed/runtime path 同步。
-- [ ] 統一 CRON parser 與入庫前驗證，涵蓋 weekday range、step、0/7、名稱與 croniter/APScheduler 語意。
-- [ ] 增加 SQLite durable work/outbox 與重啟恢復，提供冪等上傳／通知重試。
-- [ ] 縮短 maintenance SQLite writer transaction，加入雙連線與 event-loop responsiveness 測試。
-- [ ] 增加 per-chat Telegram delivery ledger 與 operations summary，區分各階段結果與使用者已讀。
-- [ ] 將實際媒體與缺依賴整合測試納入 PR CI，合併重複 pytest/coverage 執行。
-- [ ] 隔離驗證最小 Docker 權限、專用 UID/GID 與 debug-only VNC，再更新部署預設。
+- [x] 統一 CRON parser 與入庫前驗證，涵蓋 weekday range、step、0/7、名稱與 croniter/APScheduler 語意。
+- [x] 增加 SQLite durable work/outbox 與重啟恢復，提供冪等上傳／通知重試。
+- [x] 縮短 maintenance SQLite writer transaction，加入雙連線與 event-loop responsiveness 測試。
+- [x] 增加 per-chat Telegram delivery ledger 與 operations summary，區分各階段結果與使用者已讀。
+- [x] 將實際媒體與缺依賴整合測試納入 PR CI，合併重複 pytest/coverage 執行。
+- [x] 隔離驗證最小 Docker 權限、專用 UID/GID 與 debug-only VNC，再更新部署預設。

@@ -123,6 +123,9 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
             self.queue_schedule = lambda *_args, **_kwargs: None
             self.shutdown_called = False
 
+        async def recover_durable_work(self):
+            calls.append("recover_work")
+
         async def shutdown(self):
             self.shutdown_called = True
             calls.append("runner_shutdown")
@@ -140,6 +143,7 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
             self.callback = callback
 
         def start(self):
+            calls.append("scheduler_start")
             self.started = True
             self.is_running = True
 
@@ -168,9 +172,19 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
 
     monkeypatch.setattr(main_module, "close_youtube_uploader", fake_close_youtube_uploader)
 
+    import telegram_bot.notifications as notifications
+
+    class FakeDelivery:
+        async def start(self):
+            calls.append("outbox_start")
+
+        async def shutdown(self):
+            calls.append("outbox_shutdown")
+
+    monkeypatch.setattr(notifications, "get_notification_delivery_service", FakeDelivery)
     app = FastAPI()
     async with main_module.lifespan(app):
-        assert calls == ["init_db", "cleanup"]
+        assert calls == ["init_db", "cleanup", "outbox_start", "recover_work", "scheduler_start"]
         assert isinstance(app.state.worker, FakeWorker)
         assert app.state.job_runner.worker is app.state.worker
         assert app.state.scheduler.callback is app.state.job_runner.queue_schedule
@@ -180,7 +194,7 @@ async def test_lifespan_owns_runtime_instances(monkeypatch):
         assert scheduler_module.get_scheduler() is app.state.scheduler
 
     assert scheduler_instances[0].stopped is True
-    assert calls[-2:] == ["runner_shutdown", "close_youtube"]
+    assert calls[-3:] == ["runner_shutdown", "outbox_shutdown", "close_youtube"]
     assert not hasattr(app.state, "worker")
     assert not hasattr(app.state, "job_runner")
     assert not hasattr(app.state, "scheduler")
@@ -268,12 +282,16 @@ def test_cleanup_orphaned_jobs_restores_stale_uploading(monkeypatch, tmp_path):
         session.close()
 
 
-def test_cleanup_orphaned_jobs_restores_stale_finalizing_with_existing_recording(monkeypatch, tmp_path):
+@pytest.mark.parametrize("canonicalized_before_crash", [False, True])
+def test_cleanup_orphaned_jobs_restores_stale_finalizing_with_existing_recording(
+    monkeypatch, tmp_path, canonicalized_before_crash
+):
     """Interrupted post-processing should preserve successful raw recordings after restart."""
     import api.main as main_module
 
     raw_path = tmp_path / "recording.mkv"
-    raw_path.write_bytes(b"raw")
+    existing_path = raw_path.with_suffix(".mp4") if canonicalized_before_crash else raw_path
+    existing_path.write_bytes(b"raw")
     engine = create_engine(f"sqlite:///{tmp_path / 'cleanup-finalizing.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

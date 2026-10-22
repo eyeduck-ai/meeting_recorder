@@ -5,12 +5,13 @@ import logging
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden, RetryAfter
 
 from config.settings import get_settings
 from database.models import JobStatus, RecordingJob, Schedule, TelegramUser
 from database.session import get_session_local
 from providers import get_provider_metadata
+from services.notification_delivery import DeliveryResult, NotificationDeliveryService
 from telegram_bot.bot import get_bot
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,7 @@ async def _telegram_call_with_timeout(
         if operation == "edit" and "message is not modified" in str(e).lower():
             logger.debug("Telegram edit for chat %s was already up to date", chat_id)
             return True, None
-        logger.error("Telegram %s failed for chat %s: %s", operation, chat_id, e)
+        logger.error("Telegram %s failed for chat %s: %s", operation, chat_id, type(e).__name__)
     except TimeoutError:
         logger.warning(
             "Telegram %s timed out for chat %s after %.1fs",
@@ -291,41 +292,78 @@ async def _telegram_call_with_timeout(
             TELEGRAM_NOTIFICATION_TIMEOUT_SEC,
         )
     except Exception as e:
-        logger.error("Telegram %s failed for chat %s: %s", operation, chat_id, e)
+        logger.error("Telegram %s failed for chat %s: %s", operation, chat_id, type(e).__name__)
     return False, None
 
 
-async def _send_or_edit_one_chat(bot, *, chat_id: int, job: RecordingJob, message: str) -> int | None:
-    if job.telegram_message_id:
-        edited, _ = await _telegram_call_with_timeout(
-            bot.edit_message_text,
-            chat_id=chat_id,
-            message_id=job.telegram_message_id,
-            text=message,
-            operation="edit",
-        )
-        if edited:
-            return job.telegram_message_id
+_delivery_service: NotificationDeliveryService | None = None
 
-        sent, fallback_message = await _telegram_call_with_timeout(
-            bot.send_message,
-            chat_id=chat_id,
-            text=message,
-            operation="fallback-send",
-        )
-        if sent and fallback_message is not None:
-            return getattr(fallback_message, "message_id", None)
-        return None
 
-    sent, sent_message = await _telegram_call_with_timeout(
-        bot.send_message,
-        chat_id=chat_id,
-        text=message,
-        operation="send",
-    )
-    if sent and sent_message is not None:
-        return getattr(sent_message, "message_id", None)
-    return None
+def get_notification_delivery_service() -> NotificationDeliveryService:
+    """Shared dispatcher; lifecycle is owned by the application's lifespan."""
+    global _delivery_service
+    if _delivery_service is None:
+        _delivery_service = NotificationDeliveryService(
+            lambda: get_session_local()(),
+            _deliver_one_chat,
+            concurrency=TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY,
+        )
+    return _delivery_service
+
+
+async def _deliver_one_chat(chat_id: int, message_id: int | None, message: str, before_fallback) -> DeliveryResult:
+    bot = await get_bot()
+    if bot is None:
+        return DeliveryResult("pending", error="bot_unavailable")
+    operation = "edit" if message_id else "send"
+    while True:
+        try:
+            if message_id:
+                result = await asyncio.wait_for(
+                    bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=message),
+                    timeout=TELEGRAM_NOTIFICATION_TIMEOUT_SEC,
+                )
+                return DeliveryResult("acknowledged", message_id=message_id)
+            result = await asyncio.wait_for(
+                bot.send_message(chat_id=chat_id, text=message),
+                timeout=TELEGRAM_NOTIFICATION_TIMEOUT_SEC,
+            )
+            returned_id = getattr(result, "message_id", None)
+            if not isinstance(returned_id, int):
+                return DeliveryResult("uncertain", error="missing_message_id")
+            return DeliveryResult("acknowledged", message_id=returned_id)
+        except BadRequest as exc:
+            reason = str(exc).lower()
+            if message_id and "message is not modified" in reason:
+                return DeliveryResult("acknowledged", message_id=message_id)
+            if message_id and any(
+                value in reason
+                for value in (
+                    "message to edit not found",
+                    "message can't be edited",
+                    "message cannot be edited",
+                )
+            ):
+                before_fallback()
+                message_id = None
+                operation = "fallback-send"
+                continue
+            logger.warning("Telegram %s rejected for chat %s: bad_request", operation, chat_id)
+            return DeliveryResult("failed", error="bad_request")
+        except Forbidden:
+            logger.warning("Telegram %s rejected for chat %s: forbidden", operation, chat_id)
+            return DeliveryResult("failed", error="forbidden")
+        except RetryAfter as exc:
+            retry_after = exc.retry_after
+            delay = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after)
+            return DeliveryResult("pending", error="rate_limited", retry_after=delay)
+        except TimeoutError:
+            logger.warning("Telegram %s timed out for chat %s", operation, chat_id)
+            return DeliveryResult("pending" if message_id else "uncertain", error="timeout")
+        except Exception:
+            # Do not persist exception text: transport errors may contain request URLs/tokens.
+            logger.warning("Telegram %s failed for chat %s: transport_error", operation, chat_id)
+            return DeliveryResult("pending" if message_id else "uncertain", error="transport_error")
 
 
 async def _send_or_edit_status_message(
@@ -333,47 +371,28 @@ async def _send_or_edit_status_message(
     job: RecordingJob,
     message: str,
     notification_type: str,
+    phase: str,
+    attempt_no: int | None = None,
+    event_reference: str | None = None,
 ) -> int | None:
-    """Send a new message or edit existing Telegram message."""
-    bot = await get_bot()
-    if bot is None:
-        return None
-
-    chat_ids = await _get_approved_chat_ids(notification_type)
-    first_message_id = None
-    semaphore = asyncio.Semaphore(TELEGRAM_NOTIFICATION_FANOUT_CONCURRENCY)
-
-    async def send_one(chat_id: int) -> int | None:
-        async with semaphore:
-            return await _send_or_edit_one_chat(bot, chat_id=chat_id, job=job, message=message)
-
-    results = await asyncio.gather(*(send_one(chat_id) for chat_id in chat_ids), return_exceptions=True)
-    delivered = 0
-    for chat_id, result in zip(chat_ids, results, strict=True):
-        if isinstance(result, Exception):
-            logger.error("Unexpected Telegram notification fanout error: %s", result)
-            continue
-        if result is not None:
-            delivered += 1
-            logger.info(
-                "Telegram API acknowledged job %s type=%s chat=%s message_id=%s",
-                getattr(job, "job_id", "unknown"),
-                notification_type,
-                chat_id,
-                result,
-            )
-            if first_message_id is None:
-                first_message_id = result
-    if delivered != len(chat_ids):
-        logger.warning(
-            "Telegram notification incomplete for job %s type=%s: acknowledged=%s recipients=%s",
-            getattr(job, "job_id", "unknown"),
-            notification_type,
-            delivered,
-            len(chat_ids),
+    """Persist a per-job, per-chat event before bounded best-effort delivery."""
+    try:
+        chat_ids = await _get_approved_chat_ids(notification_type)
+        return await get_notification_delivery_service().enqueue(
+            job_id=job.job_id,
+            phase=phase,
+            notification_type=notification_type,
+            attempt_no=attempt_no or getattr(job, "attempt_no", None) or 1,
+            message=message,
+            chat_ids=chat_ids,
+            event_reference=event_reference,
         )
-
-    return first_message_id
+    except Exception as exc:
+        # Avoid SQL/transport exception text that can contain payloads or tokens.
+        logger.error(
+            "Could not persist or dispatch Telegram notification for job %s: %s", job.job_id, type(exc).__name__
+        )
+        return None
 
 
 async def notify_recording_status(job: RecordingJob, status: str | JobStatus) -> int | None:
@@ -385,6 +404,7 @@ async def notify_recording_status(job: RecordingJob, status: str | JobStatus) ->
         job=job,
         message=message,
         notification_type="start",
+        phase=phase,
     )
     if message_id is not None:
         logger.info(f"Updated recording stage notification for job {job.job_id}: {phase}")
@@ -397,7 +417,7 @@ async def notify_recording_completed(job: RecordingJob) -> int | None:
 
     meeting_label = _resolve_meeting_label(job)
     message = _build_status_message(job, phase, meeting_label=meeting_label)
-    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="complete")
+    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="complete", phase=phase)
     if message_id is not None:
         logger.info(f"Updated recording complete notification for job {job.job_id}")
     return message_id
@@ -407,7 +427,9 @@ async def notify_recording_failed(job: RecordingJob) -> int | None:
     """Update notification to show recording failed."""
     meeting_label = _resolve_meeting_label(job)
     message = _build_status_message(job, "failed", meeting_label=meeting_label)
-    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="failure")
+    message_id = await _send_or_edit_status_message(
+        job=job, message=message, notification_type="failure", phase="failed"
+    )
     if message_id is not None:
         logger.info(f"Updated recording failure notification for job {job.job_id}")
     return message_id
@@ -443,6 +465,8 @@ async def notify_recording_retry(
         job=job,
         message=message,
         notification_type="failure",
+        phase="retry",
+        attempt_no=attempt,
     )
 
     if first_message_id is not None:
@@ -454,7 +478,9 @@ async def notify_youtube_upload_completed(job: RecordingJob, video_url: str) -> 
     """Update notification to show YouTube upload completed."""
     meeting_label = _resolve_meeting_label(job)
     message = _build_status_message(job, "uploaded", video_url, meeting_label=meeting_label)
-    message_id = await _send_or_edit_status_message(job=job, message=message, notification_type="upload")
+    message_id = await _send_or_edit_status_message(
+        job=job, message=message, notification_type="upload", phase="uploaded", event_reference=job.youtube_video_id
+    )
     if message_id is not None:
         logger.info(f"Updated YouTube upload notification for job {job.job_id}")
     return message_id

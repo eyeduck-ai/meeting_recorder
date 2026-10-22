@@ -6,7 +6,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from config.settings import get_settings
 from database.models import Meeting, Schedule, ScheduleType
+from scheduling.cron import StandardCronTrigger
 from services.errors import NotFoundError, ValidationError
 from services.runtime_config import RuntimeConfigError, RuntimeConfigService, get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
@@ -168,6 +170,8 @@ class ScheduleService:
     def set_enabled(self, db: Session, schedule_id: int, enabled: bool) -> Schedule:
         """Enable or disable a schedule and sync APScheduler."""
         schedule = self._get_schedule(db, schedule_id)
+        if enabled:
+            self._validate_cron(schedule.schedule_type, schedule.cron_expression)
         schedule.enabled = enabled
         db.commit()
         db.refresh(schedule)
@@ -289,8 +293,14 @@ class ScheduleService:
         return self._job_runner
 
     def _validate_cron(self, schedule_type: str, cron_expression: str | None) -> None:
-        if self._schedule_type_value(schedule_type) == ScheduleType.CRON.value and not cron_expression:
+        if self._schedule_type_value(schedule_type) != ScheduleType.CRON.value:
+            return
+        if not cron_expression:
             raise ValidationError("cron_expression is required for cron schedule type")
+        try:
+            StandardCronTrigger(cron_expression, timezone=get_settings().timezone)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValidationError(f"Invalid cron_expression: {exc}") from exc
 
     def _validate_duration_sec(self, duration_sec: int) -> None:
         if isinstance(duration_sec, bool) or not isinstance(duration_sec, int):

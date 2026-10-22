@@ -45,6 +45,7 @@ class RecordingMonitor:
         self._extension_idle_since: float | None = None
         self._extension_unavailable_since: float | None = None
         self._activity_probe_primed = False
+        self.probe_summary = {"samples": 0, "unknown": 0, "active": 0, "inactive": 0}
 
     def _now(self) -> float:
         if self._clock is not None:
@@ -56,6 +57,7 @@ class RecordingMonitor:
         try:
             return await self._run()
         finally:
+            self.session.activity_probe_summary = dict(self.probe_summary)
             await self._close_media_activity_probe()
 
     async def _run(self) -> tuple[str, int | None]:
@@ -173,7 +175,9 @@ class RecordingMonitor:
         except Exception as exc:
             logger.debug("Media activity probe unavailable: %s", exc)
             state = None
+        self.probe_summary["samples"] += 1
         if state is None or not state.available:
+            self.probe_summary["unknown"] += 1
             # Missing evidence cannot establish continuous silence/stillness.
             self._extension_idle_since = None
             if self._extension_unavailable_since is None:
@@ -190,6 +194,7 @@ class RecordingMonitor:
             logger.warning("Dynamic extension unavailable-probe grace period reached")
             return False
 
+        self.probe_summary["active" if state.active is True else "inactive"] += 1
         self._extension_unavailable_since = None
         if state.active is True:
             self._extension_idle_since = None

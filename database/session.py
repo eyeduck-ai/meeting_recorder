@@ -3,7 +3,7 @@ import os
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -18,6 +18,17 @@ if TYPE_CHECKING:
 
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+    """Apply connection-local waiting and persistent WAL before transactions."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()
 
 
 def get_engine() -> Engine:
@@ -27,8 +38,13 @@ def get_engine() -> Engine:
         settings = get_settings()
         _engine = create_engine(
             settings.database_url,
-            connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
+            hide_parameters=True,
+            connect_args={"check_same_thread": False, "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+            if settings.database_url.startswith("sqlite")
+            else {},
         )
+        if _engine.dialect.name == "sqlite":
+            event.listen(_engine, "connect", _configure_sqlite)
     return _engine
 
 
@@ -41,7 +57,7 @@ def get_session_local() -> sessionmaker[Session]:
 
 
 def init_db() -> None:
-    """Initialize database tables and apply idempotent compatibility migrations."""
+    """Initialize database tables and apply recorded, versioned schema migrations."""
     import database.models  # noqa: F401
 
     engine = get_engine()

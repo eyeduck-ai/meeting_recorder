@@ -1,0 +1,8 @@
+# Explicit opt-in only: COMPOSE_FILE must include this file.
+services:
+  app:
+    environment:
+      DEBUG_VNC: "1"
+      DEBUG_VNC_DISPLAY: "${RECORDING_DISPLAY_START:-100}"
+    ports:
+      - "127.0.0.1:${VNC_PORT:-5900}:5900"

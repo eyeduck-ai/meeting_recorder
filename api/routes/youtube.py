@@ -6,17 +6,20 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from config.settings import get_settings
-from recording.mp4_validation import discard_file
-from recording.remux import delete_recording_artifacts, recording_file_variants
-from services.storage_maintenance import prepare_upload_recording_file
+from recording.remux import recording_file_variants
 from uploading.youtube import (
     AuthorizationError,
     get_youtube_uploader,
 )
-from utils.timezone import utc_now
 
 router = APIRouter(prefix="/youtube", tags=["YouTube"])
+
+
+class ResolveUploadRequest(BaseModel):
+    """Explicit operator reconciliation after checking the authorized YouTube channel."""
+
+    video_id: str | None = None
+    confirm_no_existing_video: bool = False
 
 
 class AuthStatusResponse(BaseModel):
@@ -140,120 +143,75 @@ async def revoke_auth():
 
 @router.post("/upload")
 async def upload_video(request: UploadRequest):
-    """Manually upload a completed recording to YouTube.
-
-    The job must have a successful recording with an output file.
-    """
-    from database.models import RecordingJob
+    """Persist one restart-safe upload intent and return immediately."""
+    from database.models import JobStatus, RecordingJob
     from database.session import get_session_local
-    from uploading.youtube import UploadStatus, VideoMetadata
+    from providers.base import redact_url_secrets
+    from scheduling.job_runner import get_job_runner
+    from scheduling.upload_runner import UploadRequest as WorkRequest
 
-    uploader = get_youtube_uploader()
-
-    if not uploader.is_configured:
-        raise HTTPException(
-            status_code=400,
-            detail="YouTube not configured",
-        )
-
-    if not uploader.is_authorized:
-        raise HTTPException(
-            status_code=401,
-            detail="YouTube not authorized. Please complete authorization flow first.",
-        )
-
-    # Get job from database
     SessionLocal = get_session_local()
-    session = SessionLocal()
-    try:
-        job = session.query(RecordingJob).filter(RecordingJob.job_id == request.job_id).first()
+    with SessionLocal() as session:
+        job = session.query(RecordingJob).filter_by(job_id=request.job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-
-        if not job.output_path:
-            raise HTTPException(status_code=400, detail="Job has no recording output")
-
-        video_path = Path(job.output_path)
-        if not video_path.exists():
-            raise HTTPException(status_code=400, detail="Recording file not found")
-
-        trimmed_path = Path(job.trimmed_output_path) if job.trimmed_output_path else None
-        raw_path = Path(job.raw_output_path) if job.raw_output_path else None
-        using_trimmed_output = trimmed_path is not None and trimmed_path in recording_file_variants(video_path)
-
-        remux_log = None
-        transcode_log = None
-        if video_path.suffix.lower() == ".mkv":
-            settings = get_settings()
-            remux_log = settings.diagnostics_dir / job.job_id / "remux.log"
-            transcode_log = settings.diagnostics_dir / job.job_id / "transcode.log"
-
-        canonical = await prepare_upload_recording_file(
-            video_path,
-            remux_log_path=remux_log,
-            transcode_log_path=transcode_log,
-        )
-        if not canonical or not canonical.output_path.exists():
-            raise HTTPException(status_code=500, detail="MP4 preparation failed")
-
-        job.output_path = str(canonical.output_path)
-        job.file_size = canonical.file_size
-        if using_trimmed_output:
-            job.trimmed_output_path = str(canonical.output_path)
-        session.commit()
-        upload_path = canonical.upload_path or canonical.output_path
-
-        # Prepare metadata
-        title = request.title or f"Recording - {job.meeting_code}"
-        description = request.description or f"Recorded meeting - {job.job_id}"
-
-        metadata = VideoMetadata(
-            title=title,
-            description=description,
-            privacy_status=request.privacy,
-        )
-
-        # Upload
-        try:
-            result = await uploader.upload_video(
-                video_path=upload_path,
-                metadata=metadata,
-            )
-        finally:
-            if canonical.temporary_upload_path:
-                discard_file(canonical.temporary_upload_path)
-
-        if result.status == UploadStatus.SUCCEEDED:
-            # Update job with video ID
-            job.youtube_video_id = result.video_id
-            job.youtube_uploaded_at = utc_now()
-            if using_trimmed_output:
-                delete_recording_artifacts(
-                    {
-                        trimmed_path,
-                        canonical.output_path,
-                        upload_path,
-                        canonical.temporary_upload_path,
-                    },
-                    preserve_path=raw_path,
-                )
-                if raw_path and raw_path.exists():
-                    job.output_path = str(raw_path)
-            session.commit()
-
+        if job.youtube_video_id:
             return {
                 "success": True,
-                "video_id": result.video_id,
-                "video_url": result.video_url,
+                "video_id": job.youtube_video_id,
+                "video_url": f"https://youtu.be/{job.youtube_video_id}",
             }
-        else:
-            return {
-                "success": False,
-                "error": result.error_message,
-            }
+        if job.status not in (JobStatus.SUCCEEDED.value, JobStatus.UPLOADING.value):
+            raise HTTPException(status_code=409, detail="Recording is not ready for upload")
+        if not job.output_path or not Path(job.output_path).exists():
+            raise HTTPException(status_code=400, detail="Recording file not found")
+        uploader = get_youtube_uploader()
+        if not uploader.is_configured:
+            raise HTTPException(status_code=400, detail="YouTube not configured")
+        if not uploader.is_authorized:
+            raise HTTPException(
+                status_code=401, detail="YouTube not authorized. Please complete authorization flow first."
+            )
+        path = Path(job.output_path)
+        trimmed = Path(job.trimmed_output_path) if job.trimmed_output_path else None
+        raw = Path(job.raw_output_path) if job.raw_output_path else None
+        work = WorkRequest(
+            job_id=job.job_id,
+            video_path=path,
+            title=request.title or f"Recording - {redact_url_secrets(job.meeting_code)}",
+            description=request.description,
+            privacy=request.privacy,
+            raw_video_path=raw,
+            cleanup_video_path_after_success=trimmed if trimmed in recording_file_variants(path) else None,
+        )
+    try:
+        state = get_job_runner().enqueue_upload(work)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if state in ("failed", "needs_review"):
+        raise HTTPException(status_code=409, detail="Existing upload needs review; check operations before retrying")
+    return {"success": True, "queued": True, "state": state, "job_id": request.job_id}
 
-    finally:
-        session.close()
+
+@router.post("/upload/{job_id}/resolve")
+async def resolve_upload(job_id: str, request: ResolveUploadRequest):
+    """Attach a verified existing video, or explicitly allow replacing an ambiguous session."""
+    from scheduling.job_runner import get_job_runner
+
+    if bool(request.video_id) == request.confirm_no_existing_video:
+        raise HTTPException(status_code=400, detail="Provide one video_id or confirm_no_existing_video=true")
+    if request.video_id:
+        try:
+            info = await get_youtube_uploader().get_owned_video_info(request.video_id)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Unable to verify the YouTube video and channel") from None
+        if not info:
+            raise HTTPException(status_code=400, detail="Video not found in the authorized YouTube channel")
+    if not get_job_runner().resolve_upload(
+        job_id, video_id=request.video_id, confirmed_absent=request.confirm_no_existing_video
+    ):
+        raise HTTPException(status_code=409, detail="Only failed or needs_review uploads can be reconciled")
+    return {"success": True, "queued": True, "job_id": job_id}
 
 
 @router.get("/video/{video_id}")

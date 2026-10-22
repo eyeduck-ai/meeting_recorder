@@ -6,17 +6,17 @@ from datetime import datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from croniter import croniter
-
 from config.settings import get_settings
 from database.models import ErrorCode, JobStatus, Schedule
 from database.session import JobRepository, get_session_local
 from recording.job_types import RecordingJob
 from recording.post_processing import RecordingPostProcessingRequest, RecordingPostProcessor
 from recording.worker import get_worker
+from scheduling.cron import previous_fire_time
 from scheduling.recording_executor import RecordingExecutionOutcome, RecordingExecutor, RecordingRetryRequest
 from scheduling.schedule_queue import QueuedRunItem, QueuedRunView, QueueScheduleResult, ScheduleRunQueue
 from scheduling.upload_runner import UploadRequest, YouTubeUploadRunner
+from services.durable_work import DurableWorkStore, post_processing_payload, upload_payload
 from services.runtime_config import get_runtime_config_service
 from utils.timezone import ensure_utc, utc_now
 
@@ -90,7 +90,11 @@ class JobRunner:
         self._max_concurrent_recordings = max(1, int(configured_limit))
         self._recording_executor = RecordingExecutor(worker_provider=self._get_worker)
         self._post_processor = post_processor or RecordingPostProcessor()
-        self._upload_runner = YouTubeUploadRunner()
+        self._durable_work = DurableWorkStore(session_factory=lambda: get_session_local())
+        self._upload_runner = YouTubeUploadRunner(
+            durable_store=self._durable_work, session_factory=lambda: get_session_local()
+        )
+        self._durable_retry_task: asyncio.Task | None = None
         self._schedule_queue = ScheduleRunQueue()
         self._direct_payloads: dict[str, DirectRecordingQueueItem] = {}
         self._retry_requests: dict[str, RecordingRetryRequest] = {}
@@ -627,8 +631,7 @@ class JobRunner:
                     tz = ZoneInfo("UTC")
 
                 now_local = datetime.now(tz)
-                cron_iter = croniter(schedule.cron_expression, now_local)
-                last_fire = cron_iter.get_prev(datetime)
+                last_fire = previous_fire_time(schedule.cron_expression, now_local)
                 if last_fire.tzinfo is None:
                     last_fire = last_fire.replace(tzinfo=tz)
                 start_time = ensure_utc(last_fire)
@@ -766,11 +769,82 @@ class JobRunner:
         if task and task.done():
             self._retry_tasks.pop(job_id, None)
 
+    def enqueue_upload(self, upload_request: UploadRequest) -> str:
+        """One persisted intent per recording, shared by automatic and manual uploads."""
+        if not self._durable_work.post_processing_complete(upload_request.job_id):
+            raise ValueError("Recording post-processing must complete before upload")
+        state = self._durable_work.ensure(upload_request.job_id, "upload", upload_payload(upload_request))
+        if state == "failed" and self._durable_work.retry_failed(upload_request.job_id, "upload"):
+            state = "pending"
+        if state in ("pending", "retry_wait"):
+            self._start_upload_task(self._durable_work.load_request(upload_request.job_id, "upload"))
+        return state
+
+    def retry_durable_work(self, job_id: str, kind: str) -> bool:
+        if kind not in ("post_process", "upload"):
+            return False
+        if kind == "upload" and not self._durable_work.post_processing_complete(job_id):
+            return False
+        if not self._durable_work.retry_failed(job_id, kind):
+            return False
+        self._dispatch_durable_work()
+        return True
+
+    def resolve_upload(self, job_id: str, *, video_id: str | None = None, confirmed_absent: bool = False) -> bool:
+        if not self._durable_work.resolve_upload(job_id, video_id=video_id, confirmed_absent=confirmed_absent):
+            return False
+        self._dispatch_durable_work()
+        return True
+
+    def durable_work_snapshot(self) -> dict:
+        return self._durable_work.snapshot()
+
+    async def recover_durable_work(self) -> None:
+        """Call once after orphan recovery, before starting schedules; no historic job replay."""
+        self._durable_work.reset_interrupted()
+        self._dispatch_durable_work()
+        if self._durable_retry_task is None:
+            self._durable_retry_task = asyncio.create_task(self._retry_durable_work())
+
+    async def _retry_durable_work(self) -> None:
+        while not self._shutting_down:
+            await asyncio.sleep(5)
+            try:
+                self._dispatch_durable_work()
+            except Exception:
+                logger.exception("Unable to dispatch persisted completed-file work")
+
+    def _dispatch_durable_work(self) -> None:
+        for job_id, kind, payload in self._durable_work.ready():
+            try:
+                request = self._durable_work.restore_request(job_id, kind, payload)
+            except (ValueError, OSError, TypeError, KeyError):
+                self._durable_work.fail(
+                    job_id, kind, error="Recovery input unavailable; recording retained", retryable=False
+                )
+                continue
+            if kind == "post_process":
+                self._start_post_processing_task(request)
+            elif kind == "upload":
+                self._start_upload_task(request)
+
     def _start_upload_task(self, upload_request: UploadRequest) -> None:
+        if not self._durable_work.post_processing_complete(upload_request.job_id):
+            return
+        self._durable_work.ensure(upload_request.job_id, "upload", upload_payload(upload_request))
+        if any(request.job_id == upload_request.job_id for request in self._upload_tasks.values()):
+            return
         if self._shutting_down:
             self._mark_upload_interrupted(upload_request.job_id)
             return
-        task = asyncio.create_task(self._run_upload_task(upload_request))
+        if not self._durable_work.claim(upload_request.job_id, "upload"):
+            return
+        try:
+            self._upload_runner.mark_processing(upload_request.job_id)
+            task = asyncio.create_task(self._run_upload_task(upload_request))
+        except Exception:
+            self._durable_work.release(upload_request.job_id, "upload")
+            raise
         self._upload_tasks[task] = upload_request
         try:
             task.add_done_callback(self._upload_task_done)
@@ -788,6 +862,9 @@ class JobRunner:
             logger.error("Upload task failed for job %s: %s", upload_request.job_id if upload_request else "?", e)
 
     def _start_post_processing_task(self, request: RecordingPostProcessingRequest) -> None:
+        self._durable_work.ensure(request.job.job_id, "post_process", post_processing_payload(request))
+        if any(state.request.job.job_id == request.job.job_id for state in self._post_processing_tasks.values()):
+            return
         if self._shutting_down:
             self._start_post_processing_settle_task(
                 request,
@@ -795,6 +872,8 @@ class JobRunner:
             )
             return
         else:
+            if not self._durable_work.claim(request.job.job_id, "post_process"):
+                return
             task = asyncio.create_task(self._run_post_processing_task(request))
         self._track_post_processing_task(task, PostProcessingTaskState(request=request, kind="process"))
 
@@ -820,7 +899,18 @@ class JobRunner:
             logger.debug("Post-processing task does not support done callbacks")
 
     async def _run_post_processing_task(self, request: RecordingPostProcessingRequest) -> UploadRequest | None:
-        return await self._post_processor.run(request)
+        try:
+            upload_request = await self._post_processor.run(request)
+            self._durable_work.succeed(request.job.job_id, "post_process", upload_request=upload_request)
+            return upload_request
+        except asyncio.CancelledError:
+            self._durable_work.release(request.job.job_id, "post_process")
+            raise
+        except Exception:
+            self._durable_work.fail(
+                request.job.job_id, "post_process", error="Post-processing failed; raw recording retained"
+            )
+            raise
 
     async def _complete_post_processing_with_raw_recording(
         self,
@@ -915,6 +1005,10 @@ class JobRunner:
     ) -> None:
         """Stop queue draining and settle tracked delayed retries, recordings, and uploads."""
         self._shutting_down = True
+        if self._durable_retry_task:
+            self._durable_retry_task.cancel()
+            await asyncio.gather(self._durable_retry_task, return_exceptions=True)
+            self._durable_retry_task = None
 
         retry_tasks = list(self._retry_tasks.values())
         for task in retry_tasks:
@@ -960,6 +1054,8 @@ class JobRunner:
                     if state:
                         await self._settle_post_processing_task_for_shutdown(task, state)
 
+        await self._recording_executor.shutdown()
+
         upload_tasks = list(self._upload_tasks.keys())
         if not upload_tasks:
             return
@@ -977,6 +1073,7 @@ class JobRunner:
                     self._mark_upload_interrupted(upload_request.job_id)
 
     def _mark_upload_interrupted(self, job_id: str) -> None:
+        self._durable_work.release(job_id, "upload")
         SessionLocal = get_session_local()
         session = SessionLocal()
         try:
@@ -1005,7 +1102,27 @@ class JobRunner:
             session.close()
 
     async def _run_upload_task(self, upload_request: UploadRequest) -> None:
-        await self._upload_runner.run_upload_task(upload_request)
+        try:
+            succeeded = await self._upload_runner.run_upload_task(upload_request)
+            if succeeded:
+                self._durable_work.succeed(upload_request.job_id, "upload")
+            else:
+                outcome = self._upload_runner.last_outcome.get(upload_request.job_id)
+                self._durable_work.fail(
+                    upload_request.job_id,
+                    "upload",
+                    error="YouTube upload incomplete",
+                    retryable=getattr(outcome, "retryable", True),
+                    needs_review=getattr(outcome, "needs_review", False),
+                )
+        except asyncio.CancelledError:
+            self._durable_work.release(upload_request.job_id, "upload")
+            raise
+        except Exception:
+            self._durable_work.fail(upload_request.job_id, "upload", error="Upload worker failed; recording retained")
+            raise
+        finally:
+            self._upload_runner.last_outcome.pop(upload_request.job_id, None)
 
 
 _runner_instance: JobRunner | None = None

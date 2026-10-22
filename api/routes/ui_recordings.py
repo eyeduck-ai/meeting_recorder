@@ -12,6 +12,8 @@ from api.routes import ui_common, ui_recording_artifacts
 from database.models import JobStatus, RecordingJob
 from database.session import get_db
 from recording.remux import delete_recording_artifacts
+from services.errors import ValidationError
+from services.job_actions import ensure_job_deletable, unfinished_work_exists
 
 router = APIRouter(tags=["ui"])
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ async def recordings_delete_all(db: Session = Depends(get_db)):
         db.query(RecordingJob)
         .filter(
             RecordingJob.status == JobStatus.SUCCEEDED,
+            ~unfinished_work_exists(),
             or_(RecordingJob.output_path != None, RecordingJob.youtube_video_id != None),
         )
         .all()
@@ -104,6 +107,10 @@ async def recordings_delete(job_id: str, db: Session = Depends(get_db)):
     """Delete recording file and job."""
     job = db.query(RecordingJob).filter(RecordingJob.job_id == job_id).first()
     if job:
+        try:
+            ensure_job_deletable(db, job)
+        except ValidationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         _delete_job_recording_files(job)
         db.delete(job)
         db.commit()

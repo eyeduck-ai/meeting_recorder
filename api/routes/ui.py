@@ -11,6 +11,7 @@ from api.routes import (
     ui_dashboard,
     ui_jobs,
     ui_meetings,
+    ui_operations,
     ui_recordings,
     ui_schedules,
     ui_settings,
@@ -20,6 +21,7 @@ router = APIRouter(tags=["ui"])
 
 router.include_router(ui_auth.router)
 router.include_router(ui_dashboard.router)
+router.include_router(ui_operations.router)
 router.include_router(ui_meetings.router)
 router.include_router(ui_schedules.router)
 router.include_router(ui_settings.router)

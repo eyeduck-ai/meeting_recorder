@@ -152,3 +152,15 @@
 - Telegram helper 吞掉例外以保護錄影後，外層不能無條件記成功；舊 message ID 也不是本次 API 成功證據。驗證要區分發送嘗試、API acknowledged 與已讀，並保存 fallback 新 ID。
 - canonicalization 不只更新 preferred output：刪除來源前後要同步 raw、trimmed 與 runtime metadata 的同檔引用；歷史裁剪影片片長不能直接改成原片片長。
 - 稽核生產 log 時必須先排除開發測試產生的假錯誤；測試用獨立 LOGS_DIR，避免混淆真實排程結果。
+
+
+## 2026-10 架構可靠性改善
+
+- SQLite 的 async function 不代表不阻塞：media await 期間不能保留 writer transaction，檔案掃描與同步 DB 應使用短 worker-thread Session；跨 await 後要重讀 preserve／path／durable 狀態。
+- CRON weekday 不可逐數字字串替換，步進分母也會被誤改；驗證、next fire、catch-up previous fire 必須共用標準 parser，測試實際日期與 DOM/DOW OR。
+- 「錄影成功」不能代表「上傳成功」。intent 必須先持久化再啟動 task，remote accepted/response lost 需查 resumable session；沒有外部 idempotency 時不能承諾 exactly-once 或盲目重送。
+- per-chat message ID 才能安全 edit；單一 legacy ID 無法推定 chat。acknowledged 代表 API 已接受，不是使用者已讀。
+- 非 root Docker 升級必須處理既有 root-owned volumes；不能為方便回復 privileged。用無網路 synthetic browser/audio smoke 驗證實際畫面與聲音。
+- 測試 collection 必須隔離 `.env` 的 DB、日誌與外部 credentials；新增持久化路徑容易讓原本純 mock test 意外觸碰預設資料庫。
+- 維運頁需測有真實 upcoming schedule、legacy malformed runtime JSON 與 factory 契約；僅空資料測試抓不到 s.name 與 session getter 層級錯誤。
+- 真實媒體測試發現 AAC padding 使 format duration 為 30.021 秒，coarse scan 包含 30 秒而 FFmpeg fps 預設 EOF rounding 只輸出到 28 秒。`eof_action=pass` 保留最後真實解碼 frame；不可忽略未知樣本或填 inactive，缺音軌仍應保守保留原片。

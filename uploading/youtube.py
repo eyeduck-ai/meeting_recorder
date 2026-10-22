@@ -8,13 +8,17 @@ This module handles:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -59,6 +63,10 @@ class UploadError(Exception):
     """Base exception for upload errors."""
 
     pass
+
+
+class UploadNeedsReviewError(UploadError):
+    """Completion cannot safely be determined; never initialize a replacement automatically."""
 
 
 class AuthorizationError(UploadError):
@@ -134,6 +142,8 @@ class UploadResult:
     error_message: str | None = None
     uploaded_bytes: int = 0
     total_bytes: int = 0
+    retryable: bool = True
+    needs_review: bool = False
 
 
 @dataclass
@@ -169,12 +179,20 @@ class TokenStorage:
     def save(self, token: OAuthToken) -> None:
         """Save token to storage."""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.storage_path, "w") as f:
-            json.dump(token.to_dict(), f)
+        temporary_path = None
         try:
-            self.storage_path.chmod(0o600)
-        except OSError as e:
-            logger.debug(f"Could not restrict token file permissions: {e}")
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self.storage_path.parent, prefix=".youtube-token-", delete=False
+            ) as stream:
+                temporary_path = Path(stream.name)
+                os.fchmod(stream.fileno(), 0o600)
+                json.dump(token.to_dict(), stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary_path.replace(self.storage_path)
+        finally:
+            if temporary_path:
+                temporary_path.unlink(missing_ok=True)
         logger.info("Token saved successfully")
 
     def delete(self) -> None:
@@ -400,9 +418,16 @@ class YouTubeUploader:
         )
 
         if response.status_code != 200:
-            self._token = None
-            self.token_storage.delete()
-            raise AuthorizationError(f"Failed to refresh token: {response.text}")
+            if response.status_code == 429 or response.status_code >= 500:
+                raise UploadFailedError("Temporary token refresh failure")
+            try:
+                revoked = response.json().get("error") == "invalid_grant"
+            except ValueError:
+                revoked = False
+            if revoked:
+                self._token = None
+                self.token_storage.delete()
+            raise AuthorizationError("Token refresh rejected")
 
         data = response.json()
         new_token = OAuthToken(
@@ -448,46 +473,15 @@ class YouTubeUploader:
         video_path: Path,
         metadata: VideoMetadata,
         progress_callback: Callable[[int, int], None] | None = None,
+        *,
+        resume_state: dict | None = None,
+        state_callback: Callable[[dict], None] | None = None,
     ) -> UploadResult:
-        """Upload a video to YouTube using resumable upload.
-
-        Args:
-            video_path: Path to video file
-            metadata: Video metadata (title, description, etc.)
-            progress_callback: Optional callback(uploaded_bytes, total_bytes)
-
-        Returns:
-            UploadResult with video ID on success
-        """
-        if not video_path.exists():
-            return UploadResult(
-                status=UploadStatus.FAILED,
-                error_message=f"Video file not found: {video_path}",
-            )
-
-        file_size = video_path.stat().st_size
-        logger.info(f"Starting upload: {video_path.name} ({file_size / 1024 / 1024:.1f} MB)")
-
-        try:
-            # Get valid access token
-            access_token = await self.ensure_valid_token()
-
-            # Initialize resumable upload
-            upload_url = await self._init_resumable_upload(
-                access_token=access_token,
-                file_size=file_size,
-                metadata=metadata,
-            )
-
-            # Upload file in chunks with retry logic
-            video_id = await self._upload_file_resumable(
-                upload_url=upload_url,
-                video_path=video_path,
-                file_size=file_size,
-                progress_callback=progress_callback,
-            )
-
-            logger.info(f"Upload successful: video_id={video_id}")
+        """Upload or resume exactly one intent; persist the session before sending bytes."""
+        state = dict(resume_state or {})
+        if state.get("video_id"):
+            video_id = state["video_id"]
+            file_size = state.get("file_size", 0)
             return UploadResult(
                 status=UploadStatus.SUCCEEDED,
                 video_id=video_id,
@@ -495,25 +489,64 @@ class YouTubeUploader:
                 uploaded_bytes=file_size,
                 total_bytes=file_size,
             )
+        if not video_path.exists():
+            return UploadResult(status=UploadStatus.FAILED, error_message="Upload source unavailable", retryable=False)
+        file_size = video_path.stat().st_size
 
-        except AuthorizationError as e:
-            logger.error(f"Authorization error: {e}")
+        def fingerprint() -> str:
+            with video_path.open("rb") as source:
+                return hashlib.file_digest(source, "sha256").hexdigest()
+
+        def persist() -> None:
+            if state_callback:
+                state_callback(dict(state))
+
+        try:
+            digest = await asyncio.to_thread(fingerprint)
+            if state.get("session_uri") and (state.get("sha256") != digest or state.get("file_size") != file_size):
+                raise UploadNeedsReviewError("Upload source changed; existing session requires review")
+            access_token = await self.ensure_valid_token()
+            upload_url = state.get("session_uri")
+            uploaded_bytes, video_id = 0, None
+            if upload_url:
+                uploaded_bytes, video_id = await self._query_upload_status(upload_url, file_size)
+            else:
+                upload_url = await self._init_resumable_upload(access_token, file_size, metadata)
+                state.update(session_uri=upload_url, sha256=digest, file_size=file_size, uploaded_bytes=0)
+                persist()
+
+            def checkpoint(offset: int, total: int) -> None:
+                state["uploaded_bytes"] = offset
+                persist()
+                if progress_callback:
+                    progress_callback(offset, total)
+
+            if not video_id:
+                video_id = await self._upload_file_resumable(
+                    upload_url,
+                    video_path,
+                    file_size,
+                    checkpoint,
+                    initial_offset=uploaded_bytes,
+                )
+            state.update(video_id=video_id, uploaded_bytes=file_size)
+            persist()
+            logger.info("Upload successful: video_id=%s", video_id)
             return UploadResult(
-                status=UploadStatus.FAILED,
-                error_message=str(e),
+                status=UploadStatus.SUCCEEDED,
+                video_id=video_id,
+                video_url=f"https://youtu.be/{video_id}",
+                uploaded_bytes=file_size,
+                total_bytes=file_size,
             )
-        except QuotaExceededError as e:
-            logger.error(f"Quota exceeded: {e}")
-            return UploadResult(
-                status=UploadStatus.FAILED,
-                error_message=str(e),
-            )
-        except Exception as e:
-            logger.error(f"Upload failed: {e}")
-            return UploadResult(
-                status=UploadStatus.FAILED,
-                error_message=str(e),
-            )
+        except UploadNeedsReviewError as exc:
+            return UploadResult(status=UploadStatus.FAILED, error_message=str(exc), retryable=False, needs_review=True)
+        except (AuthorizationError, QuotaExceededError) as exc:
+            # Provider responses may contain URLs/tokens; expose only a stable safe category.
+            return UploadResult(status=UploadStatus.FAILED, error_message=type(exc).__name__, retryable=False)
+        except Exception as exc:
+            logger.warning("YouTube upload attempt failed (%s); resumable state retained", type(exc).__name__)
+            return UploadResult(status=UploadStatus.FAILED, error_message=type(exc).__name__)
 
     async def _init_resumable_upload(
         self,
@@ -566,7 +599,8 @@ class YouTubeUploader:
         if not upload_url:
             raise UploadFailedError("No upload URL in response")
 
-        logger.debug(f"Resumable upload initialized: {upload_url}")
+        self._validate_upload_uri(upload_url)
+        logger.debug("Resumable upload initialized")
         return upload_url
 
     async def _upload_file_resumable(
@@ -575,130 +609,139 @@ class YouTubeUploader:
         video_path: Path,
         file_size: int,
         progress_callback: Callable[[int, int], None] | None = None,
+        *,
+        initial_offset: int = 0,
     ) -> str:
-        """Upload file using resumable upload protocol.
-
-        Returns:
-            Video ID
-        """
-        uploaded_bytes = 0
+        """Send bounded chunks; after uncertain responses ask the server, never guess offsets."""
+        self._validate_upload_uri(upload_url)
+        uploaded_bytes = initial_offset
         retry_count = 0
-        retry_delay = self.INITIAL_RETRY_DELAY
-
         client = await self._get_http_client()
-
         while uploaded_bytes < file_size:
-            # Calculate chunk size
-            remaining = file_size - uploaded_bytes
-            chunk_size = min(self.CHUNK_SIZE, remaining)
-
-            # Read chunk
-            chunk = await self._read_chunk(video_path, uploaded_bytes, chunk_size)
+            chunk = await self._read_chunk(video_path, uploaded_bytes, min(self.CHUNK_SIZE, file_size - uploaded_bytes))
             if not chunk:
-                raise UploadFailedError("Upload incomplete")
-
-            actual_chunk_size = len(chunk)
-
-            # Build content range header
-            content_range = f"bytes {uploaded_bytes}-{uploaded_bytes + actual_chunk_size - 1}/{file_size}"
-
+                raise UploadNeedsReviewError("Upload source truncated")
             try:
                 response = await client.put(
                     upload_url,
                     headers={
-                        "Content-Length": str(actual_chunk_size),
-                        "Content-Range": content_range,
+                        "Authorization": f"Bearer {await self.ensure_valid_token()}",
+                        "Content-Type": "video/mp4",
+                        "Content-Length": str(len(chunk)),
+                        "Content-Range": f"bytes {uploaded_bytes}-{uploaded_bytes + len(chunk) - 1}/{file_size}",
                     },
                     content=chunk,
-                    timeout=300.0,  # 5 minutes for large chunks
+                    timeout=300.0,
                 )
-
                 if response.status_code in (200, 201):
-                    # Upload complete
-                    data = response.json()
-                    video_id = data.get("id")
+                    video_id = response.json().get("id")
+                    if not video_id:
+                        raise UploadNeedsReviewError("YouTube completed without a video ID; requires review")
                     if progress_callback:
                         progress_callback(file_size, file_size)
                     return video_id
-
-                elif response.status_code == 308:
-                    # Resume incomplete - more chunks needed
-                    range_header = response.headers.get("Range", "")
-                    if range_header:
-                        # Parse "bytes=0-12345" to get uploaded bytes
-                        uploaded_bytes = int(range_header.split("-")[1]) + 1
-                    else:
-                        uploaded_bytes += actual_chunk_size
-
+                if response.status_code == 308:
+                    offset = self._response_offset(response, file_size)
+                    if offset <= uploaded_bytes:
+                        raise httpx.TransportError("Upload made no progress")
+                    uploaded_bytes = offset
                     if progress_callback:
                         progress_callback(uploaded_bytes, file_size)
-
-                    # Reset retry counter on success
                     retry_count = 0
-                    retry_delay = self.INITIAL_RETRY_DELAY
+                    continue
+                if response.status_code in (404, 410):
+                    raise UploadNeedsReviewError("Upload session expired; check YouTube before retrying")
+                if response.status_code in (401, 403):
+                    raise AuthorizationError("Upload authorization rejected")
+                if response.status_code not in (429, 500, 502, 503, 504):
+                    raise UploadNeedsReviewError("Upload rejected; existing session requires review")
+            except httpx.TransportError:
+                pass
+            retry_count += 1
+            if retry_count > self.MAX_RETRIES:
+                raise UploadFailedError("Upload retries exhausted")
+            await asyncio.sleep(min(self.INITIAL_RETRY_DELAY * 2 ** (retry_count - 1), self.MAX_RETRY_DELAY))
+            uploaded_bytes, video_id = await self._query_upload_status(upload_url, file_size)
+            if video_id:
+                if progress_callback:
+                    progress_callback(file_size, file_size)
+                return video_id
+            if progress_callback:
+                progress_callback(uploaded_bytes, file_size)
+        # A final 308 is not proof of completion, even if it acknowledges all bytes.
+        _, video_id = await self._query_upload_status(upload_url, file_size)
+        if video_id:
+            return video_id
+        raise UploadFailedError("Upload completion pending")
 
-                elif response.status_code in (500, 502, 503, 504):
-                    # Server error - retry with backoff
-                    retry_count += 1
-                    if retry_count > self.MAX_RETRIES:
-                        raise UploadFailedError(f"Upload failed after {self.MAX_RETRIES} retries")
+    @staticmethod
+    def _validate_upload_uri(upload_url: str) -> None:
+        parsed = urlsplit(upload_url)
+        if parsed.scheme != "https" or parsed.hostname not in ("www.googleapis.com", "youtube.googleapis.com"):
+            raise UploadNeedsReviewError("Invalid resumable endpoint; requires review")
+        if parsed.username or parsed.password or parsed.port not in (None, 443):
+            raise UploadNeedsReviewError("Invalid resumable endpoint; requires review")
 
-                    logger.warning(f"Server error {response.status_code}, retrying in {retry_delay}s")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, self.MAX_RETRY_DELAY)
+    @staticmethod
+    def _response_offset(response: httpx.Response, file_size: int) -> int:
+        value = response.headers.get("Range", "")
+        if not value:
+            return 0
+        try:
+            if not value.startswith("bytes=0-"):
+                raise ValueError
+            offset = int(value.removeprefix("bytes=0-")) + 1
+            if offset < 0 or offset > file_size:
+                raise ValueError
+            return offset
+        except ValueError as exc:
+            raise UploadNeedsReviewError("Invalid upload acknowledgement; requires review") from exc
 
-                    # Query upload status to resume
-                    uploaded_bytes = await self._query_upload_status(upload_url, file_size)
-
-                elif response.status_code == 404:
-                    # Upload session expired
-                    raise UploadFailedError("Upload session expired")
-
-                else:
-                    raise UploadFailedError(f"Upload failed with status {response.status_code}: {response.text}")
-
-            except httpx.TimeoutException:
-                retry_count += 1
-                if retry_count > self.MAX_RETRIES:
-                    raise UploadFailedError("Upload timed out")
-
-                logger.warning(f"Upload timeout, retrying in {retry_delay}s")
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, self.MAX_RETRY_DELAY)
-
-                # Query upload status to resume
-                uploaded_bytes = await self._query_upload_status(upload_url, file_size)
-
-        raise UploadFailedError("Upload incomplete")
-
-    async def _query_upload_status(self, upload_url: str, file_size: int) -> int:
-        """Query resumable upload status to get uploaded bytes.
-
-        Returns:
-            Number of bytes uploaded
-        """
+    async def _query_upload_status(self, upload_url: str, file_size: int) -> tuple[int, str | None]:
+        """Recover both offset and completed video ID after process/network interruption."""
+        self._validate_upload_uri(upload_url)
         client = await self._get_http_client()
         response = await client.put(
             upload_url,
             headers={
+                "Authorization": f"Bearer {await self.ensure_valid_token()}",
                 "Content-Length": "0",
                 "Content-Range": f"bytes */{file_size}",
             },
         )
-
         if response.status_code == 308:
-            range_header = response.headers.get("Range", "")
-            if range_header:
-                return int(range_header.split("-")[1]) + 1
-        elif response.status_code in (200, 201):
-            # Already complete
-            return file_size
-
-        return 0
+            return self._response_offset(response, file_size), None
+        if response.status_code in (200, 201):
+            video_id = response.json().get("id")
+            if not video_id:
+                raise UploadNeedsReviewError("YouTube completed without a video ID; requires review")
+            return file_size, video_id
+        if response.status_code in (404, 410):
+            raise UploadNeedsReviewError("Upload session expired; check YouTube before retrying")
+        if response.status_code in (401, 403):
+            raise AuthorizationError("Upload authorization rejected")
+        raise UploadFailedError("Unable to verify upload session; retry existing session later")
 
     # -------------------------------------------------------------------------
     # Video Info
     # -------------------------------------------------------------------------
+
+    async def get_owned_video_info(self, video_id: str) -> dict | None:
+        """Verify an operator-supplied recovery ID belongs to the authorized channel."""
+        info = await self.get_video_info(video_id)
+        if not info:
+            return None
+        token = await self.ensure_valid_token()
+        client = await self._get_http_client()
+        response = await client.get(
+            f"{YOUTUBE_API_URL}/channels",
+            params={"part": "id", "mine": "true"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if response.status_code != 200:
+            raise UploadFailedError("Unable to verify authorized channel")
+        owned_ids = {item.get("id") for item in response.json().get("items", [])}
+        return info if info.get("snippet", {}).get("channelId") in owned_ids else None
 
     async def get_video_info(self, video_id: str) -> dict | None:
         """Get information about an uploaded video.

@@ -8,13 +8,14 @@ from fastapi.staticfiles import StaticFiles
 from api.auth import AuthMiddleware
 from api.cors import configure_cors
 from api.routes import detection as detection_routes
-from api.routes import health, jobs, meetings, schedules, settings, ui, youtube
+from api.routes import health, jobs, meetings, operations, schedules, settings, ui, youtube
 from api.routes import recording_management as recording_mgmt_routes
 from api.routes import telegram as telegram_routes
 from config.logging_config import setup_logging
 from config.settings import get_settings
 from database.models import JobStatus, RecordingJob
 from database.session import get_session_local, init_db
+from recording.remux import recording_file_variants
 from recording.worker import RecordingWorker, reset_worker_instance, set_worker_instance
 from scheduling.job_runner import JobRunner, reset_job_runner_instance, set_job_runner_instance
 from scheduling.scheduler import SchedulerService, reset_scheduler_instance, set_scheduler_instance
@@ -32,7 +33,9 @@ def _job_has_existing_recording_file(job: RecordingJob) -> bool:
         if not path_value:
             continue
         try:
-            if Path(path_value).exists():
+            # Remux can commit its MP4 and remove MKV before the final DB path
+            # update. The sibling still proves successful capture after a crash.
+            if any(path.is_file() for path in recording_file_variants(Path(path_value))):
                 return True
         except OSError:
             continue
@@ -100,6 +103,7 @@ async def lifespan(app: FastAPI):
     scheduler = None
     job_runner = None
     telegram_started = False
+    notification_delivery = None
     try:
         init_db()
         logging.info("Database initialized")
@@ -118,6 +122,12 @@ async def lifespan(app: FastAPI):
         set_job_runner_instance(job_runner)
         set_scheduler_instance(scheduler)
 
+        from telegram_bot.notifications import get_notification_delivery_service
+
+        notification_delivery = get_notification_delivery_service()
+        await notification_delivery.start()
+        await job_runner.recover_durable_work()
+
         scheduler.set_job_callback(job_runner.queue_schedule)
         scheduler.start()
         logging.info("Scheduler started")
@@ -132,21 +142,38 @@ async def lifespan(app: FastAPI):
     finally:
         logging.info("Meeting Recorder shutting down...")
 
+        if scheduler is not None:
+            try:
+                scheduler.stop()
+            except Exception:
+                logging.exception("Scheduler shutdown failed")
+
+        if job_runner is not None:
+            try:
+                await job_runner.shutdown()
+            except Exception:
+                logging.exception("Recording runner shutdown failed")
+
+        if notification_delivery is not None:
+            try:
+                await notification_delivery.shutdown()
+            except Exception:
+                logging.exception("Notification outbox shutdown failed")
+
         if telegram_started:
             from telegram_bot.bot import stop_bot
 
-            await stop_bot()
+            try:
+                await stop_bot()
+            except Exception:
+                logging.exception("Telegram shutdown failed")
 
-        if scheduler is not None:
-            scheduler.stop()
-            logging.info("Scheduler stopped")
+        try:
+            await close_youtube_uploader()
+        except Exception:
+            logging.exception("YouTube client shutdown failed")
 
-        if job_runner is not None:
-            await job_runner.shutdown()
-
-        await close_youtube_uploader()
-
-        for attr in ("worker", "job_runner", "scheduler"):
+        for attr in ("worker", "job_runner", "scheduler", "health_probe"):
             if hasattr(app.state, attr):
                 delattr(app.state, attr)
         reset_scheduler_instance()
@@ -171,6 +198,7 @@ configure_cors(app, settings_config.cors_allowed_origin_list)
 # Include routers
 app.include_router(health.router)
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(operations.router, prefix="/api/v1")
 app.include_router(meetings.router, prefix="/api/v1")
 app.include_router(schedules.router, prefix="/api/v1")
 app.include_router(youtube.router, prefix="/api/v1")

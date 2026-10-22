@@ -8,13 +8,8 @@
 
 - 維持單機 Docker 與現有 provider/capture/post-processing/upload 邊界；當前規模不需拆微服務。
 - 本輪修正：live 影像像素分析依賴與未知回退、Jitsi 暫時連線失敗重試、Telegram 事件偏好／API 成功紀錄／fallback ID，以及 maintenance canonical artifact metadata。
-- P1：共用標準 CRON parser 並在入庫前編譯驗證；修正 weekday step/range 數字整段替換造成的錯誤（既有簡單 weekday 清單不受影響）。
-- P1：以 SQLite durable work/outbox 保存 post-processing、upload、notification 待辦與 retry state；重啟可續做且有冪等鍵，避免 succeeded 掩蓋尚未完成的上傳。
-- P1：maintenance 媒體處理移出 SQLite writer transaction，先驗證並行寫入與 event loop 延遲，再評估 WAL / busy timeout 與版本化 migration。
-- P2：建立 per-job/per-chat Telegram delivery 記錄；現有單一 message ID 無法可靠涵蓋多 chat，並應顯示各階段實際結果與 last error。
-- P2：分開 liveness、recording readiness 與 operations summary；非同步或快取 runtime probe，呈現執行版本、最近排程、上傳 backlog、probe unknown 與磁碟狀態。
-- P2：PR 加入真實編碼媒體、缺依賴、片長／音軌／靜止影像與重啟恢復測試；外部服務用 HTTP contract stub，整合現有重複 pytest/coverage 執行。
-- P2：在隔離 Docker smoke 驗證移除 privileged、專用 UID/GID、debug-only VNC 與 loopback port 預設，再調整正式部署。
+- 本輪架構改善已實作：標準 CRON owner、durable post-processing/upload、per-chat notification outbox、短 maintenance transaction、WAL/busy timeout 與版本化 schema、readiness/operations、真實媒體 PR CI、非 root Docker。以完整回歸、隔離 Docker 錄影及部署核對作為完成門檻。
+- 維持單一應用程序＋SQLite；新增持久化待辦不是跨主機 queue，不宣稱 exactly-once external delivery。Telegram send 與過期 YouTube session 的不確定結果需保留人工 reconciliation。
 
 ## P0：安全邊界
 
@@ -44,7 +39,7 @@
 ## P2：生命週期與資料庫演進
 
 - 將 global singleton 改由 FastAPI lifespan 與 `app.state` 管理，讓測試、重啟與 app lifecycle 更乾淨；runtime state 清理由 lifespan shutdown 直接負責，不保留單次使用的 private wrapper。
-- 將 ad hoc DB migration 從 `database/models.py` 拆離；中期導入 Alembic，避免 schema 演進失控。
+- 將 ad hoc DB migration 從 `database/models.py` 拆離；使用有序 schema_migrations 與 rollback 測試管理演進；目前不另引入 Alembic。
 - 調整手動 trigger 的 queue/409 語意，讓 API 與 Web UI 行為一致。
 - 改善 secret/token at rest 的命名、文件與保護方式；已先完成 Rename + Redact，若未來需要真正加密再另行規劃。
 

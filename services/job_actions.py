@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from database.models import ErrorCode, JobStatus, RecordingJob, Schedule
+from database.models import DurableWork, ErrorCode, JobStatus, RecordingJob, Schedule
 from database.session import JobRepository
 from services.errors import NotFoundError, ValidationError
 from utils.timezone import utc_now
@@ -21,6 +21,23 @@ TERMINAL_JOB_STATUSES = {
     JobStatus.FAILED.value,
     JobStatus.CANCELED.value,
 }
+
+
+def unfinished_work_exists():
+    """Shared SQL predicate used when deleting a job or its recording artifacts."""
+    return (
+        DurableWork.__table__.select()
+        .with_only_columns(DurableWork.id)
+        .where(DurableWork.job_id == RecordingJob.job_id, DurableWork.state != "succeeded")
+        .exists()
+    )
+
+
+def ensure_job_deletable(db: Session, job: RecordingJob) -> None:
+    if job_status_value(job) not in TERMINAL_JOB_STATUSES:
+        raise ValidationError("Only terminal jobs can be deleted")
+    if db.query(DurableWork.id).filter(DurableWork.job_id == job.job_id, DurableWork.state != "succeeded").first():
+        raise ValidationError("Job has unfinished processing/upload work; resolve it before deletion")
 
 
 def job_status_value(job: RecordingJob) -> str:
@@ -102,16 +119,17 @@ class JobActionService:
 
     def delete_job(self, db: Session, job_id: str) -> JobActionResult:
         job = self._get_job(db, job_id)
-        status = job_status_value(job)
-        if status not in TERMINAL_JOB_STATUSES:
-            raise ValidationError("Only terminal jobs can be deleted")
-
+        ensure_job_deletable(db, job)
         db.delete(job)
         db.commit()
         return JobActionResult(message="Job deleted", job_id=job_id)
 
     def delete_terminal_jobs(self, db: Session) -> JobActionResult:
-        jobs = db.query(RecordingJob).filter(RecordingJob.status.in_(TERMINAL_JOB_STATUSES)).all()
+        jobs = (
+            db.query(RecordingJob)
+            .filter(RecordingJob.status.in_(TERMINAL_JOB_STATUSES), ~unfinished_work_exists())
+            .all()
+        )
         count = len(jobs)
         for job in jobs:
             db.delete(job)

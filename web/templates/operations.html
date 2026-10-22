@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="p-4 md:p-6 space-y-6 max-w-7xl mx-auto">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div><h1 class="text-2xl font-bold">維運狀態</h1><p class="text-sm text-gray-400 mt-1">更新時間 {{ operations.generated_at | localtime }} · <a href="/operations" class="text-blue-400 underline">重新整理</a></p></div>
+    <a class="btn btn-sm btn-outline" href="/api/v1/operations" target="_blank">查看狀態 JSON</a>
+  </div>
+  <p class="text-sm break-all text-gray-400">執行版本 <code>{{ operations.revision }}</code></p>
+  <div class="grid grid-cols-2 xl:grid-cols-4 gap-3">
+    <div class="bg-base-200 rounded-xl p-4"><div class="text-gray-400 text-sm">錄製環境 / 排程器</div><div class="font-bold mt-2">{{ '就緒' if operations.health.recording_runtime.ready else '未就緒' }} / {{ '運行中' if operations.scheduler_running else '已停止' }}</div></div>
+    <div class="bg-base-200 rounded-xl p-4"><div class="text-gray-400 text-sm">錄影容量</div><div class="font-bold mt-2">{{ operations.capacity.active }} / {{ operations.capacity.limit }} 使用中</div><p class="text-xs mt-1">排隊 {{ operations.capacity.queued }} · 等待重試 {{ operations.capacity.retry_waiting }}</p></div>
+    <div class="bg-base-200 rounded-xl p-4"><div class="text-gray-400 text-sm">磁碟可用空間</div><div class="font-bold mt-2">{{ '%.1f' | format(operations.disk.free_bytes / 1073741824) }} GiB</div><p class="text-xs mt-1">{{ '足夠' if operations.disk.ready else '低於錄製門檻' }} · 門檻 {{ '%.1f' | format(operations.disk.minimum_free_bytes / 1073741824) }} GiB</p></div>
+    <div class="bg-base-200 rounded-xl p-4"><div class="text-gray-400 text-sm">最近 30 場探針未知比例</div><div class="font-bold mt-2">{% if operations.probe_totals.get('samples', 0) %}{{ '%.1f' | format(100 * operations.probe_totals.get('unknown', 0) / operations.probe_totals.samples) }}%{% else %}尚無樣本{% endif %}</div><p class="text-xs mt-1">{{ operations.probe_jobs_with_evidence }} 場有新版診斷；舊資料不視為零</p></div>
+  </div>
+  <section class="bg-base-200 rounded-xl p-4">
+    <h2 class="font-bold text-lg mb-2">後處理與上傳</h2>
+    <p class="text-sm text-gray-400 mb-3">錄影成功、上傳成功是不同階段。重試與重啟恢復使用已保存的工作；needs_review 需先確認 YouTube 頻道狀態。</p>
+    <div class="flex flex-wrap gap-2 mb-3">{% for state, count in operations.work.counts.items() %}<span class="badge badge-outline">{{ state }} {{ count }}</span>{% else %}<span class="text-gray-400">目前沒有新版待辦紀錄</span>{% endfor %}</div>
+    <div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>工作</th><th>階段</th><th>狀態</th><th>嘗試次數</th><th>下次重試</th><th>結果 / 原因</th><th>處理</th></tr></thead><tbody>
+    {% for item in operations.work['items'] %}<tr><td><a class="text-blue-400" href="/jobs/{{ item.job_id }}">{{ item.job_id }}</a></td><td>{{ item.kind }}</td><td>{{ item.state }}</td><td>{{ item.attempt_count }}</td><td>{{ item.next_attempt_at or '—' }}</td><td class="max-w-xs break-words">{{ item.last_error or '—' }}</td><td>{% if item.state == 'failed' %}<button class="btn btn-xs btn-outline" data-job-id="{{ item.job_id }}" data-kind="{{ item.kind }}" onclick="retryWork(this)">重新執行</button>{% endif %}{% if item.kind == 'upload' and item.state == 'needs_review' %}<button class="btn btn-xs btn-outline" data-job-id="{{ item.job_id }}" onclick="resolveUpload(this)">確認上傳狀態</button>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  <section class="bg-base-200 rounded-xl p-4">
+    <h2 class="font-bold text-lg mb-2">Telegram 通知</h2>
+    <p class="text-sm text-gray-400 mb-3">acknowledged 表示 Telegram API 已接受，不代表使用者已讀。uncertain 表示送出結果不明，請在 Telegram 核對；系統不會盲目重送。舊版通知沒有送達紀錄。</p>
+    <div class="flex flex-wrap gap-2 mb-3">{% for state, count in operations.notifications.counts.items() %}<span class="badge badge-outline">{{ state }} {{ count }}</span>{% else %}<span class="text-gray-400">目前沒有新版通知紀錄</span>{% endfor %}</div>
+    <div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>工作 / 收件者</th><th>事件</th><th>狀態</th><th>訊息 ID</th><th>嘗試</th><th>原因</th><th>接受時間</th><th>處理</th></tr></thead><tbody>
+    {% for item in operations.notifications['items'] %}<tr><td>{{ item.job_id }}<br><span class="text-gray-400">{{ item.chat_id }}</span></td><td>{{ item.phase }}</td><td>{{ item.state }}</td><td>{{ item.message_id or '—' }}</td><td>{{ item.attempt_count }}</td><td>{{ item.last_error or '—' }}</td><td>{{ item.acknowledged_at | localtime }}</td><td>{% if item.state in ['failed', 'uncertain'] %}<button class="btn btn-xs btn-outline" data-delivery-id="{{ item.id }}" data-state="{{ item.state }}" onclick="retryNotification(this)">重試</button>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  <section class="bg-base-200 rounded-xl p-4"><h2 class="font-bold text-lg mb-2">接下來的排程</h2><p class="text-sm text-gray-400">最近觸發：{{ operations.last_schedule_triggered_at | localtime }}</p>
+    <ul class="mt-3 space-y-2">{% for item in operations.upcoming_schedules %}<li>{{ item.next_run_at | localtime }} — {{ item.name }}</li>{% else %}<li class="text-gray-400">沒有即將執行的排程</li>{% endfor %}</ul>
+  </section>
+  <section class="bg-base-200 rounded-xl p-4"><h2 class="font-bold text-lg mb-2">最近錄影結果</h2>
+    <div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>工作 / 開始</th><th>錄影</th><th>長度</th><th>裁剪</th><th>停止原因</th><th>YouTube</th></tr></thead><tbody>
+    {% for item in operations.recent_jobs %}<tr><td><a href="/jobs/{{ item.job_id }}" class="text-blue-400">{{ item.job_id }}</a><br>{{ item.created_at | localtime }}</td><td>{{ item.status }}{% if item.error_code %}<br>{{ item.error_code }}{% endif %}</td><td>{{ '%.1f 秒' | format(item.duration_actual_sec) if item.duration_actual_sec is not none else '—' }}</td><td>{{ item.trim_status or '—' }}</td><td>{{ item.dynamic_extension_stop_reason or '—' }}</td><td>{% if item.youtube_video_id %}<a class="text-blue-400 underline" href="https://youtu.be/{{ item.youtube_video_id }}" rel="noopener" target="_blank">影片連結</a>{% else %}—{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+</div>
+<script>
+async function submitOperation(url, body, button) {
+  button.disabled = true;
+  try {
+    const response = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || data.error || '操作失敗');
+    location.reload();
+  } catch (error) { alert(error.message); button.disabled = false; }
+}
+function retryNotification(button) {
+  const uncertain = button.dataset.state === 'uncertain';
+  const message = uncertain ? '這則通知可能已送達。請先查看 Telegram；確認沒有收到，才重新傳送。確定尚未收到並重試？' : '重新嘗試傳送這則失敗通知？';
+  if (!confirm(message)) return;
+  submitOperation('/api/v1/operations/notifications/' + encodeURIComponent(button.dataset.deliveryId) + '/retry', {confirmed_absent: uncertain}, button);
+}
+function retryWork(button) {
+  if (!confirm('重新執行這個失敗階段？上傳將保留原本 session。')) return;
+  submitOperation('/api/v1/operations/work/' + encodeURIComponent(button.dataset.jobId) + '/' + encodeURIComponent(button.dataset.kind) + '/retry', {}, button);
+}
+function resolveUpload(button) {
+  const videoId = prompt('請先檢查 YouTube 頻道。若影片已完成，輸入影片 ID（非整個網址）。確認沒有影片時請輸入 NONE；取消則維持待確認。');
+  if (videoId === null) return;
+  const value = videoId.trim();
+  if (!value) return;
+  if (value === 'NONE' && !confirm('已檢查頻道並確認沒有這場錄影？這將建立新上傳，若原影片已存在可能造成重複。')) return;
+  submitOperation('/api/v1/youtube/upload/' + encodeURIComponent(button.dataset.jobId) + '/resolve', value === 'NONE' ? {confirm_no_existing_video: true} : {video_id: value}, button);
+}
+</script>
+{% endblock %}

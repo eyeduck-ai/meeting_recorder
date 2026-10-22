@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine
 
 
@@ -29,6 +30,7 @@ def test_get_engine_lazily_creates_engine(tmp_path, monkeypatch):
     try:
         assert engine is session_module._engine
         assert engine.dialect.name == "sqlite"
+        assert engine.hide_parameters is True
     finally:
         engine.dispose()
 
@@ -248,3 +250,120 @@ def test_session_module_does_not_keep_unused_context_manager():
     import database.session as session_module
 
     assert not hasattr(session_module, "get_db_session")
+
+
+def test_sqlite_engine_uses_wal_and_busy_timeout_on_each_connection(tmp_path, monkeypatch):
+    import database.session as session_module
+
+    monkeypatch.setattr(session_module, "_engine", None)
+    monkeypatch.setattr(
+        session_module, "get_settings", lambda: SimpleNamespace(database_url=f"sqlite:///{tmp_path / 'wal.db'}")
+    )
+    engine = session_module.get_engine()
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE sample (value INTEGER)")
+            connection.exec_driver_sql("INSERT INTO sample VALUES (1)")
+        with engine.connect() as writer, engine.connect() as reader:
+            for connection in (writer, reader):
+                assert connection.exec_driver_sql("PRAGMA journal_mode").scalar() == "wal"
+                assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar() == 5000
+                connection.commit()
+            writer.exec_driver_sql("UPDATE sample SET value=2")
+            # A writer does not block an independent read of the committed view.
+            assert reader.exec_driver_sql("SELECT value FROM sample").scalar() == 1
+            reader.commit()
+            writer.commit()
+            assert reader.exec_driver_sql("SELECT value FROM sample").scalar() == 2
+    finally:
+        engine.dispose()
+
+
+def _legacy_database(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'versioned.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE recording_jobs (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO recording_jobs (id) VALUES (42)")
+        connection.exec_driver_sql("CREATE TABLE schedules (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql("CREATE TABLE detection_logs (id INTEGER PRIMARY KEY)")
+    return engine
+
+
+def test_versioned_upgrade_preserves_legacy_rows_and_adds_architecture_tables(tmp_path):
+    from database.migrations import run_schema_migrations
+
+    engine = _legacy_database(tmp_path)
+    try:
+        run_schema_migrations(engine)
+        run_schema_migrations(engine)
+        with engine.connect() as connection:
+            versions = connection.exec_driver_sql("SELECT version, name FROM schema_migrations ORDER BY version").all()
+            tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'")}
+            assert connection.exec_driver_sql("SELECT id, attempt_no FROM recording_jobs").one() == (42, 1)
+            assert versions == [(1, "compatibility_baseline"), (2, "durable_pipeline_and_notifications")]
+            assert {"durable_work", "notification_deliveries"} <= tables
+            assert connection.exec_driver_sql("PRAGMA integrity_check").scalar() == "ok"
+    finally:
+        engine.dispose()
+
+
+def test_failed_versioned_migration_rolls_back_ddl_data_and_marker(tmp_path, monkeypatch):
+    import database.migrations as migrations
+
+    engine = _legacy_database(tmp_path)
+    migrations.run_schema_migrations(engine)
+
+    def broken_upgrade(connection):
+        connection.exec_driver_sql("CREATE TABLE partial_upgrade (id INTEGER)")
+        connection.exec_driver_sql("UPDATE recording_jobs SET attempt_no=999")
+        raise RuntimeError("injected upgrade failure")
+
+    monkeypatch.setattr(migrations, "MIGRATIONS", (*migrations.MIGRATIONS, (3, "broken", broken_upgrade)))
+    try:
+        with pytest.raises(RuntimeError, match="injected"):
+            migrations.run_schema_migrations(engine)
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("SELECT MAX(version) FROM schema_migrations").scalar() == 2
+            assert connection.exec_driver_sql("SELECT attempt_no FROM recording_jobs").scalar() == 1
+            assert not migrations.has_table(connection, "partial_upgrade")
+    finally:
+        engine.dispose()
+
+
+def test_recorded_version_one_upgrades_only_missing_version(tmp_path, monkeypatch):
+    import database.migrations as migrations
+
+    engine = _legacy_database(tmp_path)
+    all_migrations = migrations.MIGRATIONS
+    try:
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:1])
+        migrations.run_schema_migrations(engine)
+        with engine.connect() as connection:
+            assert not migrations.has_table(connection, "durable_work")
+            applied_at = connection.exec_driver_sql("SELECT applied_at FROM schema_migrations WHERE version=1").scalar()
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+        migrations.run_schema_migrations(engine)
+        with engine.connect() as connection:
+            assert migrations.has_table(connection, "durable_work")
+            assert migrations.has_table(connection, "notification_deliveries")
+            assert (
+                connection.exec_driver_sql("SELECT applied_at FROM schema_migrations WHERE version=1").scalar()
+                == applied_at
+            )
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM schema_migrations").scalar() == 2
+    finally:
+        engine.dispose()
+
+
+def test_versioned_runner_rejects_newer_unknown_database(tmp_path):
+    from database.migrations import run_schema_migrations
+
+    engine = _legacy_database(tmp_path)
+    run_schema_migrations(engine)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO schema_migrations (version, name) VALUES (999, 'future')")
+        with pytest.raises(RuntimeError, match="newer"):
+            run_schema_migrations(engine)
+    finally:
+        engine.dispose()

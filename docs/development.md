@@ -53,7 +53,7 @@ docker compose -p meeting-recorder-dev-<workspace-hash> logs -f app
 
 - `COMPOSE_PROJECT_NAME=meeting-recorder-dev-<workspace-hash>`
 - `APP_PORT=8001`
-- `VNC_PORT=5901`
+- VNC 預設關閉；明確載入 `docker-compose.debug.yml` 時才使用 `VNC_PORT=5901`
 - `MEETING_RECORDER_IMAGE=meeting-recorder:dev-<workspace-hash>`
 
 它也會檢查 Docker labels、working directory、host ports 與 image tag；若會碰到正式 recorder，就會拒絕執行。
@@ -66,11 +66,12 @@ docker compose -p meeting-recorder-dev-<workspace-hash> logs -f app
 | `docker-compose.override.yml` | 本地原始碼建置，建議透過 `scripts.dev_compose` 使用 |
 | `docker-compose.deploy.yml` | 從原始碼正式部署，使用 production runtime identity |
 | `docker-compose.prod.yml` | 使用 GHCR 已發布映像 |
+| `docker-compose.debug.yml` | 明確啟用 loopback VNC，連到 active job display |
 
 正式部署從原始碼建置時使用：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
+MEETING_RECORDER_REVISION=$(git rev-parse HEAD) docker compose -f docker-compose.yml -f docker-compose.deploy.yml up --build -d
 ```
 
 ### 本地原始碼開發
@@ -198,13 +199,22 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 - `services/recording_manager.py` 的 list、cleanup 與 disk usage 應共用單次 filesystem scan 產生的 entry/stat metadata；新增錄影檔功能時不要在同一 request 內重複 `rglob()` 或對同一影片重複 `stat()`。
 - 後續拆大型檔案時，優先選擇能用現有 tests 保護的邊界，並保留必要的相容 import 或同步更新測試 fixture。
 
+### Durable completed-file work
+
+- `DurableWork` 使用 `(job_id, kind)` 唯一鍵，kind 為 `post_process`／`upload`；狀態為 pending、running、retry_wait、succeeded、failed、needs_review。`services.durable_work.DurableWorkStore` 管短交易，`JobRunner` 管 dispatcher 與 tracked tasks。
+- `RecordingExecutor` 在 raw-success/finalizing DB transaction 同時保存 post-processing intent；post-processing 完成與 upload intent 建立同交易。只能恢復 explicit intent，不掃描所有舊 succeeded job 重新上傳。
+- `JobRunner.recover_durable_work()` 在 orphan cleanup 後、scheduler start 前恢復 running intent。工作重試最多 5 次、30 秒倍增退避；不占錄影 slot。shutdown 釋放正在執行的 claim 留待下次啟動。
+- YouTube 已準備檔案、SHA-256、resumable URI、server offset 存在私有 resume JSON；不能放進公開 API、log、runtime summary。續傳先查 server offset／已完成 video ID。過期 session 或檔案變動標 needs_review，不能猜測新建 session。
+- `POST /api/v1/youtube/upload` 建立待辦後立即回 `queued:true`；已有 video ID 回原連結。`POST /api/v1/youtube/upload/{job_id}/resolve` 接受 `video_id`（核對頻道）或 `confirm_no_existing_video:true`，兩者只能擇一，用於明確人工 reconciliation。
+- maintenance、job delete 與 recordings delete 都保護非 succeeded durable work 的檔案；temporary upload file 在失敗待續傳時需保留，成功後才清理。
+
 ### Runtime Lifecycle
 
 - FastAPI lifespan 是 worker、job runner 與 scheduler 的主要 owner。
 - `app.state.worker`、`app.state.job_runner`、`app.state.scheduler` 是 API/Web UI 入口的 runtime 來源。
 - `recording.worker.get_worker()`、`scheduling.job_runner.get_job_runner()`、`scheduling.scheduler.get_scheduler()` 保留為相容 accessor，主要供 Telegram、測試與非 FastAPI 入口 fallback 使用。
 - `api/routes/*.py` 不應在 import 階段呼叫 `init_db()` 或啟動任何 runtime。
-- FastAPI shutdown 需要停止 scheduler/Telegram、呼叫 `JobRunner.shutdown()` 收斂 delayed retry、active recording、tracked post-processing 與 tracked upload tasks，並關閉已建立的 YouTube uploader HTTP client；不要為了 close 而建立新的 uploader singleton。
+- FastAPI shutdown 依序停止 scheduler、呼叫 `JobRunner.shutdown()` 收斂 delayed retry、active recording、tracked post-processing 與 tracked upload task，再停止 notification outbox／Telegram／YouTube clientss，並關閉已建立的 YouTube uploader HTTP client；不要為了 close 而建立新的 uploader singleton。
 - APScheduler 會新增 internal job `storage_maintenance_daily`，每日 03:30 local time 執行 storage maintenance；它不是使用者 recording schedule，不應寫入 schedule lifecycle 欄位。
 
 ### Database Layer
@@ -212,9 +222,9 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 - `database/base.py` 只定義 SQLAlchemy declarative `Base`。
 - `database/models.py` 只放 ORM model、仍被呼叫端使用的 enum 與 model helper method；provider 名稱由 provider registry metadata 作為單一來源，不再保留 `ProviderType` enum；legacy `duration_mode` 只保留為 persisted string column / migration target，不再保留 `DurationMode` enum。不要從這裡 re-export DB lifecycle helper，也不要為 API response 保留通用 ORM `to_dict()` serializer。
 - `database/session.py` 是 engine/session factory、FastAPI `get_db()` dependency 與 `init_db()` 的 owner，也保留 `JobRepository` 與 recording job result mapping helper；非 FastAPI 入口應直接使用 `get_session_local()` 建立明確生命週期的 session，不要新增第二套 context-manager wrapper。
-- `database/migrations.py` 集中 SQLite idempotent ad hoc migration helper，包括 `run_schema_migrations()` 與 `ensure_column()`；legacy schedule 欄位如 `duration_mode` 與 `dry_run` 也由這裡補齊，不再保留一次性手動 SQLite migration script。
+- `database/migrations.py` 集中 SQLite versioned migration，包括 `run_schema_migrations()` 與 compatibility `ensure_column()`；legacy schedule 欄位如 `duration_mode` 與 `dry_run` 也由這裡補齊，不再保留一次性手動 SQLite migration script。
 
-目前尚未正式導入 Alembic；`init_db()` 仍會先 `Base.metadata.create_all()`，再執行 SQLite idempotent migrations。後續導入 Alembic 時，metadata source 應以 `database/base.py` 的 `Base` 加上 `database/models.py` 的 ORM model 為準。
+`init_db()` 先建立 metadata 中缺少的表，再執行 `schema_migrations` 有序版本：v1 compatibility baseline、v2 durable work 與 notification deliveries。版本交易使用 `BEGIN IMMEDIATE`，DDL、資料與版本 marker 失敗一起 rollback；拒絕未知新版或缺口。SQLite 每條 connection 設定 WAL 與 `busy_timeout=5000`。線上備份使用 `sqlite3.Connection.backup()`；不可只複製 `.db`。這個單機部署使用內建版本化 migration，不額外引入 Alembic。
 
 ### 受控並行錄製
 
@@ -275,6 +285,9 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 
 ### 排程行為
 
+`scheduling.cron.StandardCronTrigger` 與 `previous_fire_time()` 共用 croniter 標準 5 欄 parser。schedule create/update/enable 先驗證後存 DB；APScheduler next fire 與 catch-up previous fire 同語義，禁止自行以字串替換 weekday 數字。`0`／`7`、名稱、range/step、DOM/DOW OR 均有真實日期回歸測試。
+
+
 - `ScheduleType` 支援 `once` 與 `cron`
 - CRON 使用標準五欄位格式，scheduler 內部會把 weekday 轉成 APScheduler 格式
 - scheduler 會在啟動時從 DB 載入已啟用排程
@@ -301,6 +314,9 @@ Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪�
 
 ### Storage maintenance
 
+`StorageMaintenanceService` 不可持有 writer transaction 跨越 FFmpeg await。每個同步階段使用 worker thread 內的獨立 Session；轉檔完成以短 `BEGIN IMMEDIATE` 重讀路徑、preserve、job/durable 狀態，commit 新路徑後才刪 MKV。caller Session 若有未提交變更會拒絕 maintenance，避免隱性提交業務資料。
+
+
 個別原檔可在 `runtime_summary_json.local_recording_retention` 寫入 `{ "preserve": true, "reason": "..." }`。僅 boolean `true` 會略過該 job 的 maintenance retention 與 MKV canonicalization，dry-run 亦同；其他 diagnostics／log retention 不受影響。操作員確認可釋放原檔後，才移除或明確取消標記；不新增隱含到期日。
 
 - 本機長期錄影格式是 `.mp4`。錄製仍先輸出 `.mkv` 以提高錄製穩定性；raw capture 成功後，`RecordingPostProcessor` 會 best-effort fast remux preferred output 成 validated `.mp4`，成功後刪除對應 `.mkv` 並把 `recording_jobs.output_path/file_size/runtime_summary_json` 改指 MP4。
@@ -308,7 +324,7 @@ Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪�
 - Remux、MP4 validation、duration probe 與 thumbnail generation 等一般 media subprocess 應使用 `recording.subprocess_utils.run_bounded_subprocess()`，統一 timeout、terminate/kill cleanup、stdout/stderr excerpt 與 optional stderr log；smart trim 的 streaming trim runner 與 transcode progress runner 保留專用 streaming 實作。
 - Maintenance 的 MKV → MP4 轉換需同步更新指向該來源的 raw/trimmed path 與 runtime summary，保留不同 artifact 的裁剪 metadata 與片長。
 - 若 MP4 canonicalization 失敗，錄影 job 不會因此失敗；DB 保留原 `.mkv`，每日 maintenance 下次會重試 legacy MKV canonicalization。
-- YouTube 自動與手動上傳成功都必須寫入 `youtube_video_id` 與 `youtube_uploaded_at`。Legacy MKV 在上傳前會先建立本機 canonical MP4；只有 upload path 會依 `FFMPEG_TRANSCODE_ON_UPLOAD` 產生 temporary upload MP4，完成或失敗後都不應長期留下第二份影片。
+- YouTube 自動與手動上傳成功都必須寫入 `youtube_video_id` 與 `youtube_uploaded_at`。Legacy MKV 在上傳前會先建立本機 canonical MP4；只有 upload path 會依 `FFMPEG_TRANSCODE_ON_UPLOAD` 產生 temporary upload MP4，成功後清理 temporary file；失敗但仍可續傳／待人工確認時保留 prepared file，避免 session 來源改變。
 - 已上傳 YouTube 且本機錄影已存在 14 天以上時，maintenance 會刪除本機影片與 thumbnail，保留 DB job 與 YouTube link，並寫入 `local_recording_deleted_at` / `local_recording_cleanup_reason`。
 - `diagnostics/` 不分 provider 統一保留 14 天；刪除後會清掉 job 的 `diagnostic_dir` 與 diagnostic flags。`runtime_summary_json` 仍保留在 DB。
 - Rotated app logs 保留 14 天，當前 `logs/app.log` 與 `.gitkeep` 佔位檔永遠不由 maintenance 刪除。Docker container logs 由 Compose `json-file` rotation 控制，預設 `20m x 5`。
@@ -330,7 +346,12 @@ Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪�
 
 ### 核心 HTTP 入口
 
-- `/health`：健康檢查
+- `/health/live`：只確認 event loop 存活
+- `/health/ready`：DB、音訊 runtime、scheduler readiness，未就緒 HTTP 503
+- `/health`：相容健康檢查；`services.health.HealthProbe` 將 bounded subprocess/DB probe 放到 thread，single-flight、10 秒快取、7 秒呼叫期限
+- `GET /api/v1/operations` 與 `/operations`：受認證保護的版本、容量、磁碟、排程、最近工作、durable backlog 與 notification ledger；不輸出 payload、session URL 或會議密碼
+- `POST /api/v1/operations/work/{job_id}/{kind}/retry`：明確重試 failed post_process/upload；needs_review 必須走 upload resolve
+- `POST /api/v1/operations/notifications/{delivery_id}/retry`：重排失敗通知；uncertain 必須傳 `{ "confirmed_absent": true }`，acknowledged/stale 禁止重送
 - `/api`：服務與環境概覽
 - `/api/environment`：目前錄製能力與執行環境狀態
 
@@ -380,7 +401,7 @@ Storage maintenance 會刪除超過 14 天的 detection logs；SQLite 部署刪�
 
 Telegram `/list` 會透過 `JobRuntimeStateService` 顯示 active recording job、FIFO queued count 與 retry waiting count。`/stop` 無參數時使用同一份 snapshot 選出最新 active recording job；多路錄製時應優先使用 `/list` 取得 job id，再用 `/stop <job_id>` 精準停止或取消 queued/retry waiting job。Telegram stop 也必須走 `JobActionService`，不要直接呼叫 worker cancel flag。Telegram create schedule wizard 的 queue warning 應看 snapshot `available_slots`，不要恢復 busy flag 判斷容量是否已滿。
 
-Telegram recording stage、completion、failure、retry 與 upload notifications 都是 best-effort；send/edit/fallback-send 會以最多 3 chat 的 bounded concurrent fanout 執行，且每個 Telegram API 呼叫都有 10 秒 timeout。Timeout 或 API exception 只記錄 log，不能阻斷錄製、後處理或上傳主流程；Telegram 回報 `Message is not modified` 時視為 edit no-op success，不可 fallback-send 造成重複訊息。Recording lifecycle notification 的使用者可見內容固定使用英文，標題優先透過 `recording_jobs.schedule_id -> schedules.meeting_id -> meetings.name` 顯示有效 meeting name；空白或含 replacement character 的壞 label 會被略過，接著 fallback 有效且非 generic 的 `display_name`，最後才 fallback `meeting_code`。訊息會顯示 Provider / Status，Started / Ended 使用設定時區的 `YYYY-MM-DD HH:MM`，Duration 使用 minutes。通知依事件選用 `start` / `complete` / `failure` / `upload` 偏好；成功 log 僅在 Telegram API 接受時寫入，另記錄 job、事件類型、chat、message ID 與部分失敗數量，並不代表使用者已讀。fallback-send 回傳的新 ID 必須由各呼叫端持久化，且不得覆寫 await 期間已變動的工作狀態。現行 DB 仍只保存單一 `telegram_message_id`，多 chat per-message tracking 留到未來 schema 版本。
+Telegram recording stage、completion、failure、retry 與 upload notifications 都是 best-effort；send/edit/fallback-send 會以最多 3 chat 的 bounded concurrent fanout 執行，且每個 Telegram API 呼叫都有 10 秒 timeout。Timeout 或 API exception 只記錄 log，不能阻斷錄製、後處理或上傳主流程；Telegram 回報 `Message is not modified` 時視為 edit no-op success，不可 fallback-send 造成重複訊息。Recording lifecycle notification 的使用者可見內容固定使用英文，標題優先透過 `recording_jobs.schedule_id -> schedules.meeting_id -> meetings.name` 顯示有效 meeting name；空白或含 replacement character 的壞 label 會被略過，接著 fallback 有效且非 generic 的 `display_name`，最後才 fallback `meeting_code`。訊息會顯示 Provider / Status，Started / Ended 使用設定時區的 `YYYY-MM-DD HH:MM`，Duration 使用 minutes。通知依事件選用 `start` / `complete` / `failure` / `upload` 偏好；成功 log 僅在 Telegram API 接受時寫入，另記錄 job、事件類型、chat、message ID 與部分失敗數量，並不代表使用者已讀。fallback-send 回傳的新 ID 必須由各呼叫端持久化，且不得覆寫 await 期間已變動的工作狀態。`notification_deliveries` 以 `(job_id, event_key, chat_id)` 唯一鍵保存送達 ledger；上傳事件 key 包含 video ID。`telegram_message_id` 僅留相容，真正編輯目標由每 chat 已確認 message ID 決定。`NotificationDeliveryService` 每 5 秒取待辦，最多 3 並行、5 次嘗試，明確失敗以 15 秒倍增退避；新 send 的逾時／重啟中斷標 `uncertain`，已知 ID 的 edit 可安全重試。終態會讓過時 stage 失效；acknowledged/superseded 清除訊息本文。
 
 這些路由才是目前文件應描述的真實 API 範圍；若路由有新增、刪除或改名，請同步更新本文件。
 
@@ -434,6 +455,13 @@ python -m scripts.test_provider --url "https://zoom.us/j/123456789" --provider z
 ```
 
 ## 測試與品質檢查
+
+`tests/conftest.py` 在 collection 前隔離 DATABASE_URL、LOGS_DIR 與 Telegram/YouTube credentials，防止讀取開發機 `.env` 的正式資料。媒體測試在無 FFmpeg 時 skip；CI 設 `REQUIRE_MEDIA_TOOLS=1` 強制缺依賴失敗。
+
+PR CI 只執行一輪 pytest + coverage（包含 real SQLite restart/concurrency、HTTP upload contract、真實 FFmpeg trim/remux/靜音/靜止影像），並執行與 nightly 共用的 Docker smoke。smoke 使用無網路、非 root、cap-drop ALL、no-new-privileges 的容器，實錄 Chromium 動畫與音源，驗證 MP4 實際片長、音／影軌、完整解碼、音量與像素變化；不呼叫外部會議、YouTube 或 Telegram。
+
+Docker runtime 的可寫範圍是四個資料 volume 與使用者 home/runtime；source 與 Playwright 安裝內容由 root 建置、runtime 僅讀。發布映像用 `BUILD_TIMESTAMP` 寫入 `APP_REVISION` 與 OCI revision label；source Compose 可用 `MEETING_RECORDER_REVISION` 傳入 commit SHA。
+
 
 安裝開發工具：
 

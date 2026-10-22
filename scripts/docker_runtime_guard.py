@@ -65,7 +65,9 @@ def build_dev_identity(cwd: str | Path, env: dict[str, str]) -> RuntimeIdentity:
         project=env.get("COMPOSE_PROJECT_NAME", f"meeting-recorder-dev-{suffix}"),
         working_dir=str(root),
         image=env.get("MEETING_RECORDER_IMAGE", f"meeting-recorder:dev-{suffix}"),
-        host_ports=frozenset({app_port, vnc_port}),
+        host_ports=frozenset(
+            {app_port, vnc_port} if "docker-compose.debug.yml" in env.get("COMPOSE_FILE", "") else {app_port}
+        ),
         container_name=env.get("MEETING_RECORDER_CONTAINER_NAME") or None,
     )
 

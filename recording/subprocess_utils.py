@@ -61,7 +61,10 @@ async def _terminate_process(process: asyncio.subprocess.Process, *, terminate_t
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
-        await process.wait()
+        # SIGKILL normally reaps immediately. Keep shutdown bounded even if
+        # inherited pipes or an unhealthy kernel delay process.wait().
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=terminate_timeout_sec)
 
 
 async def run_bounded_subprocess(
@@ -80,23 +83,41 @@ async def run_bounded_subprocess(
     )
     stdout_task = asyncio.create_task(_read_stream(process.stdout, limit=stdout_limit))
     stderr_task = asyncio.create_task(_read_stream(process.stderr, limit=stderr_limit, log_path=stderr_log_path))
+    wait_task = asyncio.create_task(process.wait())
+    stream_tasks = (stdout_task, stderr_task)
     timed_out = False
     try:
-        async with asyncio.timeout(timeout_sec):
-            returncode = await process.wait()
-    except TimeoutError:
-        timed_out = True
-        await _terminate_process(process, terminate_timeout_sec=terminate_timeout_sec)
-        returncode = SUBPROCESS_TIMEOUT_RETURN_CODE
-
-    stdout = await stdout_task
-    stderr_bytes = await stderr_task
-    stderr = stderr_bytes.decode(errors="ignore")
-    if timed_out:
-        stderr = (stderr + "\nprocess timed out").strip()
-    return BoundedSubprocessResult(
-        returncode=returncode or 0,
-        stdout=stdout,
-        stderr=stderr,
-        timed_out=timed_out,
-    )
+        try:
+            async with asyncio.timeout(timeout_sec):
+                returncode, stdout, stderr_bytes = await asyncio.gather(
+                    wait_task, *(asyncio.shield(task) for task in stream_tasks)
+                )
+        except TimeoutError:
+            timed_out = True
+            await _terminate_process(process, terminate_timeout_sec=terminate_timeout_sec)
+            returncode = SUBPROCESS_TIMEOUT_RETURN_CODE
+            # Readers continue draining during terminate/kill. Bound the final
+            # drain too: descendants can otherwise keep inherited pipes open.
+            done, _pending = await asyncio.wait(stream_tasks, timeout=terminate_timeout_sec)
+            stdout = stdout_task.result() if stdout_task in done else b""
+            stderr_bytes = stderr_task.result() if stderr_task in done else b""
+        stderr = stderr_bytes.decode(errors="ignore")
+        if timed_out:
+            stderr = (stderr + "\nprocess timed out").strip()
+        return BoundedSubprocessResult(
+            returncode=returncode or 0,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+        )
+    finally:
+        # Covers cancellation, stream/log failures and normal completion. Never
+        # leave FFmpeg running after its tracked processing task is canceled.
+        try:
+            if process.returncode is None:
+                await _terminate_process(process, terminate_timeout_sec=terminate_timeout_sec)
+        finally:
+            for task in (*stream_tasks, wait_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*stream_tasks, wait_task, return_exceptions=True)

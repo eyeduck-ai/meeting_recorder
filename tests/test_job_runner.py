@@ -398,7 +398,7 @@ class TestJobRunner:
             coro.close()
 
     @pytest.mark.asyncio
-    async def test_post_processing_does_not_occupy_recording_slot(self, tmp_path, monkeypatch):
+    async def test_post_processing_does_not_occupy_recording_slot(self, session_local, tmp_path, monkeypatch):
         """A raw capture entering post-processing should release capacity for queued recordings."""
         post_processing_started = asyncio.Event()
         release_post_processing = asyncio.Event()
@@ -968,7 +968,7 @@ class TestJobRunner:
             session.close()
 
     @pytest.mark.asyncio
-    async def test_post_processing_settle_failure_does_not_requeue_recursively(self, tmp_path):
+    async def test_post_processing_settle_failure_does_not_requeue_recursively(self, session_local, tmp_path):
         """A failed settle task should be logged and removed, not requeued forever."""
 
         class FailingPostProcessor:
