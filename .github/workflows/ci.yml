@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -22,10 +27,13 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
+        timeout-minutes: 5
         run: |
           uv sync --all-extras --frozen
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y ffmpeg
+          fi
 
       - name: Run tests with coverage and real media
         env:
@@ -34,11 +42,13 @@ jobs:
           REQUIRE_MEDIA_TOOLS: "1"
         run: uv run pytest tests/ -v --tb=short --cov=api --cov=providers --cov=database --cov=recording --cov=services --cov=scheduling --cov-report=term-missing --cov-report=xml
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - name: Save coverage report
+        uses: actions/upload-artifact@v4
         with:
-          files: ./coverage.xml
-          fail_ci_if_error: false
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 14
 
   lint:
     runs-on: ubuntu-latest
