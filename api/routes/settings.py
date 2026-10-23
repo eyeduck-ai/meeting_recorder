@@ -24,7 +24,7 @@ class SettingsUpdate(BaseModel):
     dynamic_extension_enabled: bool | None = None
     dynamic_extension_idle_sec: int | None = Field(default=None, ge=1, le=14400)
     dynamic_extension_max_sec: int | None = Field(default=None, ge=0, le=86400)
-    activity_audio_threshold_db: float | None = None
+    activity_audio_threshold_db: float | None = Field(default=None, allow_inf_nan=False)
     activity_video_diff_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     activity_sample_interval_sec: float | None = Field(default=None, ge=1.0, le=300.0)
     activity_sample_window_sec: float | None = Field(default=None, ge=0.25, le=30.0)

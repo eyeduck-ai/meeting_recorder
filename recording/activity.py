@@ -8,8 +8,7 @@ import logging
 import math
 import sys
 from array import array
-from bisect import bisect_right
-from collections import deque
+from bisect import bisect_left, bisect_right
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -69,6 +68,7 @@ class ActivitySample(MediaActivityState):
     """A timestamped completed-file activity sample."""
 
     timestamp_sec: float = 0.0
+    window_end_sec: float | None = None
 
 
 @dataclass(frozen=True)
@@ -236,9 +236,10 @@ async def _probe_media_duration_sec(input_path: Path) -> float | None:
         logger.warning("Could not probe duration for %s: %s", input_path, result.stderr[:200])
         return None
     try:
-        return float(result.stdout.decode(errors="ignore").strip())
+        duration = float(result.stdout.decode(errors="ignore").strip())
     except ValueError:
         return None
+    return duration if math.isfinite(duration) and duration > 0 else None
 
 
 async def _read_stderr_limited(stream: asyncio.StreamReader | None, *, limit: int = 4096) -> str:
@@ -257,38 +258,6 @@ async def _read_stderr_limited(stream: asyncio.StreamReader | None, *, limit: in
     return b"".join(chunks).decode(errors="ignore")
 
 
-async def _read_stream_to_log_or_excerpt(
-    stream: asyncio.StreamReader | None,
-    *,
-    log_path: Path | None = None,
-    limit: int = 4096,
-) -> str:
-    """Drain a process stream while optionally writing full content to disk."""
-    if stream is None:
-        return ""
-    chunks: list[bytes] = []
-    total = 0
-    log_file = None
-    try:
-        if log_path:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = log_path.open("wb")
-        while True:
-            chunk = await stream.read(8192)
-            if not chunk:
-                break
-            if log_file:
-                log_file.write(chunk)
-            if total < limit:
-                take = chunk[: limit - total]
-                chunks.append(take)
-                total += len(take)
-    finally:
-        if log_file:
-            log_file.close()
-    return b"".join(chunks).decode(errors="ignore")
-
-
 async def _close_process(process: asyncio.subprocess.Process | None) -> None:
     if process is None or process.returncode is not None:
         return
@@ -299,7 +268,8 @@ async def _close_process(process: asyncio.subprocess.Process | None) -> None:
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
-        await process.wait()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=2.0)
 
 
 async def _run_ffmpeg_trim(
@@ -309,35 +279,24 @@ async def _run_ffmpeg_trim(
 ) -> tuple[int, str]:
     """Run trim FFmpeg without accumulating full stdout/stderr in memory."""
     try:
-        process = await asyncio.create_subprocess_exec(
+        result = await run_bounded_subprocess(
             *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout_sec=timeout_sec,
+            stdout_limit=1024,
+            stderr_limit=4096,
+            stderr_log_path=log_path,
         )
     except FileNotFoundError:
         return 127, "ffmpeg not found"
 
-    stdout_task = asyncio.create_task(_read_stream_to_log_or_excerpt(process.stdout, limit=1024))
-    stderr_task = asyncio.create_task(_read_stream_to_log_or_excerpt(process.stderr, log_path=log_path, limit=4096))
-    timed_out = False
-    try:
-        async with asyncio.timeout(timeout_sec):
-            returncode = await process.wait()
-    except TimeoutError:
-        timed_out = True
-        await _close_process(process)
-        returncode = 124
-
-    stdout_excerpt = await stdout_task
-    stderr_excerpt = await stderr_task
-    message = stderr_excerpt or stdout_excerpt
-    if timed_out:
+    message = result.stderr or result.stdout.decode(errors="ignore")
+    if result.timed_out:
         message = (message + "\ntrim timed out").strip()
-    return returncode or 0, message
+    return result.returncode, message
 
 
 class _PersistentAudioMeter:
-    """Maintain recent PulseAudio peak levels from one long-running FFmpeg process."""
+    """Accumulate inter-poll PulseAudio peaks from one long-running FFmpeg process."""
 
     def __init__(
         self,
@@ -352,19 +311,28 @@ class _PersistentAudioMeter:
         self._process: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task[str] | None = None
         self._reader_task: asyncio.Task[None] | None = None
-        self._recent_peaks: deque[tuple[float, int]] = deque()
+        self._pending_peak = 0
+        self._last_pcm_at: float | None = None
+        self._unread_audio = False
         self._started = False
+        self._started_at: float | None = None
+        self._closing = False
         self._error: str | None = None
         self._remainder = b""
 
     @property
     def error(self) -> str | None:
+        if self._error is None and self._started_at is not None:
+            last_pcm_at = self._last_pcm_at if self._last_pcm_at is not None else self._started_at
+            if asyncio.get_running_loop().time() - last_pcm_at >= 30.0:
+                return "audio meter produced no PCM for 30s"
         return self._error
 
     async def start(self) -> None:
         if self._started:
             return
         self._started = True
+        self._started_at = asyncio.get_running_loop().time()
         cmd = (
             "ffmpeg",
             "-hide_banner",
@@ -398,22 +366,29 @@ class _PersistentAudioMeter:
         self._reader_task = asyncio.create_task(self._read_loop())
 
     async def close(self) -> None:
+        self._closing = True
         await _close_process(self._process)
-        if self._reader_task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._reader_task
-        if self._stderr_task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._stderr_task
+        tasks = [task for task in (self._reader_task, self._stderr_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def snapshot(self) -> tuple[bool | None, float | None]:
         if self._error:
             return None, None
-        self._trim_recent_peaks(asyncio.get_running_loop().time())
-        if not self._recent_peaks:
+        now = asyncio.get_running_loop().time()
+        if (
+            not self._unread_audio
+            or self._last_pcm_at is None
+            or now - self._last_pcm_at > max(1.0, self.config.sample_window_sec)
+        ):
             return None, None
-        peak = max(value for _, value in self._recent_peaks)
-        level = _db_from_peak(peak)
+        # Consume the entire interval since the last poll, rather than just its
+        # final second. A brief utterance between monitor polls is still activity.
+        level = _db_from_peak(self._pending_peak)
+        self._pending_peak = 0
+        self._unread_audio = False
         return level >= self.config.audio_threshold_db, level
 
     async def _read_loop(self) -> None:
@@ -431,10 +406,14 @@ class _PersistentAudioMeter:
             self._error = f"audio meter read failed: {exc}"
         finally:
             if self._process.returncode is None:
-                returncode = await self._process.wait()
+                try:
+                    returncode = await asyncio.wait_for(self._process.wait(), timeout=2.0)
+                except TimeoutError:
+                    self._error = "audio meter stream ended before process exit"
+                    return
             else:
                 returncode = self._process.returncode
-            if returncode not in (0, None) and self._error is None:
+            if not self._closing and self._error is None:
                 stderr = ""
                 if self._stderr_task:
                     with contextlib.suppress(Exception):
@@ -457,14 +436,9 @@ class _PersistentAudioMeter:
         if not pcm:
             return
         peak = max(abs(value) for value in pcm)
-        now = asyncio.get_running_loop().time()
-        self._recent_peaks.append((now, peak))
-        self._trim_recent_peaks(now)
-
-    def _trim_recent_peaks(self, now: float) -> None:
-        window = max(0.25, self.config.sample_window_sec)
-        while self._recent_peaks and now - self._recent_peaks[0][0] > window:
-            self._recent_peaks.popleft()
+        self._pending_peak = max(self._pending_peak, peak)
+        self._last_pcm_at = asyncio.get_running_loop().time()
+        self._unread_audio = True
 
 
 class LiveMediaActivityProbe:
@@ -474,6 +448,7 @@ class LiveMediaActivityProbe:
         self.config = config
         self._last_screenshot: bytes | None = None
         self._audio_meter: _PersistentAudioMeter | None = None
+        self._audio_meter_retry_at = 0.0
 
     async def prime(self, session: Any) -> None:
         """Warm live media probes before dynamic extension begins."""
@@ -525,10 +500,15 @@ class LiveMediaActivityProbe:
         source = getattr(getattr(session, "virtual_env", None), "pulse_monitor", None)
         if not source:
             return None, None
+        now = asyncio.get_running_loop().time()
+        if self._audio_meter and self._audio_meter.error and now >= self._audio_meter_retry_at:
+            await self._audio_meter.close()
+            self._audio_meter = None
         if self._audio_meter is None or self._audio_meter.source != source:
             if self._audio_meter:
                 await self._audio_meter.close()
             self._audio_meter = _PersistentAudioMeter(source=source, config=self.config)
+            self._audio_meter_retry_at = now + 30.0
             await self._audio_meter.start()
         if self._audio_meter.error:
             logger.debug("Live audio probe unavailable: %s", self._audio_meter.error)
@@ -566,10 +546,12 @@ class RecordingActivityAnalyzer:
         self._diagnostics = {
             "coarse_interval_sec": self.config.sample_interval_sec,
             "sample_window_sec": self.config.sample_window_sec,
+            "coarse_audio_window_sec": max(self.config.sample_window_sec, self.config.sample_interval_sec),
+            "video_frame_interval_sec": min(1.0, self.config.sample_interval_sec),
             "probes": [],
         }
         duration = await self._probe_duration_sec(input_path)
-        if duration is None or duration <= 0:
+        if duration is None or not math.isfinite(duration) or duration <= 0:
             self._diagnostics["analysis_elapsed_sec"] = round(perf_counter() - started_at, 3)
             return TrimDecision(
                 status="skipped",
@@ -633,7 +615,12 @@ class RecordingActivityAnalyzer:
             last_active=last_active,
         )
         self._diagnostics["refinement"] = refinement
-        last_active_end = last_active + self.config.sample_window_sec
+        last_coarse_sample = active_samples[-1]
+        last_active_end = last_coarse_sample.window_end_sec or (
+            last_coarse_sample.timestamp_sec + self.config.sample_window_sec
+        )
+        if refinement.get("end_status") == "refined":
+            last_active_end = refinement["refined_last_active_end_sec"]
         trim_start = max(0.0, first_active - self.config.smart_trim_pre_roll_sec)
         trim_end = min(duration, max(trim_start + 1.0, last_active_end + self.config.smart_trim_end_post_roll_sec))
         status = "trimmed" if trim_start > 0.5 or trim_end < duration - 0.5 else "skipped"
@@ -688,6 +675,7 @@ class RecordingActivityAnalyzer:
     ) -> list[ActivitySample]:
         if not timestamps:
             return []
+        window_sec = max(self.config.sample_window_sec, sample_interval_sec)
 
         async def timed_probe(
             media_type: str,
@@ -725,6 +713,7 @@ class RecordingActivityAnalyzer:
                     timestamps,
                     probe_start_sec=probe_start_sec,
                     probe_end_sec=probe_end_sec,
+                    sample_interval_sec=sample_interval_sec,
                 ),
             ),
             timed_probe(
@@ -747,6 +736,7 @@ class RecordingActivityAnalyzer:
             samples.append(
                 ActivitySample(
                     timestamp_sec=timestamp,
+                    window_end_sec=min(duration, probe_end_sec, timestamp + window_sec),
                     audio_active=audio_active,
                     video_active=video_active,
                     audio_level_db=audio_level,
@@ -810,7 +800,7 @@ class RecordingActivityAnalyzer:
             if sample.active is True and start_range[0] <= sample.timestamp_sec < start_range[1]
         ]
         end_active = [
-            sample.timestamp_sec
+            sample
             for sample in refined_samples
             if sample.active is True and end_range[0] <= sample.timestamp_sec < end_range[1]
         ]
@@ -824,7 +814,8 @@ class RecordingActivityAnalyzer:
         ):
             end_active = []
         refined_first = min(start_active, default=first_active)
-        refined_last = max(end_active, default=last_active)
+        last_refined_sample = max(end_active, key=lambda sample: sample.timestamp_sec, default=None)
+        refined_last = last_refined_sample.timestamp_sec if last_refined_sample else last_active
         refinement_available = bool(start_active or end_active)
         return (
             refined_first,
@@ -841,6 +832,12 @@ class RecordingActivityAnalyzer:
                 "coarse_last_active_sec": last_active,
                 "refined_first_active_sec": refined_first,
                 "refined_last_active_sec": refined_last,
+                "refined_last_active_end_sec": (
+                    last_refined_sample.window_end_sec
+                    or last_refined_sample.timestamp_sec + self.config.sample_window_sec
+                    if last_refined_sample
+                    else None
+                ),
             },
         )
 
@@ -855,6 +852,7 @@ class RecordingActivityAnalyzer:
         *,
         probe_start_sec: float = 0.0,
         probe_end_sec: float | None = None,
+        sample_interval_sec: float | None = None,
     ) -> list[tuple[bool | None, float | None]]:
         probe_end = min(duration, duration if probe_end_sec is None else probe_end_sec)
         probe_start = max(0.0, min(probe_start_sec, probe_end))
@@ -904,20 +902,23 @@ class RecordingActivityAnalyzer:
                     process.stdout,
                     sample_timestamps=sample_timestamps,
                     probe_start_sec=probe_start,
+                    sample_interval_sec=sample_interval_sec,
+                    probe_end_sec=probe_end,
                 )
                 returncode = await process.wait()
+                stderr = await stderr_task
+            if returncode != 0 or not any(state[0] is not None for state in states):
+                logger.debug("Audio batch probe unavailable for %s: %s", input_path, stderr[:200])
+                return empty_result
+            return states
         except TimeoutError:
-            await _close_process(process)
-            with contextlib.suppress(asyncio.CancelledError):
-                await stderr_task
             logger.debug("Audio batch probe timed out for %s", input_path)
             return empty_result
-
-        stderr = await stderr_task
-        if returncode != 0 or not any(state[0] is not None for state in states):
-            logger.debug("Audio batch probe unavailable for %s: %s", input_path, stderr[:200])
-            return empty_result
-        return states
+        finally:
+            await _close_process(process)
+            if not stderr_task.done():
+                stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
 
     async def _read_audio_activity_stream(
         self,
@@ -925,17 +926,26 @@ class RecordingActivityAnalyzer:
         *,
         sample_timestamps: list[float],
         probe_start_sec: float,
+        sample_interval_sec: float | None = None,
+        probe_end_sec: float | None = None,
     ) -> list[tuple[bool | None, float | None]]:
         if stream is None:
             return [(None, None) for _ in sample_timestamps]
 
-        window_size = max(1, int(self.config.sample_window_sec * AUDIO_SAMPLE_RATE))
+        interval = sample_interval_sec if sample_interval_sec is not None else self.config.sample_interval_sec
+        # Coarse samples are contiguous buckets. Refinement supplies its own
+        # interval so its one-second resolution does not inherit coarse width.
+        window_sec = max(self.config.sample_window_sec, interval)
+        window_size = max(1, int(window_sec * AUDIO_SAMPLE_RATE))
         window_starts = [
             max(0, int((timestamp - probe_start_sec) * AUDIO_SAMPLE_RATE)) for timestamp in sample_timestamps
         ]
         window_ends = [start + window_size for start in window_starts]
+        if probe_end_sec is not None:
+            probe_end_sample = max(0, int((probe_end_sec - probe_start_sec) * AUDIO_SAMPLE_RATE))
+            window_ends = [min(end, probe_end_sample) for end in window_ends]
         peaks = [0 for _ in sample_timestamps]
-        observed = [False for _ in sample_timestamps]
+        observed = [0 for _ in sample_timestamps]
         chunk_start = 0
         remainder = b""
 
@@ -967,13 +977,16 @@ class RecordingActivityAnalyzer:
                     rel_start = overlap_start - chunk_start
                     rel_end = overlap_end - chunk_start
                     peaks[index] = max(peaks[index], max(abs(value) for value in pcm[rel_start:rel_end]))
-                    observed[index] = True
+                    observed[index] += overlap_end - overlap_start
                 index += 1
             chunk_start = chunk_end
 
         states: list[tuple[bool | None, float | None]] = []
-        for index, was_observed in enumerate(observed):
-            if not was_observed:
+        for index, observed_count in enumerate(observed):
+            # Permit codec timestamp rounding, not seconds of missing PCM.
+            expected_count = window_ends[index] - window_starts[index]
+            minimum_count = max(1, expected_count - int(0.05 * AUDIO_SAMPLE_RATE))
+            if observed_count < minimum_count:
                 states.append((None, None))
                 continue
             level = _db_from_peak(peaks[index])
@@ -993,7 +1006,9 @@ class RecordingActivityAnalyzer:
         probe_end = min(duration, duration if probe_end_sec is None else probe_end_sec)
         probe_start = max(0.0, min(probe_start_sec, probe_end))
         interval = sample_interval_sec or self.config.sample_interval_sec
-        fps = 1.0 / interval
+        frame_interval = min(1.0, interval)
+        fps = 1.0 / frame_interval
+        frame_timestamps = _sample_timestamps_between(probe_start, probe_end, frame_interval)
         cmd: list[str] = [
             "ffmpeg",
             "-hide_banner",
@@ -1039,22 +1054,38 @@ class RecordingActivityAnalyzer:
             async with asyncio.timeout(timeout_sec):
                 states = await self._read_video_activity_stream(
                     process.stdout,
-                    sample_count=len(sample_timestamps),
+                    sample_count=len(frame_timestamps),
                 )
                 returncode = await process.wait()
+                stderr = await stderr_task
+            if returncode != 0 or not any(state[0] is not None for state in states):
+                logger.debug("Video batch probe unavailable for %s: %s", input_path, stderr[:200])
+                return empty_result
+            # Observe at least once per second, then aggregate into coarse
+            # buckets. A slide that changes and returns between five-second
+            # endpoints must not disappear from the trim evidence.
+            buckets = []
+            window_sec = max(interval, self.config.sample_window_sec)
+            for timestamp in sample_timestamps:
+                start = bisect_left(frame_timestamps, timestamp)
+                end = bisect_left(frame_timestamps, min(probe_end, timestamp + window_sec))
+                bucket = states[start:end]
+                active = None
+                if any(state[0] is True for state in bucket):
+                    active = True
+                elif bucket and all(state[0] is False for state in bucket):
+                    active = False
+                diffs = [state[1] for state in bucket if state[1] is not None]
+                buckets.append((active, max(diffs) if diffs else None))
+            return buckets
         except TimeoutError:
-            await _close_process(process)
-            with contextlib.suppress(asyncio.CancelledError):
-                await stderr_task
             logger.debug("Video batch probe timed out for %s", input_path)
             return empty_result
-
-        stderr = await stderr_task
-        if returncode != 0 or not any(state[0] is not None for state in states):
-            logger.debug("Video batch probe unavailable for %s: %s", input_path, stderr[:200])
-            return empty_result
-
-        return states
+        finally:
+            await _close_process(process)
+            if not stderr_task.done():
+                stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
 
     async def _read_video_activity_stream(
         self,
@@ -1105,6 +1136,8 @@ async def trim_recording(
     if not input_path.exists():
         logger.warning("Trim skipped, input not found: %s", input_path)
         return None
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("Trim output must differ from the raw recording")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         output_path.unlink()
@@ -1130,15 +1163,20 @@ async def trim_recording(
         str(output_path),
     )
     started_at = utc_now()
-    returncode, stderr = await _run_ffmpeg_trim(
-        *cmd,
-        timeout_sec=max(60.0, expected_duration_sec * 2),
-        log_path=log_path,
-    )
-    if returncode != 0 or not output_path.exists():
-        logger.error("Trim failed for %s: %s", input_path, stderr[:400])
-        return None
-    duration_sec = await _probe_media_duration_sec(output_path)
+    try:
+        returncode, stderr = await _run_ffmpeg_trim(
+            *cmd,
+            timeout_sec=max(60.0, expected_duration_sec * 2),
+            log_path=log_path,
+        )
+        if returncode != 0 or not output_path.exists():
+            logger.error("Trim failed for %s: %s", input_path, stderr[:400])
+            output_path.unlink(missing_ok=True)
+            return None
+        duration_sec = await _probe_media_duration_sec(output_path)
+    except BaseException:
+        output_path.unlink(missing_ok=True)
+        raise
     # Stream-copy boundaries can vary by a keyframe, but a corrupt or truncated
     # output must never become the preferred recording or upload source.
     tolerance_sec = max(2.0, min(5.0, expected_duration_sec * 0.02))

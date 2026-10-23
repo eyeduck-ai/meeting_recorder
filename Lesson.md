@@ -166,3 +166,7 @@
 - 真實媒體測試發現 AAC padding 使 format duration 為 30.021 秒，coarse scan 包含 30 秒而 FFmpeg fps 預設 EOF rounding 只輸出到 28 秒。`eof_action=pass` 保留最後真實解碼 frame；不可忽略未知樣本或填 inactive，缺音軌仍應保守保留原片。
 - CI job 成功不代表 optional Codecov 上傳成功；應檢查 log。無外部 token 時，改保存 GitHub Actions coverage artifact，並在報告不存在時讓步驟失敗。
 - GitHub runner 的依賴安裝可能卡在套件鏡像；已有 FFmpeg/ffprobe 時不要再 apt update，缺少時限制下載 timeout/retries，並為安裝與 job 設期限。
+- 5 秒一次的 poll 搭配只保留最近 1 秒音訊，會漏掉間隔中的短句；live meter 應累積自上次消耗後的 peak，再檢查 PCM freshness。完成檔即使完整解碼，若只計算每 5 秒中的 1 秒，仍然有分析空洞；coarse window 必須連續，refinement 用自身間隔。
+- 粗掃描從端點改成完整區間後，尾端證據必須攜帶 window_end；refinement 不可用時仍只加 sample_window，會把同一 coarse bucket 的尾端剪掉。每秒影像比較會把最後的轉場定位到前一 bucket，末幀測試應驗證真正發生在最後取樣格附近的變化。
+- 單一 probe 的 timeout 不足以限制總錄影時間；warmup、check 與 sleep 應共用剩餘時間。FFmpeg 自訂 streaming probe 也要在取消時 terminate/reap 並收回 stderr reader，不能只測 timeout 分支。
+- float('nan') 會繞過一般大小比較，float('inf') 可能使 timestamp 產生迴圈無限增長；設定與 ffprobe 片長都須明確檢查 finite。

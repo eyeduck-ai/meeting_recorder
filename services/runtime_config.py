@@ -1,5 +1,6 @@
 """Resolve effective runtime recording configuration."""
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -262,9 +263,12 @@ class RuntimeConfigService:
 
     def _parse_float(self, key: str, value: object) -> float:
         try:
-            return float(value)
+            parsed = float(value)
         except (TypeError, ValueError) as exc:
             raise RuntimeConfigError(f"{key} must be a number") from exc
+        if not math.isfinite(parsed):
+            raise RuntimeConfigError(f"{key} must be a finite number")
+        return parsed
 
     def _parse_bool(self, key: str, value: object) -> bool:
         if isinstance(value, bool):

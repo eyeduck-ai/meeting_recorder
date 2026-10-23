@@ -24,3 +24,9 @@ def test_recording_capacity_validation_rejects_concurrency_above_display_pool():
 def test_recording_capacity_validation_rejects_zero_activity_analysis_limit():
     with pytest.raises(ValidationError, match="MAX_PARALLEL_ACTIVITY_ANALYSES"):
         Settings(max_parallel_activity_analyses=0, _env_file=None)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_environment_activity_threshold_must_be_finite(value):
+    with pytest.raises(ValidationError, match="finite"):
+        Settings(activity_audio_threshold_db=value, _env_file=None)

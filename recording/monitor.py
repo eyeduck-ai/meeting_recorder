@@ -45,6 +45,8 @@ class RecordingMonitor:
         self._extension_idle_since: float | None = None
         self._extension_unavailable_since: float | None = None
         self._activity_probe_primed = False
+        self._remaining_capture_sec: float | None = None
+        self._iteration_started_at = 0.0
         self.probe_summary = {"samples": 0, "unknown": 0, "active": 0, "inactive": 0}
 
     def _now(self) -> float:
@@ -68,6 +70,7 @@ class RecordingMonitor:
         logger.info("Recording with duration=%ss", self.job.duration_sec)
 
         while True:
+            self._iteration_started_at = asyncio.get_running_loop().time()
             now = self._now()
             elapsed = now - recording_start
 
@@ -97,16 +100,30 @@ class RecordingMonitor:
             if self.is_cancel_requested():
                 raise asyncio.CancelledError("Job cancelled")
 
-            if self._hard_deadline_reached():
+            hard_deadline_at = ensure_utc(getattr(self.job, "hard_deadline_at", None))
+            self._remaining_capture_sec = (
+                (hard_deadline_at - self._wall_clock()).total_seconds() if hard_deadline_at else None
+            )
+            if self._remaining_capture_sec is not None and self._remaining_capture_sec <= 0:
                 self.dynamic_extension_stop_reason = "hard_deadline_reached"
                 logger.info("Recording hard deadline reached")
                 return "completed", self.session.process_returncode()
+
+            extension_enabled = bool(getattr(self.job, "dynamic_extension_enabled", False))
+            extension_max = int(getattr(self.job, "dynamic_extension_max_sec", 0) or 0)
+            if not extension_enabled or extension_max > 0:
+                remaining = self.job.duration_sec + (extension_max if extension_enabled else 0) - elapsed
+                self._remaining_capture_sec = (
+                    min(self._remaining_capture_sec, remaining)
+                    if self._remaining_capture_sec is not None
+                    else remaining
+                )
 
             await self._prime_dynamic_extension_probe(elapsed)
 
             if elapsed >= self.job.duration_sec:
                 if await self._should_continue_dynamic_extension(now, elapsed):
-                    await self._sleep(self.check_interval_sec)
+                    await self._sleep_until_next_check()
                     continue
                 if self.dynamic_extension_stop_reason is None:
                     self.dynamic_extension_stop_reason = "fixed_duration_reached"
@@ -117,7 +134,21 @@ class RecordingMonitor:
                 remaining = self.job.duration_sec - elapsed
                 logger.info(f"Recording in progress... {elapsed:.0f}s elapsed, {remaining:.0f}s remaining")
 
-            await self._sleep(self.check_interval_sec)
+            await self._sleep_until_next_check()
+
+    def _probe_timeout_sec(self) -> float:
+        spent = asyncio.get_running_loop().time() - self._iteration_started_at
+        remaining = self._remaining_capture_sec
+        return max(0.001, min(self.check_interval_sec, remaining - spent if remaining is not None else 5.0))
+
+    async def _sleep_until_next_check(self) -> None:
+        # Probe latency must not be added on top of the poll interval or push
+        # recording beyond its max extension / absolute hard deadline.
+        spent = asyncio.get_running_loop().time() - self._iteration_started_at
+        delay = self.check_interval_sec - spent
+        if self._remaining_capture_sec is not None:
+            delay = min(delay, self._remaining_capture_sec - spent)
+        await self._sleep(max(0.0, delay))
 
     async def _prime_dynamic_extension_probe(self, elapsed: float) -> None:
         if self._activity_probe_primed:
@@ -131,7 +162,8 @@ class RecordingMonitor:
         prime = getattr(self.media_activity_probe, "prime", None)
         if prime is not None:
             try:
-                await prime(self.session)
+                async with asyncio.timeout(self._probe_timeout_sec()):
+                    await prime(self.session)
             except Exception as exc:
                 logger.debug("Media activity probe warmup unavailable: %s", exc)
         self._activity_probe_primed = True
@@ -151,10 +183,6 @@ class RecordingMonitor:
         enabled = bool(getattr(self.job, "dynamic_extension_enabled", False))
         if not enabled:
             return False
-        if self.media_activity_probe is None:
-            self.dynamic_extension_stop_reason = "activity_probe_unavailable"
-            return False
-
         extension_elapsed = max(0.0, elapsed - self.job.duration_sec)
         max_extension = int(getattr(self.job, "dynamic_extension_max_sec", 0) or 0)
         if max_extension > 0 and extension_elapsed >= max_extension:
@@ -171,7 +199,11 @@ class RecordingMonitor:
             )
 
         try:
-            state = await self.media_activity_probe.check(self.session)
+            if self.media_activity_probe is None:
+                state = None
+            else:
+                async with asyncio.timeout(self._probe_timeout_sec()):
+                    state = await self.media_activity_probe.check(self.session)
         except Exception as exc:
             logger.debug("Media activity probe unavailable: %s", exc)
             state = None
@@ -213,7 +245,3 @@ class RecordingMonitor:
             logger.info("Dynamic extension idle timeout reached (%ss)", idle_timeout)
             return False
         return True
-
-    def _hard_deadline_reached(self) -> bool:
-        hard_deadline_at = ensure_utc(getattr(self.job, "hard_deadline_at", None))
-        return bool(hard_deadline_at and self._wall_clock() >= hard_deadline_at)

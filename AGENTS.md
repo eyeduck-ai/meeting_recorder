@@ -175,6 +175,9 @@ Settings API / Web UI 應以 `get_all_settings()` 讀取完整 overlay，並以 
 - Smart trim 預設前留 15 秒、後留 30 秒；起訖 refinement 使用各自窗口的活動證據，無法確認時保留該端 coarse boundary，不可借用另一端。
 - 裁剪結果短於 `min(60 秒, 原片長度的 10%)` 時回退原檔並記錄 `trim_safety`。
 - Live 影像活動分析必須使用 Pillow 解碼後的像素差；依賴應列入 pyproject/uv.lock。解碼失敗是 unknown，不可回退 JPEG compressed-byte diff。
+- Live audio snapshot 必須消耗上次 poll 以來的累積峰值；不得只保留最後 sample window 而漏掉 poll 間短句。沒有新鮮 PCM 為 unknown；meter 故障以 bounded backoff 重建。
+- Completed-file audio 粗掃描窗口至少涵蓋完整 sample interval；video 至多每秒一幀後彙整到 coarse bucket。ActivitySample.window_end_sec 為 coarse/refined 尾端證據，end refinement 不完整時保留完整 coarse window，不可只加固定 1 秒。
+- monitor warmup/check 與 sleep 共用剩餘 capture budget，慢 probe 不得拖過 max extension/hard deadline；activity/trim subprocess 在取消與例外後必須收回，未完成裁剪副本不可殘留為輸出。
 - 未知音訊／影像探針不等於 inactive：兩者皆已確認 inactive 才能計算 idle timeout；未知或例外必須重置 idle timer，並在既有 max extension／hard deadline 內保留錄影。無上限的 legacy direct caller 最多等待一個 idle timeout。
 - Coarse scan 證據不完整時保留完整原片；refinement 證據不完整時保留該端 coarse boundary。裁剪檔須實測片長符合預期（允許 2–5 秒 keyframe 誤差），驗證失敗不可作為上傳來源。
 - 操作員要求保留的原檔以 `runtime_summary_json.local_recording_retention.preserve = true` 標記，maintenance retention 與 canonicalization 均須略過。

@@ -128,3 +128,10 @@
 - [x] 隔離驗證最小 Docker 權限、專用 UID/GID 與 debug-only VNC，再更新部署預設。
 
 - [x] 將 CI coverage 報告保存到 GitHub Actions artifact，移除未設定 token 的外部上傳依賴。
+
+## 2026-10 動態延伸與智慧裁剪設計檢查
+
+- [x] 修正 live audio poll 間短句遺失、stale PCM 與故障 meter 恢復，維持 unknown 不算 idle。
+- [x] 修正完成檔音訊取樣空洞，增加每秒 video 取樣與完整 coarse window 尾端保留，補真實短句／短暫畫面／末幀媒體測試。
+- [x] 限制 warmup/check 等待與 sleep 的共同錄影預算，驗證 hung probe 不阻擋 hard deadline。
+- [x] 回收取消的 activity/trim FFmpeg 與 reader tasks，清掉 partial trim 並保護原檔；拒絕非有限片長與設定。

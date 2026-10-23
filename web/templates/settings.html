@@ -359,11 +359,13 @@
                             <label for="activity_sample_interval_sec" class="block text-sm font-bold mb-2">Sample Interval (sec)</label>
                             <input type="number" id="activity_sample_interval_sec" min="1" max="300" step="0.5"
                                 class="input input-bordered w-full bg-black border-[#2f3336]">
+                            <p class="text-xs text-gray-500 mt-1">Trim analysis groups continuous audio and sampled video into these intervals.</p>
                         </div>
                         <div>
                             <label for="activity_sample_window_sec" class="block text-sm font-bold mb-2">Sample Window (sec)</label>
                             <input type="number" id="activity_sample_window_sec" min="0.25" max="30" step="0.25"
                                 class="input input-bordered w-full bg-black border-[#2f3336]">
+                            <p class="text-xs text-gray-500 mt-1">Minimum observation window. Values above the interval overlap and retain more footage.</p>
                         </div>
                         <div>
                             <label for="smart_trim_pre_roll_sec" class="block text-sm font-bold mb-2">Start Pre-roll (sec)</label>

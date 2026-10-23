@@ -145,6 +145,16 @@ def test_invalid_db_numeric_config_fails_explicitly(fake_settings, db_session):
         RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+@pytest.mark.parametrize(
+    "key", ["activity_audio_threshold_db", "activity_sample_interval_sec", "smart_trim_pre_roll_sec"]
+)
+def test_non_finite_activity_config_is_rejected(fake_settings, db_session, key, value):
+    set_app_setting(db_session, key, value)
+    with pytest.raises(RuntimeConfigError, match="finite"):
+        RuntimeConfigService(settings=fake_settings).get_recording_config(db_session)
+
+
 def test_lobby_wait_range_is_validated(fake_settings, db_session):
     set_app_setting(db_session, "lobby_wait_sec", "1801")
 
