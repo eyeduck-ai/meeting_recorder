@@ -1,6 +1,7 @@
 """Tests for media activity boundary decisions."""
 
 import asyncio
+import sys
 from array import array
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +20,7 @@ from recording.activity import (
     RecordingActivityAnalyzer,
     _byte_diff_ratio,
     _image_diff_ratio,
+    _PersistentAudioMeter,
     _video_activity_from_frames,
     trim_recording,
 )
@@ -139,7 +141,7 @@ async def test_leading_silence_and_still_video_trims_start():
 
     assert decision.status == "trimmed"
     assert decision.trim_start_sec == 8.0
-    assert decision.trim_end_sec == 21.0
+    assert decision.trim_end_sec == 25.0  # The complete last five-second bucket is retained.
 
 
 @pytest.mark.asyncio
@@ -248,6 +250,7 @@ async def test_audio_stream_reader_maps_peak_windows():
         reader,
         sample_timestamps=[0.0, 1.0, 2.0],
         probe_start_sec=0.0,
+        sample_interval_sec=1.0,
     )
 
     assert states[0][0] is False
@@ -355,7 +358,7 @@ async def test_implausibly_short_trim_of_long_recording_retains_raw():
     assert decision.trim_start_sec == 0.0
     assert decision.trim_end_sec == 4500.0
     assert "too short" in decision.reason
-    assert decision.diagnostics["trim_safety"]["candidate_duration_sec"] == 8.0
+    assert decision.diagnostics["trim_safety"]["candidate_duration_sec"] == 12.0
 
 
 @pytest.mark.asyncio
@@ -369,7 +372,7 @@ async def test_short_recording_can_still_trim_a_short_valid_section():
 
     assert decision.should_trim is True
     assert decision.trim_start_sec == 8.0
-    assert decision.trim_end_sec == 16.0
+    assert decision.trim_end_sec == 20.0
 
 
 @pytest.mark.asyncio
@@ -524,7 +527,7 @@ async def test_default_margins_keep_fifteen_seconds_before_and_thirty_after_acti
     decision = await analyzer.analyze(Path("recording.mkv"))
 
     assert decision.trim_start_sec == 85.0
-    assert decision.trim_end_sec == 231.0
+    assert decision.trim_end_sec == 235.0
 
 
 @pytest.mark.parametrize(
@@ -596,3 +599,177 @@ async def test_invalid_trim_output_is_rejected_and_original_preserved(monkeypatc
     assert result is None
     assert source.read_bytes() == b"original"
     assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_live_audio_retains_speech_between_monitor_polls(monkeypatch):
+    meter = _PersistentAudioMeter(source="job.monitor", config=ActivityConfig(sample_window_sec=1))
+    loop = asyncio.get_running_loop()
+    clock = [10.0]
+    monkeypatch.setattr(loop, "time", lambda: clock[0])
+    meter._consume_pcm_chunk(array("h", [0] * 800).tobytes())
+    assert meter.snapshot()[0] is False
+    clock[0] = 11.0
+    meter._consume_pcm_chunk(array("h", [12000] * 800).tobytes())
+    clock[0] = 15.0
+    meter._consume_pcm_chunk(array("h", [0] * 800).tobytes())
+    assert meter.snapshot()[0] is True, "Speech between polls must reset the idle timer"
+    clock[0] = 20.0
+    meter._consume_pcm_chunk(array("h", [0] * 800).tobytes())
+    assert meter.snapshot()[0] is False, "Old speech must not extend every subsequent poll"
+
+
+@pytest.mark.asyncio
+async def test_completed_audio_scan_covers_the_gaps_between_samples():
+    analyzer = RecordingActivityAnalyzer(ActivityConfig(sample_interval_sec=5, sample_window_sec=1))
+    # Speech only at 3..4 and 8..9 seconds, outside the old [0,1), [5,6) windows.
+    pcm = array(
+        "h",
+        [
+            12000 if 3 <= index // AUDIO_SAMPLE_RATE < 4 or 8 <= index // AUDIO_SAMPLE_RATE < 9 else 0
+            for index in range(10 * AUDIO_SAMPLE_RATE)
+        ],
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(pcm.tobytes())
+    reader.feed_eof()
+    states = await analyzer._read_audio_activity_stream(reader, sample_timestamps=[0.0, 5.0], probe_start_sec=0.0)
+    assert [state[0] for state in states] == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_refinement_audio_uses_its_own_one_second_buckets():
+    analyzer = RecordingActivityAnalyzer(ActivityConfig(sample_interval_sec=5, sample_window_sec=0.25))
+    reader = asyncio.StreamReader()
+    reader.feed_data(array("h", [0] * AUDIO_SAMPLE_RATE + [12000] * AUDIO_SAMPLE_RATE).tobytes())
+    reader.feed_eof()
+    states = await analyzer._read_audio_activity_stream(
+        reader, sample_timestamps=[0.0, 1.0], probe_start_sec=0.0, sample_interval_sec=1.0
+    )
+    assert [state[0] for state in states] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_partial_pcm_bucket_is_unknown_instead_of_confirmed_silence():
+    analyzer = RecordingActivityAnalyzer(ActivityConfig())
+    reader = asyncio.StreamReader()
+    reader.feed_data(array("h", [0] * AUDIO_SAMPLE_RATE).tobytes())
+    reader.feed_eof()
+    states = await analyzer._read_audio_activity_stream(
+        reader, sample_timestamps=[0.0], probe_start_sec=0.0, probe_end_sec=5.0
+    )
+    assert states == [(None, None)]
+
+
+@pytest.mark.asyncio
+async def test_live_audio_without_fresh_pcm_is_unknown(monkeypatch):
+    meter = _PersistentAudioMeter(source="job.monitor", config=ActivityConfig())
+    clock = [10.0]
+    monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: clock[0])
+    meter._consume_pcm_chunk(array("h", [0] * 800).tobytes())
+    clock[0] = 15.0
+    assert meter.snapshot() == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_live_audio_stall_becomes_recoverable_error(monkeypatch):
+    meter = _PersistentAudioMeter(source="job.monitor", config=ActivityConfig())
+    clock = [10.0]
+    monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: clock[0])
+    meter._started_at = 10.0
+    meter._consume_pcm_chunk(array("h", [0] * 800).tobytes())
+    assert meter.error is None
+    clock[0] = 41.0
+    assert "no PCM" in meter.error
+
+
+@pytest.mark.asyncio
+async def test_live_audio_unexpected_success_exit_is_also_recoverable():
+    async def process_factory(*_args, **_kwargs):
+        return await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "pass", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+
+    meter = _PersistentAudioMeter(source="job.monitor", config=ActivityConfig(), process_factory=process_factory)
+    try:
+        await meter.start()
+        await asyncio.wait_for(meter._reader_task, timeout=2)
+        assert "exited with code 0" in meter.error
+        assert meter.snapshot() == (None, None)
+    finally:
+        await meter.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), float("-inf")])
+async def test_non_finite_source_duration_skips_analysis(duration):
+    analyzer = FakeAnalyzer([], duration=duration)
+    decision = await analyzer.analyze(Path("raw.mkv"))
+    assert not decision.should_trim
+    assert decision.reason == "duration unavailable"
+    assert analyzer.audio_batch_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["audio", "video", "trim"])
+async def test_canceled_media_processing_reaps_its_process(monkeypatch, kind):
+    original_exec = asyncio.create_subprocess_exec
+    processes = []
+    started = asyncio.Event()
+
+    async def fake_ffmpeg(*_args, **kwargs):
+        process = await original_exec(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(activity_module.asyncio, "create_subprocess_exec", fake_ffmpeg)
+    analyzer = RecordingActivityAnalyzer(ActivityConfig())
+    before = set(asyncio.all_tasks())
+    if kind == "trim":
+        operation = activity_module._run_ffmpeg_trim("ffmpeg", timeout_sec=60)
+    else:
+        collect = getattr(analyzer, f"_collect_{kind}_activity")
+        operation = collect(Path("raw.mkv"), 10, [0.0, 5.0])
+    task = asyncio.create_task(operation)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3)
+        assert processes[0].returncode is not None
+        assert [pending for pending in asyncio.all_tasks() - before if not pending.done()] == []
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+
+@pytest.mark.asyncio
+async def test_canceled_trim_removes_partial_copy_and_retains_raw(monkeypatch, tmp_path):
+    source = tmp_path / "raw.mkv"
+    output = tmp_path / "raw.trimmed.mkv"
+    source.write_bytes(b"original")
+
+    async def canceled_trim(*_args, **_kwargs):
+        output.write_bytes(b"partial")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(activity_module, "_run_ffmpeg_trim", canceled_trim)
+    with pytest.raises(asyncio.CancelledError):
+        await trim_recording(input_path=source, output_path=output, trim_start_sec=1, trim_end_sec=5)
+    assert source.read_bytes() == b"original"
+    assert not output.exists()
+
+
+@pytest.mark.asyncio
+async def test_trim_cannot_overwrite_its_original(tmp_path):
+    source = tmp_path / "raw.mkv"
+    source.write_bytes(b"original")
+    with pytest.raises(ValueError, match="differ"):
+        await trim_recording(input_path=source, output_path=source, trim_start_sec=1, trim_end_sec=5)
+    assert source.read_bytes() == b"original"

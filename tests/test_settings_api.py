@@ -143,3 +143,9 @@ def test_settings_update_rejects_extension_max_below_idle(db_session):
 
     assert exc.value.status_code == 422
     assert "dynamic_extension_max_sec" in exc.value.detail
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_settings_update_rejects_non_finite_audio_threshold(value):
+    with pytest.raises(ValidationError):
+        SettingsUpdate(activity_audio_threshold_db=value)

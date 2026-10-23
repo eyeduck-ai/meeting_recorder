@@ -270,6 +270,7 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 - 起訖 refinement 僅使用各自窗口的活動證據；某一端無活動時保留該端 coarse boundary，不可借用另一端。重疊窗口只 probe 一次，diagnostics 的 `start_status`／`end_status` 區分 `refined` 與 `coarse_retained`。
 - 候選裁剪區間短於 `min(60 seconds, raw_duration * 0.1)` 時，回傳 `skipped` 與完整原片範圍；`trim_safety` 保存候選起迄、長度及門檻。短錄影仍可正常裁剪。
 - Coarse scan 有未知活動樣本時保留完整原檔；refinement 有未知樣本時保留該端 coarse boundary。未知探針不得被當作靜音或靜止。
+- Coarse audio window 為 `max(sample_interval_sec, sample_window_sec)`，連續涵蓋檔案，refinement 改用自身 1 秒 interval。`ActivitySample.window_end_sec` 保存實際窗口尾端；end refinement 無法確認時，保留最後 active coarse window 的完整尾端，不可退回只加 1 秒。Video 以至多 1 秒 frame interval 解碼、比較像素，再彙整到相同窗口，減少粗掃描端點間短暫切換的漏判；保留 `fps:eof_action=pass` 的末幀處理。
 - 裁剪檔必須有可讀、有限且大於零的實測片長，與預期差異不得超過 `max(2, min(5, expected_duration * 0.02))` 秒。驗證失敗會刪除裁剪副本並回退原檔作為輸出與上傳來源，不得以預期片長代替驗證。
 
 - `smart_trim_enabled` 啟用後，錄製完成會先保留 raw MKV，再用 `recording/activity.py` 分析原始檔的音訊能量與畫面差異，必要時產生 `*.trimmed.mkv` 作為 preferred local output。
@@ -280,7 +281,9 @@ Settings API 與 Web UI 應使用 `get_all_settings()` 讀取完整 overlay，�
 - 錄影 FFmpeg GOP 以約 1 秒 keyframe interval 輸出，讓 `trim_recording()` 可以維持 stream-copy 裁剪又降低 keyframe 對齊造成的邊界誤差；trim command 使用 duration-based `-ss` / `-t`，stderr 會串流寫入 log 或 bounded excerpt，不用 `communicate()` 保留完整輸出；trim diagnostics 會記錄 expected 與 ffprobe actual output duration。
 - 結尾裁剪以最後一個活動 sample 加上 `smart_trim_end_post_roll_sec` 為基準。
 - `dynamic_extension_enabled` 啟用後，`RecordingMonitor` 到達 `duration_sec` 後進入 extension phase；只要音訊或影像任一仍 active 就繼續錄，當兩者都 inactive 持續 `dynamic_extension_idle_sec` 或達到 `dynamic_extension_max_sec` 時停止。
-- live extension probe 會在接近指定結束時間前預熱音訊 meter 與 video baseline；進入 extension phase 後音訊使用單一長駐 FFmpeg PulseAudio meter，monitor check 只讀取最近峰值快照。任一探針 active 即可確認活動；只有兩者都成功且 inactive 才能累積 idle time。未知／探針例外會重置 idle timer，並在既有 max extension 或 hard deadline 內繼續錄影，warmup 例外不得中止 capture。沒有任一上限的 legacy direct caller，未知狀態最多等待一個 idle timeout，之後以 `activity_probe_unavailable` 停止，避免無界錄影。
+- live extension probe 會在接近指定結束時間前預熱音訊 meter 與 video baseline；進入 extension phase 後音訊使用單一長駐 FFmpeg PulseAudio meter。每次 snapshot 消耗上次 poll 以來的累積峰值，記憶體固定，不丟棄 poll 間的短句；無新／新鮮 PCM 時為 unknown。meter 明確故障會以至少 30 秒 backoff 重建。任一探針 active 即可確認活動；只有兩者都成功且 inactive 才能累積 idle time。未知／探針例外／缺少 probe instance 會重置 idle timer，並在既有 max extension 或 hard deadline 內繼續錄影，warmup 例外不得中止 capture。沒有任一上限的 legacy direct caller，未知狀態最多等待一個 idle timeout，之後以 `activity_probe_unavailable` 停止，避免無界錄影。
+- monitor 的 warmup/check 有 timeout，最長一個 check interval，且不得超過剩餘 max extension / hard deadline budget；poll sleep 扣除本輪 probe 花費，不能每輪疊加「慢 probe + 固定 sleep」。media probes 與 trim task 取消／錯誤時要 terminate/kill/reap 子程序並收回 reader tasks，未完成裁剪副本須移除，原檔不能作為 trim output。片長與活動數值設定必須為有限數字，拒絕 NaN/Infinity。
+- 媒體活動不是語意判斷：噪音、動畫可能延長錄影，靜音讀圖可能符合 idle 條件；completed-file video 每秒取樣也不保證看到更短的變化。保留有限延長預算與原檔，不能因一次取樣無活動便宣稱會議結束。
 - 自動 YouTube 上傳使用 preferred output；若 preferred output 是裁剪檔，上傳成功後 `scheduling/upload_runner.py` 會刪除本地裁剪檔與其 remux/transcode artifact，並把 DB `output_path` 回退到 raw output。
 
 ### 排程行為

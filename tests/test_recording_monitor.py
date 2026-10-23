@@ -480,3 +480,120 @@ async def test_unknown_probe_grace_period_is_bounded_for_legacy_unlimited_caller
     )
     await monitor.run()
     assert monitor.dynamic_extension_stop_reason == "activity_probe_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_missing_probe_object_retains_capture_until_extension_budget():
+    monitor = make_monitor(
+        job=make_job(duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_max_sec=10),
+        clock=sequence_clock(0, 6, 11, 16),
+    )
+    await monitor.run()
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
+    assert monitor.probe_summary["unknown"] == 2
+
+
+@pytest.mark.asyncio
+async def test_hung_probe_cannot_block_hard_deadline():
+    probe = FakeActivityProbe()
+    canceled = asyncio.Event()
+
+    async def hung_check(_session):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            canceled.set()
+
+    probe.check = hung_check
+    monitor = RecordingMonitor(
+        session=FakeSession(),
+        job=make_job(
+            duration_sec=0,
+            dynamic_extension_enabled=True,
+            hard_deadline_at=utc_now() + timedelta(seconds=0.08),
+        ),
+        media_activity_probe=probe,
+        is_cancel_requested=lambda: False,
+        is_finish_requested=lambda: False,
+        ffmpeg_stall_timeout_sec=0,
+        ffmpeg_stall_grace_sec=0,
+        check_interval_sec=0.02,
+    )
+    await asyncio.wait_for(monitor.run(), timeout=0.5)
+    assert canceled.is_set()
+    assert monitor.dynamic_extension_stop_reason == "hard_deadline_reached"
+    assert monitor.probe_summary["unknown"] > 0
+    assert probe.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_does_not_sleep_past_short_fixed_duration():
+    monitor = RecordingMonitor(
+        session=FakeSession(),
+        job=make_job(duration_sec=0.02),
+        media_activity_probe=None,
+        is_cancel_requested=lambda: False,
+        is_finish_requested=lambda: False,
+        ffmpeg_stall_timeout_sec=0,
+        ffmpeg_stall_grace_sec=0,
+    )
+    await asyncio.wait_for(monitor.run(), timeout=0.5)
+    assert monitor.dynamic_extension_stop_reason == "fixed_duration_reached"
+
+
+@pytest.mark.asyncio
+async def test_hung_probe_warmup_is_bounded_and_canceled():
+    probe = FakeActivityProbe()
+    canceled = asyncio.Event()
+
+    async def hung_prime(_session):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            canceled.set()
+
+    probe.prime = hung_prime
+    monitor = make_monitor(
+        job=make_job(duration_sec=5, dynamic_extension_enabled=True, dynamic_extension_max_sec=10),
+        media_activity_probe=probe,
+        clock=sequence_clock(0, 4.99, 6, 16),
+    )
+    monitor.check_interval_sec = 0.02
+    await asyncio.wait_for(monitor.run(), timeout=0.5)
+    assert canceled.is_set()
+    assert monitor.dynamic_extension_stop_reason == "max_extension_reached"
+
+
+@pytest.mark.asyncio
+async def test_live_audio_restarts_failed_meter_with_backoff(monkeypatch):
+    import recording.activity as activity_module
+
+    meters = []
+    clock = [10.0]
+
+    class Meter:
+        def __init__(self, *, source, config):
+            self.source = source
+            self.error = "temporary PulseAudio interruption" if not meters else None
+            self.close = AsyncMock()
+            meters.append(self)
+
+        async def start(self):
+            pass
+
+        def snapshot(self):
+            return True, -20.0
+
+    monkeypatch.setattr(activity_module, "_PersistentAudioMeter", Meter)
+    monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: clock[0])
+    probe = LiveMediaActivityProbe(ActivityConfig())
+    session = SimpleNamespace(virtual_env=SimpleNamespace(pulse_monitor="job.monitor"))
+    assert await probe._check_audio(session) == (None, None)
+    clock[0] = 20.0
+    assert await probe._check_audio(session) == (None, None)
+    assert len(meters) == 1
+    clock[0] = 41.0
+    assert await probe._check_audio(session) == (True, -20.0)
+    assert len(meters) == 2
+    meters[0].close.assert_awaited_once()
+    await probe.close()

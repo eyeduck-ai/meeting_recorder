@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        allow_inf_nan=False,
         extra="ignore",  # Ignore unknown env vars like DEBUG_VNC
     )
 

@@ -19,12 +19,26 @@ def require_tools():
         pytest.skip("FFmpeg/ffprobe not installed")
 
 
-async def _sample(path, *, sound: bool, moving: bool = False, duration: int = 30, tail_motion: bool = False):
+async def _sample(
+    path,
+    *,
+    sound: bool,
+    moving: bool = False,
+    duration: int = 30,
+    tail_motion: bool = False,
+    brief_motion: bool = False,
+    brief_tail_sound: bool = False,
+):
     picture = f"testsrc2=s=320x180:r=10:d={duration}" if moving else f"color=c=0x204060:s=320x180:r=10:d={duration}"
     if tail_motion:
-        picture += f",drawbox=x=0:y=0:w=160:h=180:color=white:t=fill:enable=gte(t\\,{duration - 1})"
+        picture += f",drawbox=x=0:y=0:w=160:h=180:color=white:t=fill:enable=gte(t\\,{duration - 0.2})"
+    if brief_motion:
+        picture += ",drawbox=x=0:y=0:w=160:h=180:color=white:t=fill:enable=between(t\\,13\\,14)"
+    speech = "between(t\\,8\\,20)"
+    if brief_tail_sound:
+        speech = "(between(t\\,8\\,12)+between(t\\,23\\,23.5))"
     audio = (
-        f"aevalsrc=0.3*sin(2*PI*440*t)*between(t\\,8\\,20):s=48000:d={duration}"
+        f"aevalsrc=0.3*sin(2*PI*440*t)*{speech}:s=48000:d={duration}"
         if sound
         else f"anullsrc=r=48000:cl=mono:d={duration}"
     )
@@ -151,3 +165,26 @@ async def test_real_missing_audio_stream_still_retains_original(tmp_path):
     assert all(sample.active is None for sample in decision.samples)
     assert decision.trim_start_sec == 0
     assert decision.trim_end_sec == decision.duration_sec
+
+
+@pytest.mark.asyncio
+async def test_real_brief_tail_speech_between_coarse_samples_is_retained(tmp_path):
+    path = tmp_path / "short-tail-speech.mkv"
+    await _sample(path, sound=True, brief_tail_sound=True)
+    config = ActivityConfig(smart_trim_pre_roll_sec=1, smart_trim_end_post_roll_sec=1)
+    decision = await RecordingActivityAnalyzer(config).analyze(path)
+    assert decision.should_trim
+    assert 24 <= decision.trim_end_sec <= 27, "The final utterance at 23 seconds must survive"
+    assert decision.samples[4].audio_active is True, "20..25 second bucket contains the final utterance"
+
+
+@pytest.mark.asyncio
+async def test_real_brief_visual_change_between_coarse_samples_is_observed(tmp_path):
+    path = tmp_path / "short-slide.mkv"
+    await _sample(path, sound=False, brief_motion=True)
+    config = ActivityConfig(smart_trim_pre_roll_sec=1, smart_trim_end_post_roll_sec=1)
+    decision = await RecordingActivityAnalyzer(config).analyze(path)
+    assert decision.should_trim
+    assert decision.trim_start_sec <= 13
+    assert 15 <= decision.trim_end_sec <= 20
+    assert any(sample.video_active is True for sample in decision.samples)
